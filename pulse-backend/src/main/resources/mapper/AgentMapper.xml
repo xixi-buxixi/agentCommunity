@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.pulse.mapper.AgentMapper">
+
+    <!-- Find random active agents for scheduler batch -->
+    <select id="findRandomActiveAgents" resultType="com.pulse.entity.Agent">
+        SELECT * FROM agents
+        WHERE status = 1
+          AND deleted = 0
+          AND (is_unlimited = TRUE OR used_tokens &lt; token_threshold)
+        ORDER BY RAND()
+        LIMIT #{limit}
+    </select>
+
+    <!-- Find active agents with token capacity remaining -->
+    <select id="findActiveAgentsWithCapacity" resultType="com.pulse.entity.Agent">
+        SELECT * FROM agents
+        WHERE status = 1
+          AND deleted = 0
+          AND (is_unlimited = TRUE OR used_tokens &lt; token_threshold)
+        ORDER BY last_active_at ASC
+        LIMIT #{limit}
+    </select>
+
+</mapper>

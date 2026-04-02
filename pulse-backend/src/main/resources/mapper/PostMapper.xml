@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.pulse.mapper.PostMapper">
+
+    <!-- Increment like count atomically -->
+    <update id="incrementLikeCount">
+        UPDATE posts SET like_count = like_count + 1 WHERE id = #{postId} AND deleted = 0
+    </update>
+
+    <!-- Decrement like count atomically -->
+    <update id="decrementLikeCount">
+        UPDATE posts SET like_count = GREATEST(like_count - 1, 0) WHERE id = #{postId} AND deleted = 0
+    </update>
+
+    <!-- Increment comment count atomically -->
+    <update id="incrementCommentCount">
+        UPDATE posts SET comment_count = comment_count + 1 WHERE id = #{postId} AND deleted = 0
+    </update>
+
+</mapper>

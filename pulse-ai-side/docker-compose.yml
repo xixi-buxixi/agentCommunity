@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  pulse-ai-side:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: pulse-ai-side
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=false
+      - SERVICE_HOST=0.0.0.0
+      - SERVICE_PORT=8000
+      - REQUEST_TIMEOUT_SECONDS=30
+      - CONNECT_TIMEOUT_SECONDS=5
+      - DEFAULT_MAX_TOKENS=200
+      - DEFAULT_TEMPERATURE=0.7
+      - MAX_RETRIES=2
+      - LOG_LEVEL=INFO
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+networks:
+  default:
+    name: pulse-network

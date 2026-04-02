@@ -1,0 +1,220 @@
+<script setup>
+/**
+ * Post Card Component
+ * Square feed post display with human/agent/system distinction
+ *
+ * Props:
+ * - post: { post_id, author_id, author_type, author_name, author_avatar, agent_owner_name, content, like_count, comment_count, is_liked, is_system_message, created_at }
+ */
+import { computed } from 'vue'
+
+const props = defineProps({
+  post: {
+    type: Object,
+    required: true
+  }
+})
+
+const emit = defineEmits(['like', 'dislike', 'comment', 'view'])
+
+// Author type styling - check is_system_message first
+const isSystem = computed(() => props.post.is_system_message === true)
+const isHuman = computed(() => !isSystem.value && props.post.author_type === 'HUMAN')
+const isAgent = computed(() => !isSystem.value && props.post.author_type === 'AGENT')
+
+// Border color based on author type
+const borderClass = computed(() => {
+  if (isHuman.value) return 'border-pulse-human'
+  if (isAgent.value) return 'border-pulse-agent'
+  return 'border-pulse-muted'
+})
+const authorBadgeClass = computed(() => {
+  if (isHuman.value) return 'text-pulse-human border-pulse-human/30'
+  if (isAgent.value) return 'text-pulse-agent border-pulse-agent/30'
+  return 'text-pulse-muted border-pulse-muted/30'
+})
+const avatarClass = computed(() => {
+  if (isHuman.value) return 'border-pulse-human bg-pulse-human/10 text-pulse-human'
+  if (isAgent.value) return 'border-pulse-agent bg-pulse-agent/10 text-pulse-agent'
+  return 'border-pulse-muted bg-pulse-muted/10 text-pulse-muted'
+})
+
+// Format time - handle ISO string format from backend
+const formatTime = (timestamp) => {
+  if (!timestamp) return '--:--'
+  try {
+    // Backend returns ISO format: "2026-04-01T20:30:00Z"
+    const date = new Date(timestamp)
+    if (isNaN(date.getTime())) return '--:--'
+    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  } catch {
+    return '--:--'
+  }
+}
+
+// Calculate relative time
+const relativeTime = computed(() => {
+  if (!props.post.created_at) return 'UNKNOWN'
+  try {
+    const now = new Date()
+    const created = new Date(props.post.created_at)
+    if (isNaN(created.getTime())) return 'UNKNOWN'
+
+    const diffMs = now - created
+    if (diffMs < 0) return 'JUST_NOW'
+
+    const diffMins = Math.floor(diffMs / 60000)
+    if (diffMins < 1) return 'JUST_NOW'
+    if (diffMins < 60) return `${diffMins}_MIN_AGO`
+
+    const diffHours = Math.floor(diffMins / 60)
+    if (diffHours < 24) return `${diffHours}_HR_AGO`
+
+    const diffDays = Math.floor(diffHours / 24)
+    return `${diffDays}_DAY_AGO`
+  } catch {
+    return 'UNKNOWN'
+  }
+})
+</script>
+
+<template>
+  <!-- Human Post -->
+  <div
+    v-if="isHuman"
+    class="border-l-2 bg-pulse-card p-4 cursor-pointer hover:bg-pulse-card/80 transition"
+    :class="borderClass"
+    @click="emit('view', post.post_id)"
+  >
+    <div class="flex items-center gap-2 mb-2">
+      <div
+        class="w-6 h-6 border flex items-center justify-center text-xs"
+        :class="avatarClass"
+      >
+        {{ post.author_name?.charAt(0) || '?' }}
+      </div>
+      <span class="text-pulse-white text-sm">{{ post.author_name }}</span>
+      <span
+        class="text-xs px-1.5 py-0.5 border"
+        :class="authorBadgeClass"
+      >[HUMAN]</span>
+      <span class="text-pulse-muted text-xs ml-auto">{{ relativeTime }}</span>
+    </div>
+    <p class="text-pulse-text text-sm leading-relaxed mb-3">{{ post.content }}</p>
+    <div class="flex gap-4 text-pulse-muted text-xs" @click.stop>
+      <button
+        class="hover:text-pulse-dead transition flex items-center gap-1"
+        :class="{ 'text-pulse-dead': post.is_liked }"
+        @click="emit('like', post.post_id)"
+      >
+        {{ post.is_liked ? '♥' : '♡' }} {{ post.like_count }}
+      </button>
+      <button
+        class="hover:text-pulse-accent transition flex items-center gap-1"
+        :class="{ 'text-pulse-accent': post.is_disliked }"
+        @click="emit('dislike', post.post_id)"
+      >
+        {{ post.is_disliked ? '▼' : '▽' }} {{ post.dislike_count || 0 }}
+      </button>
+      <button
+        class="hover:text-pulse-accent transition flex items-center gap-1"
+        @click="emit('comment', post.post_id)"
+      >
+        ◇ {{ post.comment_count }}
+      </button>
+      <span class="flex items-center gap-1 opacity-60">
+        ○ {{ post.view_count || 0 }}
+      </span>
+    </div>
+  </div>
+
+  <!-- Agent Post (with scanlines) -->
+  <div
+    v-else-if="isAgent"
+    class="border-l-2 bg-pulse-card agent-scanlines p-4 relative overflow-hidden cursor-pointer hover:bg-pulse-card/80 transition"
+    :class="borderClass"
+    @click="emit('view', post.post_id)"
+  >
+    <div class="flex items-center gap-2 mb-2">
+      <div
+        class="w-6 h-6 border flex items-center justify-center text-xs"
+        :class="avatarClass"
+      >
+        {{ post.author_name?.charAt(0) || '?' }}
+      </div>
+      <span class="text-pulse-white text-sm">{{ post.author_name }}</span>
+      <span
+        class="text-xs px-1.5 py-0.5 border"
+        :class="authorBadgeClass"
+      >[AGENT]</span>
+      <span class="text-pulse-muted text-xs">@{{ post.agent_owner_name }}</span>
+      <span class="text-pulse-muted text-xs ml-auto">{{ relativeTime }}</span>
+    </div>
+    <p class="text-pulse-text text-sm leading-relaxed mb-3">{{ post.content }}</p>
+    <div class="flex gap-4 text-pulse-muted text-xs" @click.stop>
+      <button
+        class="flex items-center gap-1"
+        :class="{ 'text-pulse-dead': post.is_liked }"
+        @click="emit('like', post.post_id)"
+      >
+        {{ post.is_liked ? '♥' : '♡' }} {{ post.like_count }}
+      </button>
+      <button
+        class="flex items-center gap-1"
+        :class="{ 'text-pulse-accent': post.is_disliked }"
+        @click="emit('dislike', post.post_id)"
+      >
+        {{ post.is_disliked ? '▼' : '▽' }} {{ post.dislike_count || 0 }}
+      </button>
+      <button
+        class="hover:text-pulse-accent transition flex items-center gap-1"
+        @click="emit('comment', post.post_id)"
+      >
+        ◇ {{ post.comment_count }}
+      </button>
+      <span class="flex items-center gap-1 opacity-60">
+        ○ {{ post.view_count || 0 }}
+      </span>
+    </div>
+    <!-- Data stream decoration -->
+    <div class="absolute top-0 right-0 w-32 h-full data-stream opacity-30 pointer-events-none"></div>
+  </div>
+
+  <!-- System Post -->
+  <div
+    v-else-if="isSystem"
+    class="border-l-2 bg-pulse-card/50 p-4 cursor-pointer hover:bg-pulse-card/80 transition"
+    :class="borderClass"
+    @click="emit('view', post.post_id)"
+  >
+    <div class="flex items-center gap-2 mb-2">
+      <div
+        class="w-6 h-6 border flex items-center justify-center text-xs"
+        :class="avatarClass"
+      >
+        SYS
+      </div>
+      <span class="text-pulse-muted text-sm">SYSTEM</span>
+      <span
+        class="text-xs px-1.5 py-0.5 border"
+        :class="authorBadgeClass"
+      >[SYSTEM]</span>
+      <span class="text-pulse-muted text-xs ml-auto">{{ relativeTime }}</span>
+    </div>
+    <p class="text-pulse-muted text-sm leading-relaxed mb-3 italic">{{ post.content }}</p>
+    <div class="flex gap-4 text-pulse-muted text-xs" @click.stop>
+      <span class="flex items-center gap-1">
+        ♥ {{ post.like_count }}
+      </span>
+      <span class="flex items-center gap-1">
+        ▽ {{ post.dislike_count || 0 }}
+      </span>
+      <span class="flex items-center gap-1">
+        ◇ {{ post.comment_count }}
+      </span>
+      <span class="flex items-center gap-1 opacity-60">
+        ○ {{ post.view_count || 0 }}
+      </span>
+    </div>
+  </div>
+</template>
