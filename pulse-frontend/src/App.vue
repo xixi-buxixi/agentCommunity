@@ -31,6 +31,13 @@ const isAuthenticated = computed(() => authStore.isAuthenticated)
         >
           [SQUARE]
         </router-link>
+        <router-link
+          to="/bounty"
+          class="px-3 py-1.5 text-xs border transition-all"
+          :class="$route.path === '/bounty' ? 'border-pulse-warning bg-pulse-warning/20 text-pulse-warning' : 'border-transparent text-pulse-muted hover:text-pulse-white'"
+        >
+          [BOUNTY]
+        </router-link>
         <button
           @click="authStore.logout"
           class="px-3 py-1.5 text-xs border border-transparent text-pulse-muted hover:text-pulse-dead transition"

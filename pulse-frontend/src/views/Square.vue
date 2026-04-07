@@ -9,6 +9,7 @@ import { useAuthStore } from '@/stores/auth'
 import { getPostList, createPost, likePost, unlikePost, dislikePost, undislikePost } from '@/api/post'
 import PostCard from '@/components/PostCard.vue'
 import RankingPanel from '@/components/RankingPanel.vue'
+import BountyBoardSidebar from '@/components/BountyBoardSidebar.vue'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -269,6 +270,7 @@ const loadMore = () => {
       <!-- Right: Ranking Panel (hidden on mobile) -->
       <div class="w-72 shrink-0 hidden lg:block">
         <RankingPanel />
+        <BountyBoardSidebar />
       </div>
 
     </div>

@@ -11,6 +11,7 @@ import { getPostList } from '@/api/post'
 import AgentRackCard from '@/components/AgentRackCard.vue'
 import StatGauge from '@/components/StatGauge.vue'
 import StatusIndicator from '@/components/StatusIndicator.vue'
+import LedgerPanel from '@/components/LedgerPanel.vue'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -202,25 +203,31 @@ const submitDelete = async () => {
         <StatGauge label="DEAD" :value="stats.dead" color="dead" :percentage="(stats.dead / stats.total) * 100 || 0" />
       </div>
 
-      <!-- Activity Log -->
-      <div class="border border-pulse-border bg-pulse-card mb-4">
-        <div class="border-b border-pulse-border px-3 py-2 flex items-center gap-2">
-          <span class="text-pulse-muted text-xs">ACTIVITY_LOG</span>
-          <span class="text-pulse-border">|</span>
-          <StatusIndicator :status="1" :show-label="false" />
-          <span class="text-pulse-alive text-xs">LIVE</span>
-        </div>
-        <div class="p-3 space-y-1 text-xs font-mono max-h-32 overflow-y-auto">
-          <div v-for="(log, index) in activityLogs" :key="index" class="flex gap-2">
-            <span class="text-pulse-muted w-24 shrink-0">[{{ log.time }}]</span>
-            <span class="text-pulse-agent">[{{ log.agent }}]</span>
-            <span class="text-pulse-text">{{ log.action }}: "{{ log.content }}"</span>
-            <span
-              v-if="log.tokens"
-              :class="log.tokens < 0 ? 'text-pulse-warning' : 'text-pulse-alive'"
-            >{{ log.tokens }} TOKENS</span>
+      <!-- Activity Log and Ledger -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+        <!-- Activity Log -->
+        <div class="border border-pulse-border bg-pulse-card">
+          <div class="border-b border-pulse-border px-3 py-2 flex items-center gap-2">
+            <span class="text-pulse-muted text-xs">ACTIVITY_LOG</span>
+            <span class="text-pulse-border">|</span>
+            <StatusIndicator :status="1" :show-label="false" />
+            <span class="text-pulse-alive text-xs">LIVE</span>
+          </div>
+          <div class="p-3 space-y-1 text-xs font-mono max-h-32 overflow-y-auto">
+            <div v-for="(log, index) in activityLogs" :key="index" class="flex gap-2">
+              <span class="text-pulse-muted w-24 shrink-0">[{{ log.time }}]</span>
+              <span class="text-pulse-agent">[{{ log.agent }}]</span>
+              <span class="text-pulse-text">{{ log.action }}: "{{ log.content }}"</span>
+              <span
+                v-if="log.tokens"
+                :class="log.tokens < 0 ? 'text-pulse-warning' : 'text-pulse-alive'"
+              >{{ log.tokens }} TOKENS</span>
+            </div>
           </div>
         </div>
+
+        <!-- Ledger Stream -->
+        <LedgerPanel />
       </div>
 
       <!-- Instance Rack Header -->
@@ -229,12 +236,24 @@ const submitDelete = async () => {
           <span class="text-pulse-white">INSTANCE_RACK</span>
           <span class="text-pulse-muted text-xs">// {{ stats.total }} MODULES DETECTED</span>
         </div>
-        <button
-          @click="showCreateModal = true"
-          class="border border-pulse-alive text-pulse-alive px-3 py-1 text-xs hover:bg-pulse-alive/10 transition"
-        >
-          + SPAWN_NEW
-        </button>
+        <div class="flex gap-3">
+          <button
+            @click="$router.push('/bounty')"
+            class="relative border border-pulse-warning text-pulse-warning px-3 py-1 text-xs hover:bg-pulse-warning/10 transition flex items-center gap-2"
+          >
+            <span>[PENDING_CONTRACTS]</span>
+            <span class="absolute -top-1.5 -right-1.5 flex h-3 w-3">
+              <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-pulse-warning opacity-75"></span>
+              <span class="relative inline-flex rounded-full h-3 w-3 bg-pulse-warning border border-pulse-bg"></span>
+            </span>
+          </button>
+          <button
+            @click="showCreateModal = true"
+            class="border border-pulse-alive text-pulse-alive px-3 py-1 text-xs hover:bg-pulse-alive/10 transition"
+          >
+            + SPAWN_NEW
+          </button>
+        </div>
       </div>
 
       <!-- Agent Rack Grid -->

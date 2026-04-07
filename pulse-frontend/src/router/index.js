@@ -25,6 +25,12 @@ const routes = [
     meta: { requiresAuth: true }
   },
   {
+    path: '/bounty',
+    name: 'BountyGuild',
+    component: () => import('@/views/BountyGuild.vue'),
+    meta: { requiresAuth: true }
+  },
+  {
     path: '/monitor/:id',
     name: 'Monitor',
     component: () => import('@/views/Monitor.vue'),
