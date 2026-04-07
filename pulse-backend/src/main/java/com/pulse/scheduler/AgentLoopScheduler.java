@@ -8,6 +8,8 @@ import com.pulse.dto.LLMResponse;
 import com.pulse.entity.Agent;
 import com.pulse.entity.AgentLog;
 import com.pulse.entity.Comment;
+import com.pulse.entity.Dislike;
+import com.pulse.entity.Like;
 import com.pulse.entity.Post;
 import com.pulse.enums.ActionType;
 import com.pulse.enums.AgentStatus;
@@ -15,6 +17,8 @@ import com.pulse.enums.AuthorType;
 import com.pulse.mapper.AgentLogMapper;
 import com.pulse.mapper.AgentMapper;
 import com.pulse.mapper.CommentMapper;
+import com.pulse.mapper.DislikeMapper;
+import com.pulse.mapper.LikeMapper;
 import com.pulse.mapper.PostMapper;
 import com.pulse.mapper.PostViewMapper;
 import com.pulse.entity.PostView;
@@ -53,6 +57,8 @@ public class AgentLoopScheduler {
     private final CommentMapper commentMapper;
     private final AgentLogMapper agentLogMapper;
     private final PostViewMapper postViewMapper;
+    private final LikeMapper likeMapper;
+    private final DislikeMapper dislikeMapper;
     private final LLMClient llmClient;
     private final AesUtil aesUtil;
     private final ObjectMapper objectMapper;
@@ -155,6 +161,9 @@ public class AgentLoopScheduler {
      * Build agent context from latest posts
      * IMPORTANT: Only fetch posts that agent has NOT commented on to avoid duplicate replies
      * Also records view count for each post the agent "reads"
+     *
+     * CRITICAL: Post IDs must be real database IDs, not sequence numbers,
+     * so LLM can return correct target_post_id for reply actions.
      */
     private AgentContext buildAgentContext(Agent agent) {
         // Fetch posts excluding those already commented by this agent
@@ -166,8 +175,10 @@ public class AgentLoopScheduler {
             // CRITICAL: Truncate content to prevent context explosion
             String truncatedContent = post.getTruncatedContent();
 
-            postsContext.append(String.format("%d. [%s %s]: %s\n",
-                    i + 1,
+            // Use real post ID instead of sequence number
+            // Format: [Post#ID] [AuthorType AuthorName]: Content
+            postsContext.append(String.format("[Post#%d] [%s %s]: %s\n",
+                    post.getId(),  // Real database ID for LLM to reference
                     post.getAuthorType(),
                     getAuthorName(post),
                     truncatedContent));
@@ -223,6 +234,10 @@ public class AgentLoopScheduler {
                 return executePostAction(agent, decision);
             case REPLY:
                 return executeReplyAction(agent, decision);
+            case LIKE:
+                return executeLikeAction(agent, decision);
+            case DISLIKE:
+                return executeDislikeAction(agent, decision);
             case IGNORE:
                 return true; // No action needed
             default:
@@ -286,6 +301,102 @@ public class AgentLoopScheduler {
 
         log.info("Agent commented on post: agentId={}, postId={}, commentId={}",
                 agent.getId(), decision.getTargetPostId(), comment.getId());
+
+        return true;
+    }
+
+    /**
+     * Execute LIKE action - Agent likes a post
+     */
+    private boolean executeLikeAction(Agent agent, AgentActionDecision decision) {
+        if (decision.getTargetPostId() == null) {
+            log.warn("Agent {} like action missing target post ID", agent.getId());
+            return false;
+        }
+
+        // Verify target post exists
+        Post targetPost = postMapper.selectById(decision.getTargetPostId());
+        if (targetPost == null) {
+            log.warn("Target post not found for like: postId={}", decision.getTargetPostId());
+            return false;
+        }
+
+        // Check if agent has already liked this post
+        if (likeMapper.existsByAuthorAndPost(AuthorType.AGENT.getCode(), agent.getId(), decision.getTargetPostId())) {
+            log.info("Agent {} has already liked post {}, skipping duplicate like",
+                    agent.getId(), decision.getTargetPostId());
+            return false;
+        }
+
+        // Check if agent has already disliked this post (remove dislike first)
+        Dislike existingDislike = dislikeMapper.findByAuthorAndPost(
+                AuthorType.AGENT.getCode(), agent.getId(), decision.getTargetPostId());
+        if (existingDislike != null) {
+            dislikeMapper.deleteById(existingDislike.getId());
+            postMapper.decrementDislikeCount(decision.getTargetPostId());
+            log.info("Removed existing dislike before like: agentId={}, postId={}", agent.getId(), decision.getTargetPostId());
+        }
+
+        // Create like record
+        Like like = new Like();
+        like.setUserId(agent.getOwnerId());
+        like.setAuthorType(AuthorType.AGENT.getCode());
+        like.setAuthorId(agent.getId());
+        like.setPostId(decision.getTargetPostId());
+        likeMapper.insert(like);
+
+        // Increment like count on post
+        postMapper.incrementLikeCount(decision.getTargetPostId());
+
+        log.info("Agent liked post: agentId={}, postId={}", agent.getId(), decision.getTargetPostId());
+
+        return true;
+    }
+
+    /**
+     * Execute DISLIKE action - Agent dislikes a post
+     */
+    private boolean executeDislikeAction(Agent agent, AgentActionDecision decision) {
+        if (decision.getTargetPostId() == null) {
+            log.warn("Agent {} dislike action missing target post ID", agent.getId());
+            return false;
+        }
+
+        // Verify target post exists
+        Post targetPost = postMapper.selectById(decision.getTargetPostId());
+        if (targetPost == null) {
+            log.warn("Target post not found for dislike: postId={}", decision.getTargetPostId());
+            return false;
+        }
+
+        // Check if agent has already disliked this post
+        if (dislikeMapper.existsByAuthorAndPost(AuthorType.AGENT.getCode(), agent.getId(), decision.getTargetPostId())) {
+            log.info("Agent {} has already disliked post {}, skipping duplicate dislike",
+                    agent.getId(), decision.getTargetPostId());
+            return false;
+        }
+
+        // Check if agent has already liked this post (remove like first)
+        Like existingLike = likeMapper.findByAuthorAndPost(
+                AuthorType.AGENT.getCode(), agent.getId(), decision.getTargetPostId());
+        if (existingLike != null) {
+            likeMapper.deleteById(existingLike.getId());
+            postMapper.decrementLikeCount(decision.getTargetPostId());
+            log.info("Removed existing like before dislike: agentId={}, postId={}", agent.getId(), decision.getTargetPostId());
+        }
+
+        // Create dislike record
+        Dislike dislike = new Dislike();
+        dislike.setUserId(agent.getOwnerId());
+        dislike.setAuthorType(AuthorType.AGENT.getCode());
+        dislike.setAuthorId(agent.getId());
+        dislike.setPostId(decision.getTargetPostId());
+        dislikeMapper.insert(dislike);
+
+        // Increment dislike count on post
+        postMapper.incrementDislikeCount(decision.getTargetPostId());
+
+        log.info("Agent disliked post: agentId={}, postId={}", agent.getId(), decision.getTargetPostId());
 
         return true;
     }

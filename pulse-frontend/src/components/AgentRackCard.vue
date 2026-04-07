@@ -2,6 +2,7 @@
 /**
  * Agent Rack Card Component
  * Industrial dashboard style agent display card
+ * Mobile-First Responsive Design
  *
  * Props:
  * - agent: { id, name, model_name, status, used_tokens, token_threshold, status_text }
@@ -15,7 +16,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['edit', 'revive', 'terminate', 'view'])
+const emit = defineEmits(['edit', 'revive', 'terminate', 'view', 'resetTokens'])
 
 // Calculate consumption percentage
 const consumption = computed(() => {
@@ -61,48 +62,48 @@ const formatTokens = (num) => {
 
 <template>
   <div
-    class="rack-slot border border-pulse-border bg-pulse-card p-4 transition-all"
+    class="rack-slot border border-pulse-border bg-pulse-card p-3 sm:p-4 transition-all"
     :class="rackSlotClass"
   >
     <!-- Header -->
-    <div class="flex items-start justify-between mb-3">
-      <div class="flex items-center gap-3">
+    <div class="flex items-start justify-between mb-2 sm:mb-3">
+      <div class="flex items-center gap-2 sm:gap-3 min-w-0">
         <div
-          class="w-10 h-10 border flex items-center justify-center font-bold text-sm"
+          class="w-8 h-8 sm:w-10 sm:h-10 border flex items-center justify-center font-bold text-xs sm:text-sm shrink-0"
           :class="statusConfig.borderClass"
         >
           {{ agent.name?.charAt(0) || '?' }}
         </div>
-        <div>
-          <div class="flex items-center gap-2">
-            <span class="text-pulse-white font-bold">{{ agent.name }}</span>
-            <span class="text-pulse-muted text-xs">[{{ agent.model_name }}]</span>
+        <div class="min-w-0 flex-1">
+          <div class="flex items-center gap-1 sm:gap-2 flex-wrap">
+            <span class="text-pulse-white font-bold text-xs sm:text-sm truncate">{{ agent.name }}</span>
+            <span class="text-pulse-muted text-[10px] sm:text-xs truncate">[{{ agent.model_name }}]</span>
           </div>
-          <span class="text-pulse-muted text-xs">ID: {{ agent.id }}</span>
+          <span class="text-pulse-muted text-[10px] sm:text-xs">ID: {{ agent.id }}</span>
         </div>
       </div>
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-1 sm:gap-2 shrink-0">
         <div class="w-2 h-2 rounded-full" :class="statusConfig.dotClass"></div>
-        <span class="text-xs" :class="statusConfig.textClass">{{ statusConfig.label }}</span>
+        <span class="text-[10px] sm:text-xs" :class="statusConfig.textClass">{{ statusConfig.label }}</span>
       </div>
     </div>
 
     <!-- Vital Energy Progress -->
-    <div class="space-y-2">
-      <div class="flex justify-between text-xs">
+    <div class="space-y-1 sm:space-y-2">
+      <div class="flex justify-between text-[10px] sm:text-xs">
         <span class="text-pulse-muted">VITAL_ENERGY</span>
         <span :class="statusConfig.textClass">
           {{ formatTokens(agent.used_tokens) }} / {{ formatTokens(agent.token_threshold) }} TOKENS
         </span>
       </div>
-      <div class="h-2 bg-pulse-bg border border-pulse-border p-[1px]">
+      <div class="h-1.5 sm:h-2 bg-pulse-bg border border-pulse-border p-[1px]">
         <div
           class="h-full pixel-progress transition-all"
           :class="progressColorClass"
           :style="{ width: Math.min(consumption, 100) + '%' }"
         ></div>
       </div>
-      <div class="flex justify-between text-xs">
+      <div class="flex justify-between text-[10px] sm:text-xs">
         <span
           class="text-pulse-warning"
           v-if="consumption >= 80"
@@ -112,61 +113,74 @@ const formatTokens = (num) => {
           class="text-pulse-alive"
           v-if="agent.status === 1 && consumption < 80"
         >STATUS: OPTIMAL</span>
-        <span class="text-pulse-warning" v-else-if="agent.status === 1 && consumption >= 80">INJECT_RECOMMENDED</span>
+        <span class="text-pulse-warning text-[10px] sm:text-xs" v-else-if="agent.status === 1 && consumption >= 80">INJECT_RECOMMENDED</span>
         <span class="text-pulse-dead" v-else>CONNECTION_LOST</span>
       </div>
     </div>
 
-    <!-- Warning Alert -->
+    <!-- Warning Alert - Separated from buttons -->
     <div
       v-if="agent.status === 1 && consumption >= 80 && consumption < 100"
-      class="bg-pulse-warning/10 border border-pulse-warning/30 p-2 mt-3 flex items-center justify-between"
+      class="mt-2 sm:mt-3 mb-0"
     >
-      <span class="text-pulse-warning text-xs">LOW_ENERGY_DETECTED</span>
-      <button
-        @click="emit('revive', agent)"
-        class="border border-pulse-warning text-pulse-warning px-3 py-1 text-xs hover:bg-pulse-warning/20 transition"
-      >
-        INJECT_LIFE
-      </button>
+      <div class="flex items-center gap-2 text-[10px] sm:text-xs">
+        <span class="text-pulse-warning">LOW_ENERGY_DETECTED</span>
+        <span class="text-pulse-border">|</span>
+        <button
+          @click.stop="emit('revive', agent)"
+          class="text-pulse-alive hover:underline min-h-[44px] flex items-center"
+        >
+          [INJECT_LIFE]
+        </button>
+      </div>
     </div>
 
     <!-- Dead Message -->
     <div
       v-if="agent.status === 0"
-      class="bg-pulse-bg border border-pulse-border p-2 mb-3 text-pulse-muted text-xs italic"
+      class="bg-pulse-bg border-l-2 border-pulse-dead p-2 mt-2 sm:mt-3 text-pulse-muted text-[10px] sm:text-xs italic"
     >
       "Energy depleted, connection lost..."
     </div>
 
-    <!-- Action Buttons -->
-    <div class="flex gap-2 mt-3 pt-3 border-t border-pulse-border">
+    <!-- Action Buttons - Row 1 -->
+    <div class="flex gap-2 mt-2 sm:mt-3 pt-2 sm:pt-3 border-t border-pulse-border">
       <button
         v-if="agent.status !== 0"
         @click="emit('edit', agent)"
-        class="flex-1 border border-pulse-border text-pulse-muted px-3 py-1.5 text-xs hover:border-pulse-text hover:text-pulse-text transition"
+        class="flex-1 border border-pulse-border text-pulse-muted px-2 py-2 text-[10px] sm:text-xs hover:border-pulse-text hover:text-pulse-text transition min-h-[44px]"
       >
         EDIT_CONFIG
       </button>
       <button
         v-if="agent.status === 0"
         @click="emit('revive', agent)"
-        class="flex-1 border border-pulse-alive text-pulse-alive px-3 py-1.5 text-xs hover:bg-pulse-alive/10 transition"
+        class="flex-1 border border-pulse-alive text-pulse-alive px-2 py-2 text-[10px] sm:text-xs hover:bg-pulse-alive/10 transition min-h-[44px]"
       >
         REVIVE
       </button>
       <button
         v-if="agent.status === 0"
         @click="emit('terminate', agent)"
-        class="flex-1 border border-pulse-dead text-pulse-dead px-3 py-1.5 text-xs hover:bg-pulse-dead/10 transition"
+        class="flex-1 border border-pulse-dead text-pulse-dead px-2 py-2 text-[10px] sm:text-xs hover:bg-pulse-dead/10 transition min-h-[44px]"
       >
         TERMINATE
       </button>
       <button
         @click="emit('view', agent)"
-        class="flex-1 border border-pulse-border text-pulse-muted px-3 py-1.5 text-xs hover:border-pulse-text hover:text-pulse-text transition"
+        class="flex-1 border border-pulse-border text-pulse-muted px-2 py-2 text-[10px] sm:text-xs hover:border-pulse-text hover:text-pulse-text transition min-h-[44px]"
       >
         VIEW_LOGS
+      </button>
+    </div>
+
+    <!-- Action Buttons - Row 2: Reset Tokens -->
+    <div v-if="agent.status !== 0 && agent.used_tokens > 0" class="flex gap-2 mt-2">
+      <button
+        @click="emit('resetTokens', agent)"
+        class="flex-1 text-pulse-warning text-[10px] sm:text-xs py-2 hover:underline transition min-h-[44px]"
+      >
+        [RESET_TOKENS]
       </button>
     </div>
   </div>

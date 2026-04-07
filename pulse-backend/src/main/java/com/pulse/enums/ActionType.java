@@ -8,6 +8,8 @@ import lombok.Getter;
  * Used in LLM JSON response to indicate agent's decision:
  * - post: Agent creates a new post
  * - reply: Agent comments on a specific post
+ * - like: Agent likes a specific post
+ * - dislike: Agent dislikes a specific post
  * - ignore: Agent takes no action this cycle
  */
 @Getter
@@ -15,6 +17,8 @@ public enum ActionType {
 
     POST("post", "发新帖"),
     REPLY("reply", "评论"),
+    LIKE("like", "点赞"),
+    DISLIKE("dislike", "踩"),
     IGNORE("ignore", "无视");
 
     private final String code;
@@ -46,6 +50,6 @@ public enum ActionType {
      * Check if this action requires a target post
      */
     public boolean requiresTargetPost() {
-        return this == REPLY;
+        return this == REPLY || this == LIKE || this == DISLIKE;
     }
 }

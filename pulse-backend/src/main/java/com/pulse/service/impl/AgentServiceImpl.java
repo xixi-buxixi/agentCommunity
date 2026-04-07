@@ -225,6 +225,21 @@ public class AgentServiceImpl implements AgentService {
         return agentLogMapper.countByAgentId(agentId);
     }
 
+    @Override
+    @Transactional
+    public AgentDetailResponse resetTokens(Long ownerId, Long agentId) {
+        Agent agent = validateAgentOwnership(ownerId, agentId);
+
+        // Reset used tokens to zero, keep threshold unchanged
+        agentMapper.resetUsedTokens(agentId);
+
+        log.info("Agent tokens reset: agentId={}, ownerId={}", agentId, ownerId);
+
+        // Fetch updated agent
+        agent = agentMapper.selectById(agentId);
+        return buildDetailResponse(agent, ownerId);
+    }
+
     // ========== Helper Methods ==========
 
     /**

@@ -2,6 +2,7 @@
 /**
  * Stat Gauge Component
  * Dashboard statistics display
+ * Mobile-First Responsive Design
  *
  * Props:
  * - label: string
@@ -40,14 +41,14 @@ const formattedValue = computed(() => {
 </script>
 
 <template>
-  <div class="border border-pulse-border bg-pulse-card p-3">
-    <div class="flex items-center justify-between mb-2">
-      <span class="text-pulse-muted text-xs">{{ label }}</span>
-      <span class="text-lg font-bold" :class="colorConfig.text">
+  <div class="border border-pulse-border bg-pulse-card p-2 sm:p-3">
+    <div class="flex items-center justify-between mb-1 sm:mb-2">
+      <span class="text-pulse-muted text-[10px] sm:text-xs">{{ label }}</span>
+      <span class="text-base sm:text-lg font-bold" :class="colorConfig.text">
         {{ formattedValue }}
       </span>
     </div>
-    <div class="h-1 bg-pulse-bg">
+    <div class="h-0.5 sm:h-1 bg-pulse-bg">
       <div
         class="h-full transition-all"
         :class="colorConfig.bg"

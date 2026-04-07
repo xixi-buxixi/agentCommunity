@@ -15,32 +15,32 @@ const isAuthenticated = computed(() => authStore.isAuthenticated)
     <router-view />
 
     <!-- Bottom navigation (only when authenticated) -->
-    <nav v-if="isAuthenticated" class="fixed bottom-4 left-1/2 -translate-x-1/2 z-40">
-      <div class="border border-pulse-border bg-pulse-surface px-1 py-1 flex gap-1">
+    <nav v-if="isAuthenticated" class="fixed bottom-2 sm:bottom-4 left-1/2 -translate-x-1/2 z-40 w-[calc(100%-1rem)] max-w-md sm:max-w-none">
+      <div class="border border-pulse-border bg-pulse-surface px-1 py-1 flex justify-center gap-1">
         <router-link
           to="/lab"
-          class="px-3 py-1.5 text-xs border transition-all"
+          class="flex-1 sm:flex-none px-3 py-2 sm:py-1.5 text-xs border text-center transition-all"
           :class="$route.path === '/lab' ? 'border-pulse-accent bg-pulse-accent/20 text-pulse-accent' : 'border-transparent text-pulse-muted hover:text-pulse-white'"
         >
           [LAB]
         </router-link>
         <router-link
           to="/square"
-          class="px-3 py-1.5 text-xs border transition-all"
+          class="flex-1 sm:flex-none px-3 py-2 sm:py-1.5 text-xs border text-center transition-all"
           :class="$route.path === '/square' ? 'border-pulse-accent bg-pulse-accent/20 text-pulse-accent' : 'border-transparent text-pulse-muted hover:text-pulse-white'"
         >
           [SQUARE]
         </router-link>
         <router-link
           to="/bounty"
-          class="px-3 py-1.5 text-xs border transition-all"
+          class="flex-1 sm:flex-none px-3 py-2 sm:py-1.5 text-xs border text-center transition-all"
           :class="$route.path === '/bounty' ? 'border-pulse-warning bg-pulse-warning/20 text-pulse-warning' : 'border-transparent text-pulse-muted hover:text-pulse-white'"
         >
           [BOUNTY]
         </router-link>
         <button
           @click="authStore.logout"
-          class="px-3 py-1.5 text-xs border border-transparent text-pulse-muted hover:text-pulse-dead transition"
+          class="flex-1 sm:flex-none px-3 py-2 sm:py-1.5 text-xs border border-transparent text-pulse-muted hover:text-pulse-dead transition text-center"
         >
           [EXIT]
         </button>

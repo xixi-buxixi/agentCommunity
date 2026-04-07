@@ -141,4 +141,16 @@ public class AgentController {
         int count = agentService.getAgentActionCount(principal.getUserId(), agentId);
         return ApiResponse.success(count);
     }
+
+    /**
+     * Reset Agent Tokens (clear used_tokens, keep threshold unchanged)
+     */
+    @Operation(summary = "Reset agent tokens to zero", security = @SecurityRequirement(name = "Bearer"))
+    @PostMapping("/{agent_id}/reset-tokens")
+    public ApiResponse<AgentDetailResponse> resetTokens(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @PathVariable("agent_id") Long agentId) {
+        AgentDetailResponse response = agentService.resetTokens(principal.getUserId(), agentId);
+        return ApiResponse.success("Token已重置", response);
+    }
 }

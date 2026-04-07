@@ -3,6 +3,7 @@
  * Ranking Panel Component
  * Displays top 10 posts by likes or comments
  * Industrial dashboard style with hard edges
+ * Mobile-First Responsive Design
  */
 import { ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
@@ -72,18 +73,18 @@ const getRankBadgeClass = (rank) => {
 <template>
   <div class="border border-pulse-border bg-pulse-card">
     <!-- Header -->
-    <div class="border-b border-pulse-border px-3 py-2 flex items-center justify-between">
-      <div class="flex items-center gap-2">
-        <span class="text-pulse-accent text-xs">// RANKING_MONITOR</span>
+    <div class="border-b border-pulse-border px-2 sm:px-3 py-2 flex items-center justify-between">
+      <div class="flex items-center gap-1 sm:gap-2">
+        <span class="text-pulse-accent text-[10px] sm:text-xs">// RANKING_MONITOR</span>
       </div>
-      <span class="text-pulse-muted text-xs">TOP_10</span>
+      <span class="text-pulse-muted text-[10px] sm:text-xs">TOP_10</span>
     </div>
 
     <!-- Tabs -->
     <div class="flex border-b border-pulse-border">
       <button
         @click="activeTab = 'like'"
-        class="flex-1 px-3 py-2 text-xs border-r border-pulse-border transition"
+        class="flex-1 px-2 sm:px-3 py-2 text-[10px] sm:text-xs border-r border-pulse-border transition min-h-[44px]"
         :class="activeTab === 'like'
           ? 'bg-pulse-dead/10 text-pulse-dead border-b-2 border-b-pulse-dead'
           : 'text-pulse-muted hover:text-pulse-white'"
@@ -92,7 +93,7 @@ const getRankBadgeClass = (rank) => {
       </button>
       <button
         @click="activeTab = 'comment'"
-        class="flex-1 px-3 py-2 text-xs transition"
+        class="flex-1 px-2 sm:px-3 py-2 text-[10px] sm:text-xs transition min-h-[44px]"
         :class="activeTab === 'comment'
           ? 'bg-pulse-accent/10 text-pulse-accent border-b-2 border-b-pulse-accent'
           : 'text-pulse-muted hover:text-pulse-white'"
@@ -102,19 +103,19 @@ const getRankBadgeClass = (rank) => {
     </div>
 
     <!-- Loading -->
-    <div v-if="loading" class="p-4 text-center">
-      <span class="text-pulse-muted text-xs">SCANNING...</span>
+    <div v-if="loading" class="p-3 sm:p-4 text-center">
+      <span class="text-pulse-muted text-[10px] sm:text-xs">SCANNING...</span>
     </div>
 
     <!-- Error -->
-    <div v-else-if="error" class="p-3 bg-pulse-dead/5 border-b border-pulse-border">
-      <span class="text-pulse-dead text-xs">> ERROR: {{ error }}</span>
-      <button @click="loadRanking" class="text-pulse-dead text-xs ml-2 hover:underline">[RETRY]</button>
+    <div v-else-if="error" class="p-2 sm:p-3 bg-pulse-dead/5 border-b border-pulse-border">
+      <span class="text-pulse-dead text-[10px] sm:text-xs break-words">> ERROR: {{ error }}</span>
+      <button @click="loadRanking" class="text-pulse-dead text-[10px] sm:text-xs ml-2 hover:underline">[RETRY]</button>
     </div>
 
     <!-- Empty -->
-    <div v-else-if="rankings.length === 0" class="p-4 text-center">
-      <span class="text-pulse-muted text-xs">NO_DATA_DETECTED</span>
+    <div v-else-if="rankings.length === 0" class="p-3 sm:p-4 text-center">
+      <span class="text-pulse-muted text-[10px] sm:text-xs">NO_DATA_DETECTED</span>
     </div>
 
     <!-- Ranking List -->
@@ -123,11 +124,11 @@ const getRankBadgeClass = (rank) => {
         v-for="(post, index) in rankings"
         :key="post.post_id"
         @click="viewPost(post.post_id)"
-        class="px-3 py-2 hover:bg-pulse-surface/50 cursor-pointer transition flex items-start gap-2"
+        class="px-2 sm:px-3 py-2 hover:bg-pulse-surface/50 cursor-pointer transition flex items-start gap-2"
       >
         <!-- Rank Badge -->
         <div
-          class="w-5 h-5 border flex items-center justify-center text-xs shrink-0 mt-0.5"
+          class="w-4 h-4 sm:w-5 sm:h-5 border flex items-center justify-center text-[10px] sm:text-xs shrink-0 mt-0.5"
           :class="getRankBadgeClass(index + 1)"
         >
           {{ index + 1 }}
@@ -135,10 +136,10 @@ const getRankBadgeClass = (rank) => {
 
         <!-- Content -->
         <div class="flex-1 min-w-0">
-          <p class="text-pulse-text text-xs truncate leading-relaxed">
+          <p class="text-pulse-text text-[10px] sm:text-xs truncate leading-relaxed">
             {{ getAuthorName(post) }}
           </p>
-          <div class="flex gap-3 mt-1 text-pulse-muted text-xs">
+          <div class="flex gap-2 sm:gap-3 mt-1 text-pulse-muted text-[10px] sm:text-xs">
             <span class="flex items-center gap-1">
               <span class="text-pulse-dead">♥</span> {{ post.like_count || 0 }}
             </span>
@@ -151,9 +152,9 @@ const getRankBadgeClass = (rank) => {
     </div>
 
     <!-- Footer -->
-    <div class="border-t border-pulse-border px-3 py-2 flex items-center justify-between">
-      <span class="text-pulse-muted text-xs">TOTAL: {{ rankings.length }}</span>
-      <span class="text-pulse-muted text-xs">UPDATED: REALTIME</span>
+    <div class="border-t border-pulse-border px-2 sm:px-3 py-2 flex items-center justify-between">
+      <span class="text-pulse-muted text-[10px] sm:text-xs">TOTAL: {{ rankings.length }}</span>
+      <span class="text-pulse-muted text-[10px] sm:text-xs hidden sm:inline">UPDATED: REALTIME</span>
     </div>
   </div>
 </template>

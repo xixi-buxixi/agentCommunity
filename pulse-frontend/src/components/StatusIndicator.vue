@@ -2,6 +2,7 @@
 /**
  * Status Indicator Component
  * Breathing status light
+ * Mobile-First Responsive Design
  *
  * Props:
  * - status: 1 (ALIVE) | 0 (DEAD) | 2 (ERROR)
@@ -39,14 +40,14 @@ const statusConfig = computed(() => ({
 </script>
 
 <template>
-  <div class="flex items-center gap-2">
+  <div class="flex items-center gap-1.5 sm:gap-2">
     <div
-      class="rounded-full"
+      class="rounded-full shrink-0"
       :class="[sizeClass, statusConfig.class]"
     ></div>
     <span
       v-if="showLabel"
-      class="text-xs"
+      class="text-[10px] sm:text-xs"
       :class="statusConfig.text"
     >{{ statusConfig.label }}</span>
   </div>

@@ -2,6 +2,7 @@
 /**
  * Terminal Input Component
  * Terminal-style input field
+ * Mobile-First Responsive Design
  *
  * Props:
  * - modelValue: string
@@ -27,7 +28,7 @@ const emit = defineEmits(['update:modelValue'])
       :value="modelValue"
       :placeholder="placeholder"
       @input="emit('update:modelValue', $event.target.value)"
-      class="w-full bg-transparent px-3 py-2 text-sm text-pulse-white placeholder-pulse-muted outline-none transition"
+      class="w-full bg-transparent px-2 sm:px-3 py-2 text-xs sm:text-sm text-pulse-white placeholder-pulse-muted outline-none transition min-h-[44px]"
     />
   </div>
 </template>

@@ -44,6 +44,21 @@ public enum ErrorCode {
     FILE_SIZE_EXCEEDED(50001, "文件大小超限"),
     FILE_TYPE_INVALID(50002, "文件类型不支持"),
 
+    // ========== Bounty Module (60000-60999) ==========
+    BOUNTY_NOT_FOUND(60001, "悬赏不存在"),
+    BOUNTY_NOT_ACCEPTABLE(60002, "悬赏状态不允许接取"),
+    BOUNTY_ALREADY_ACCEPTED(60003, "已接取该悬赏"),
+    BOUNTY_NOT_ACCEPTED(60004, "尚未接取该悬赏"),
+    BOUNTY_ALREADY_SUBMITTED(60005, "已提交答案"),
+    BOUNTY_OWNER_REQUIRED(60006, "只有原主人有权操作"),
+    BOUNTY_TASK_EXPIRED(60007, "悬赏任务已过有效期"),
+    SUBMISSION_NOT_FOUND(60008, "提交不存在"),
+
+    // ========== Points Module (70000-70999) ==========
+    INSUFFICIENT_VITALITY(70001, "积分不足"),
+    INSUFFICIENT_REWARD(70002, "悬赏积分过低"),
+    REWARD_LIMIT_EXCEEDED(70003, "悬赏积分超限"),
+
     // ========== System Errors (99999) ==========
     INVALID_PARAMETER(99900, "参数错误"),
     SYSTEM_ERROR(99999, "系统内部错误"),

@@ -19,6 +19,10 @@
 
 - [Dislike & View Count Feature](dislike_view_feature_design.md) - 踩功能与浏览量功能设计 (2026-04-02)
 
+## Development Progress (Phase 2)
+
+- [Agent Behavior Optimization](../../done/2026-04-07-agent-behavior-optimization.md) - LIKE/DISLIKE动作实现，浏览量逻辑验证 (2026-04-07)
+
 ## Cross-Agent Dependencies
 
 - [Cross-Agent Dependency Status](project_cross_agent_dependencies.md) - Integration points, risk assessment, responsibility matrix
@@ -56,4 +60,4 @@
 **Next Action: Start Phase 2 - Integration Testing**
 
 ---
-*Last updated: 2026-04-02 14:15*
+*Last updated: 2026-04-07 14:30*

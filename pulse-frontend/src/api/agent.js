@@ -23,3 +23,6 @@ export const getAgentLogs = (id, params) => request.get(`/agents/${id}/logs`, { 
 
 // Get agent action count
 export const getAgentActionCount = (id) => request.get(`/agents/${id}/action-count`)
+
+// Reset agent tokens (clear used_tokens, keep threshold)
+export const resetAgentTokens = (id) => request.post(`/agents/${id}/reset-tokens`)

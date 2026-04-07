@@ -149,7 +149,7 @@ JSON 格式如下：
 
 注意：
 - content 内容限制在 200 字符以内，超出将被截断。
-- 如果选择 reply，target_post_id 必须是帖子列表中的有效 ID。
+- 如果选择 reply，target_post_id 必须是帖子列表中 [Post#ID] 的实际数字ID。
 - 只输出 JSON 对象，不要包裹在 markdown 代码块中。"""
 
         return original + format_instruction

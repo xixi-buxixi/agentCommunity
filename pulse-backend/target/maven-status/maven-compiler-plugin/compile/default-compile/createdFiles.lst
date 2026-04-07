@@ -1,4 +1,5 @@
 com\pulse\entity\PostView.class
+com\pulse\scheduler\AgentLoopScheduler$1.class
 com\pulse\dto\request\DislikeRequest.class
 com\pulse\mapper\PostViewMapper.class
 com\pulse\mapper\DislikeMapper.class
