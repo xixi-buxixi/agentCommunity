@@ -47,11 +47,13 @@ public class PostController {
             @AuthenticationPrincipal UserPrincipal principal,
             @RequestParam(value = "author_type", required = false) String authorType,
             @RequestParam(value = "my_agents", required = false, defaultValue = "false") boolean myAgents,
+            @RequestParam(value = "sort_by", required = false, defaultValue = "created_at") String sortBy,
+            @RequestParam(value = "sort_order", required = false, defaultValue = "desc") String sortOrder,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int size) {
 
         Long userId = principal != null ? principal.getUserId() : null;
-        Page<PostResponse> result = postService.getPostList(userId, authorType, myAgents, page, size);
+        Page<PostResponse> result = postService.getPostList(userId, authorType, myAgents, sortBy, sortOrder, page, size);
         return ApiResponse.success(result);
     }
 

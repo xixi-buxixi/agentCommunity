@@ -8,7 +8,7 @@ import java.util.List;
  * Ranking Service Interface
  *
  * Provides ranking/leaderboard functionality for posts.
- * Supports two ranking types: by like count and by comment count.
+ * Supports ranking types: hot, like, and comment.
  * Uses Redis Sorted Set for caching with MySQL fallback.
  */
 public interface RankingService {
@@ -16,7 +16,7 @@ public interface RankingService {
     /**
      * Get ranking posts list
      *
-     * @param type Ranking type: "like" or "comment"
+     * @param type Ranking type: "hot", "like", or "comment"
      * @param limit Number of posts to return, max 10
      * @return List of ranking post responses with author info
      */
@@ -26,7 +26,7 @@ public interface RankingService {
      * Refresh ranking cache for specific type
      * Called by scheduled task
      *
-     * @param type Ranking type: "like" or "comment"
+     * @param type Ranking type: "hot", "like", or "comment"
      */
     void refreshRankingCache(String type);
 

@@ -4,7 +4,7 @@
  * Post feed with human/agent distinction
  * Mobile-First Responsive Design
  */
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { getPostList, createPost, likePost, unlikePost, dislikePost, undislikePost } from '@/api/post'
@@ -27,9 +27,15 @@ const submitting = ref(false)
 // Pagination
 const currentPage = ref(1)
 const totalPosts = ref(0)
+const pageSize = 20
+const totalPages = computed(() => Math.ceil(totalPosts.value / pageSize) || 1)
 
 // Filters
 const filterAuthorType = ref(null)
+
+// Sort
+const sortBy = ref(null)
+const sortOrder = ref('desc')
 
 // Load posts
 const loadPosts = async () => {
@@ -38,10 +44,14 @@ const loadPosts = async () => {
   try {
     const params = {
       page: currentPage.value,
-      size: 20
+      size: pageSize
     }
     if (filterAuthorType.value) {
       params.author_type = filterAuthorType.value
+    }
+    if (sortBy.value) {
+      params.sort_by = sortBy.value
+      params.sort_order = sortOrder.value
     }
     const { data } = await getPostList(params)
     // MyBatis Plus pagination returns 'records', not 'list'
@@ -138,10 +148,32 @@ const setFilter = (type) => {
   loadPosts()
 }
 
-// Load more
-const loadMore = () => {
-  currentPage.value++
+// Change sort
+const setSort = (sort) => {
+  if (sortBy.value === sort) {
+    // Toggle order if same sort field
+    sortOrder.value = sortOrder.value === 'desc' ? 'asc' : 'desc'
+  } else {
+    sortBy.value = sort
+    sortOrder.value = 'desc'
+  }
+  currentPage.value = 1
   loadPosts()
+}
+
+// Pagination controls
+const prevPage = () => {
+  if (currentPage.value > 1) {
+    currentPage.value--
+    loadPosts()
+  }
+}
+
+const nextPage = () => {
+  if (currentPage.value < totalPages.value) {
+    currentPage.value++
+    loadPosts()
+  }
 }
 </script>
 
@@ -196,28 +228,66 @@ const loadMore = () => {
           </div>
         </div>
 
-        <!-- Filters -->
-        <div class="flex gap-2 mb-3 sm:mb-4 overflow-x-auto">
+        <!-- Filters & Sort (Compact) -->
+        <div class="flex items-center gap-1 mb-3 sm:mb-4 overflow-x-auto text-[10px]">
+          <span class="text-pulse-muted shrink-0">FILTER:</span>
           <button
             @click="setFilter(null)"
-            class="px-3 py-2 text-xs border transition whitespace-nowrap min-h-[44px] flex items-center"
+            class="px-2 py-1 border transition whitespace-nowrap"
             :class="filterAuthorType === null ? 'border-pulse-accent bg-pulse-accent/20 text-pulse-accent' : 'border-pulse-border text-pulse-muted hover:text-pulse-white'"
           >
-            [ALL]
+            ALL
           </button>
           <button
             @click="setFilter('HUMAN')"
-            class="px-3 py-2 text-xs border transition whitespace-nowrap min-h-[44px] flex items-center"
+            class="px-2 py-1 border transition whitespace-nowrap"
             :class="filterAuthorType === 'HUMAN' ? 'border-pulse-human bg-pulse-human/20 text-pulse-human' : 'border-pulse-border text-pulse-muted hover:text-pulse-white'"
           >
-            [HUMAN]
+            HUMAN
           </button>
           <button
             @click="setFilter('AGENT')"
-            class="px-3 py-2 text-xs border transition whitespace-nowrap min-h-[44px] flex items-center"
+            class="px-2 py-1 border transition whitespace-nowrap"
             :class="filterAuthorType === 'AGENT' ? 'border-pulse-agent bg-pulse-agent/20 text-pulse-agent' : 'border-pulse-border text-pulse-muted hover:text-pulse-white'"
           >
-            [AGENT]
+            AGENT
+          </button>
+          <span class="text-pulse-border ml-2">|</span>
+          <span class="text-pulse-muted shrink-0 ml-2">SORT:</span>
+          <button
+            @click="setSort(null)"
+            class="px-2 py-1 border transition whitespace-nowrap"
+            :class="sortBy === null ? 'border-pulse-accent bg-pulse-accent/20 text-pulse-accent' : 'border-pulse-border text-pulse-muted hover:text-pulse-white'"
+          >
+            NEW
+          </button>
+          <button
+            @click="setSort('like_count')"
+            class="px-2 py-1 border transition whitespace-nowrap"
+            :class="sortBy === 'like_count' ? 'border-pulse-alive bg-pulse-alive/20 text-pulse-alive' : 'border-pulse-border text-pulse-muted hover:text-pulse-white'"
+          >
+            ❤{{ sortBy === 'like_count' ? (sortOrder === 'desc' ? '↓' : '↑') : '' }}
+          </button>
+          <button
+            @click="setSort('dislike_count')"
+            class="px-2 py-1 border transition whitespace-nowrap"
+            :class="sortBy === 'dislike_count' ? 'border-pulse-dead bg-pulse-dead/20 text-pulse-dead' : 'border-pulse-border text-pulse-muted hover:text-pulse-white'"
+          >
+            ✕{{ sortBy === 'dislike_count' ? (sortOrder === 'desc' ? '↓' : '↑') : '' }}
+          </button>
+          <button
+            @click="setSort('comment_count')"
+            class="px-2 py-1 border transition whitespace-nowrap"
+            :class="sortBy === 'comment_count' ? 'border-pulse-human bg-pulse-human/20 text-pulse-human' : 'border-pulse-border text-pulse-muted hover:text-pulse-white'"
+          >
+            💬{{ sortBy === 'comment_count' ? (sortOrder === 'desc' ? '↓' : '↑') : '' }}
+          </button>
+          <button
+            @click="setSort('view_count')"
+            class="px-2 py-1 border transition whitespace-nowrap"
+            :class="sortBy === 'view_count' ? 'border-pulse-warning bg-pulse-warning/20 text-pulse-warning' : 'border-pulse-border text-pulse-muted hover:text-pulse-white'"
+          >
+            👁{{ sortBy === 'view_count' ? (sortOrder === 'desc' ? '↓' : '↑') : '' }}
           </button>
         </div>
 
@@ -249,14 +319,24 @@ const loadMore = () => {
             @view="viewPost"
           />
 
-          <!-- Load More -->
-          <div v-if="posts.length < totalPosts" class="text-center py-4">
+          <!-- Pagination Controls (Compact) -->
+          <div v-if="totalPages > 1" class="flex justify-center items-center gap-2 py-2 border border-pulse-border bg-pulse-card">
             <button
-              @click="loadMore"
-              :disabled="loading"
-              class="border border-pulse-border text-pulse-muted px-4 py-2 text-xs hover:text-pulse-white transition disabled:opacity-50 min-h-[44px]"
+              @click="prevPage"
+              :disabled="currentPage === 1 || loading"
+              class="px-3 py-1 text-[10px] border border-pulse-border text-pulse-muted hover:text-pulse-white transition disabled:opacity-30"
             >
-              [LOAD_MORE]
+              ◀
+            </button>
+            <span class="text-pulse-accent text-[10px] font-mono">
+              {{ currentPage }}/{{ totalPages }}
+            </span>
+            <button
+              @click="nextPage"
+              :disabled="currentPage === totalPages || loading"
+              class="px-3 py-1 text-[10px] border border-pulse-border text-pulse-muted hover:text-pulse-white transition disabled:opacity-30"
+            >
+              ▶
             </button>
           </div>
         </div>
@@ -264,7 +344,7 @@ const loadMore = () => {
         <!-- Stats Footer -->
         <div class="border border-pulse-border bg-pulse-card p-3 mt-3 sm:mt-4 flex items-center justify-between text-[10px] sm:text-xs">
           <span class="text-pulse-muted">TOTAL_POSTS: {{ totalPosts }}</span>
-          <span class="text-pulse-muted">PAGE: {{ currentPage }}</span>
+          <span class="text-pulse-muted">CURRENT_PAGE: {{ currentPage }}/{{ totalPages }}</span>
         </div>
 
       </div>

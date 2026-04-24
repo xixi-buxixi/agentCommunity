@@ -6,7 +6,22 @@
       "Bash(./mvnw compile:*)",
       "Bash(mvn spring-boot:run)",
       "Bash(npm run:*)",
-      "Bash(./venv/Scripts/python.exe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000)"
+      "Bash(./venv/Scripts/python.exe -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000)",
+      "Bash(mv md/需求文档/* docs/requirements/)",
+      "Bash(mv md/接口文档/* docs/api/)",
+      "Bash(mv md/技术栈/* docs/guides/)",
+      "Bash(mv md/页面风格/* docs/design/)",
+      "Bash(mv md/prompt/* docs/prompt/)",
+      "Bash(mv pulse-summary/guides/startup_guide.md docs/guides/)",
+      "Bash(mv pulse-summary/guides/phase2_tasks.md docs/guides/)",
+      "Bash(mv pulse-summary/reports/decisions/* docs/decisions/)",
+      "Bash(mv pulse-summary/summary/phase1_final_summary.md docs/history/phase1/)",
+      "Bash(mv pulse-summary/OPTIMIZATION_REPORT_2026-04-11.md docs/reports/optimization/)",
+      "Bash(mv done/* docs/history/done/)",
+      "Bash(mv problem/* docs/problems/)",
+      "Bash(mv docs/blocked docs/decisions/)",
+      "Bash(mv docs/decisions docs/decisions_old)",
+      "Bash(mv docs/done docs/history/done_old)"
     ]
   }
 }

@@ -153,4 +153,16 @@ public class AgentController {
         AgentDetailResponse response = agentService.resetTokens(principal.getUserId(), agentId);
         return ApiResponse.success("Token已重置", response);
     }
+
+    /**
+     * Get All Agent Logs (activity logs for all user's agents)
+     */
+    @Operation(summary = "Get all agent activity logs", security = @SecurityRequirement(name = "Bearer"))
+    @GetMapping("/logs")
+    public ApiResponse<List<AgentLogResponse>> getAllAgentLogs(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @RequestParam(defaultValue = "20") int limit) {
+        List<AgentLogResponse> logs = agentService.getAllAgentLogs(principal.getUserId(), limit);
+        return ApiResponse.success(logs);
+    }
 }

@@ -49,32 +49,33 @@ public class PointsServiceImpl implements PointsService {
     @Override
     @Transactional
     public void deductPoints(Long userId, BigDecimal amount, Long relatedId, String description) {
+        // Get current balance for ledger record (before atomic update)
         User user = userMapper.selectById(userId);
         if (user == null) {
             throw new BusinessException(ErrorCode.UNAUTHORIZED);
         }
 
-        // Initialize points if null
+        BigDecimal totalBefore = user.getPoints() != null ? user.getPoints() : BigDecimal.ZERO;
+        BigDecimal pendingBefore = user.getPendingBounty() != null ? user.getPendingBounty() : BigDecimal.ZERO;
+        BigDecimal availableBefore = totalBefore.subtract(pendingBefore);
+
+        // Initialize points if null (first time user)
         if (user.getPoints() == null) {
             user.setPoints(new BigDecimal("100.00"));
             user.setPendingBounty(BigDecimal.ZERO);
+            userMapper.updateById(user);
+            totalBefore = user.getPoints();
+            pendingBefore = BigDecimal.ZERO;
+            availableBefore = totalBefore;
         }
 
-        BigDecimal balanceBefore = user.getPoints();
-        BigDecimal pendingBounty = user.getPendingBounty() != null ? user.getPendingBounty() : BigDecimal.ZERO;
-        BigDecimal available = balanceBefore.subtract(pendingBounty);
-
-        if (available.compareTo(amount) < 0) {
+        // Atomic freeze - concurrency safe
+        int rowsAffected = userMapper.deductAndFreezePointsAtomic(userId, amount);
+        if (rowsAffected == 0) {
             throw new BusinessException(ErrorCode.INSUFFICIENT_VITALITY);
         }
 
-        // Deduct and freeze
-        BigDecimal newPoints = balanceBefore.subtract(amount);
-        BigDecimal newPending = pendingBounty.add(amount);
-
-        user.setPoints(newPoints);
-        user.setPendingBounty(newPending);
-        userMapper.updateById(user);
+        BigDecimal availableAfter = availableBefore.subtract(amount);
 
         // Create ledger entry
         SysLedger ledger = new SysLedger();
@@ -84,34 +85,42 @@ public class PointsServiceImpl implements PointsService {
         ledger.setRelatedId(relatedId);
         ledger.setRelatedType("BOUNTY");
         ledger.setDescription(description);
-        ledger.setBalanceBefore(balanceBefore);
-        ledger.setBalanceAfter(newPoints);
+        ledger.setBalanceBefore(availableBefore);
+        ledger.setBalanceAfter(availableAfter);
         ledger.setCreatedAt(LocalDateTime.now());
 
         sysLedgerMapper.insert(ledger);
 
-        log.info("Points deducted: userId={}, amount={}, newBalance={}", userId, amount, newPoints);
+        log.info("Points frozen atomically: userId={}, amount={}, availableAfter={}", userId, amount, availableAfter);
     }
 
     @Override
     @Transactional
     public void addPoints(Long userId, BigDecimal amount, Long relatedId, String description, String type) {
+        // Get current balance for ledger record
         User user = userMapper.selectById(userId);
         if (user == null) {
             throw new BusinessException(ErrorCode.UNAUTHORIZED);
         }
 
-        // Initialize points if null
+        BigDecimal totalBefore = user.getPoints() != null ? user.getPoints() : BigDecimal.ZERO;
+        BigDecimal pendingBefore = user.getPendingBounty() != null ? user.getPendingBounty() : BigDecimal.ZERO;
+        BigDecimal availableBefore = totalBefore.subtract(pendingBefore);
+
+        // Initialize points if null (first time user)
         if (user.getPoints() == null) {
             user.setPoints(new BigDecimal("100.00"));
             user.setPendingBounty(BigDecimal.ZERO);
+            userMapper.updateById(user);
+            totalBefore = user.getPoints();
+            pendingBefore = BigDecimal.ZERO;
+            availableBefore = totalBefore;
         }
 
-        BigDecimal balanceBefore = user.getPoints();
-        BigDecimal newPoints = balanceBefore.add(amount);
+        // Atomic addition - concurrency safe
+        userMapper.addPointsAtomic(userId, amount);
 
-        user.setPoints(newPoints);
-        userMapper.updateById(user);
+        BigDecimal availableAfter = availableBefore.add(amount);
 
         // Create ledger entry
         SysLedger ledger = new SysLedger();
@@ -121,58 +130,63 @@ public class PointsServiceImpl implements PointsService {
         ledger.setRelatedId(relatedId);
         ledger.setRelatedType("BOUNTY");
         ledger.setDescription(description);
-        ledger.setBalanceBefore(balanceBefore);
-        ledger.setBalanceAfter(newPoints);
+        ledger.setBalanceBefore(availableBefore);
+        ledger.setBalanceAfter(availableAfter);
         ledger.setCreatedAt(LocalDateTime.now());
 
         sysLedgerMapper.insert(ledger);
 
-        log.info("Points added: userId={}, amount={}, newBalance={}", userId, amount, newPoints);
+        log.info("Points added atomically: userId={}, amount={}, availableAfter={}", userId, amount, availableAfter);
     }
 
     @Override
     @Transactional
     public void refundPoints(Long userId, BigDecimal amount, Long relatedId, String description) {
+        // Get current balance for ledger record
         User user = userMapper.selectById(userId);
         if (user == null) {
             throw new BusinessException(ErrorCode.UNAUTHORIZED);
         }
 
-        // Initialize points if null
+        BigDecimal totalBefore = user.getPoints() != null ? user.getPoints() : BigDecimal.ZERO;
+        BigDecimal pendingBefore = user.getPendingBounty() != null ? user.getPendingBounty() : BigDecimal.ZERO;
+        BigDecimal availableBefore = totalBefore.subtract(pendingBefore);
+
+        // Initialize points if null (first time user)
         if (user.getPoints() == null) {
             user.setPoints(new BigDecimal("100.00"));
             user.setPendingBounty(BigDecimal.ZERO);
+            userMapper.updateById(user);
+            totalBefore = user.getPoints();
+            pendingBefore = BigDecimal.ZERO;
+            availableBefore = totalBefore;
         }
 
-        BigDecimal balanceBefore = user.getPoints();
-        BigDecimal pendingBounty = user.getPendingBounty() != null ? user.getPendingBounty() : BigDecimal.ZERO;
-
-        // Refund and release frozen points
-        BigDecimal newPoints = balanceBefore.add(amount);
-        BigDecimal newPending = pendingBounty.subtract(amount);
-        if (newPending.compareTo(BigDecimal.ZERO) < 0) {
-            newPending = BigDecimal.ZERO;
+        // Atomic release - concurrency safe
+        int rowsAffected = userMapper.refundPointsAtomic(userId, amount);
+        if (rowsAffected == 0) {
+            log.warn("Release failed: userId={}, amount={} - insufficient pending bounty", userId, amount);
+            // Still proceed with ledger entry but don't change balance
+            amount = BigDecimal.ZERO;
         }
 
-        user.setPoints(newPoints);
-        user.setPendingBounty(newPending);
-        userMapper.updateById(user);
+        BigDecimal availableAfter = availableBefore.add(amount);
 
         // Create ledger entry
         SysLedger ledger = new SysLedger();
         ledger.setUserId(userId);
         ledger.setAmount(amount);
-        ledger.setType(LedgerType.REFUND.getCode());
+        ledger.setType(LedgerType.BOUNTY_RELEASE.getCode());
         ledger.setRelatedId(relatedId);
         ledger.setRelatedType("BOUNTY");
         ledger.setDescription(description);
-        ledger.setBalanceBefore(balanceBefore);
-        ledger.setBalanceAfter(newPoints);
+        ledger.setBalanceBefore(availableBefore);
+        ledger.setBalanceAfter(availableAfter);
         ledger.setCreatedAt(LocalDateTime.now());
 
         sysLedgerMapper.insert(ledger);
 
-        log.info("Points refunded: userId={}, amount={}, newBalance={}", userId, amount, newPoints);
+        log.info("Frozen points released atomically: userId={}, amount={}, availableAfter={}", userId, amount, availableAfter);
     }
 
     @Override

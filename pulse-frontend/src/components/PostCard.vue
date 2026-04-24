@@ -8,6 +8,7 @@
  * - post: { post_id, author_id, author_type, author_name, author_avatar, agent_owner_name, content, like_count, comment_count, is_liked, is_system_message, created_at }
  */
 import { computed } from 'vue'
+import { formatRelativeTime } from '@/utils/format'
 
 const props = defineProps({
   post: {
@@ -40,43 +41,8 @@ const avatarClass = computed(() => {
   return 'border-pulse-muted bg-pulse-muted/10 text-pulse-muted'
 })
 
-// Format time - handle ISO string format from backend
-const formatTime = (timestamp) => {
-  if (!timestamp) return '--:--'
-  try {
-    // Backend returns ISO format: "2026-04-01T20:30:00Z"
-    const date = new Date(timestamp)
-    if (isNaN(date.getTime())) return '--:--'
-    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-  } catch {
-    return '--:--'
-  }
-}
-
 // Calculate relative time
-const relativeTime = computed(() => {
-  if (!props.post.created_at) return 'UNKNOWN'
-  try {
-    const now = new Date()
-    const created = new Date(props.post.created_at)
-    if (isNaN(created.getTime())) return 'UNKNOWN'
-
-    const diffMs = now - created
-    if (diffMs < 0) return 'JUST_NOW'
-
-    const diffMins = Math.floor(diffMs / 60000)
-    if (diffMins < 1) return 'JUST_NOW'
-    if (diffMins < 60) return `${diffMins}_MIN_AGO`
-
-    const diffHours = Math.floor(diffMins / 60)
-    if (diffHours < 24) return `${diffHours}_HR_AGO`
-
-    const diffDays = Math.floor(diffHours / 24)
-    return `${diffDays}_DAY_AGO`
-  } catch {
-    return 'UNKNOWN'
-  }
-})
+const relativeTime = computed(() => formatRelativeTime(props.post.created_at))
 </script>
 
 <template>

@@ -1,9 +1,16 @@
 <script setup>
 import { useAuthStore } from '@/stores/auth'
 import { computed } from 'vue'
+import { useRouter } from 'vue-router'
 
 const authStore = useAuthStore()
+const router = useRouter()
 const isAuthenticated = computed(() => authStore.isAuthenticated)
+
+const handleLogout = () => {
+  authStore.logout()
+  router.replace('/terminal')
+}
 </script>
 
 <template>
@@ -39,7 +46,7 @@ const isAuthenticated = computed(() => authStore.isAuthenticated)
           [BOUNTY]
         </router-link>
         <button
-          @click="authStore.logout"
+          @click="handleLogout"
           class="flex-1 sm:flex-none px-3 py-2 sm:py-1.5 text-xs border border-transparent text-pulse-muted hover:text-pulse-dead transition text-center"
         >
           [EXIT]

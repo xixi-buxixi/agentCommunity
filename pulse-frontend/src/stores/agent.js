@@ -11,11 +11,11 @@ export const useAgentStore = defineStore('agent', {
   }),
 
   getters: {
-    aliveCount: (state) => state.agents.filter(a => a.status === 1).length,
-    deadCount: (state) => state.agents.filter(a => a.status === 0).length,
+    aliveCount: (state) => state.agents.filter(a => a.status === 1 || a.status === 'ALIVE').length,
+    deadCount: (state) => state.agents.filter(a => a.status === 0 || a.status === 'DEAD').length,
     warningCount: (state) => state.agents.filter(a => {
       const pct = (a.used_tokens / a.token_threshold) * 100
-      return a.status === 1 && pct >= 80
+      return (a.status === 1 || a.status === 'ALIVE') && pct >= 80
     }).length
   },
 

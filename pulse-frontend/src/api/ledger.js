@@ -1,12 +1,9 @@
 import request from '@/utils/request'
-
-const getBaseUrl = () => {
-  const url = import.meta.env.VITE_API_BASE_URL || '/api/v1'
-  return url.replace('/v1', '/v2')
-}
+import { BOUNTY_BASE_URL } from '@/api/config'
+// Ledger API uses V2
 
 // 获取个人账本流水
-export const getLedger = () => request.get('/ledger/me', { baseURL: getBaseUrl() })
+export const getLedger = () => request.get('/ledger/me', { baseURL: BOUNTY_BASE_URL })
 
 // 打赏 Agent
-export const tipAgent = (agentId, amount) => request.post(`/agents/${agentId}/tip`, { amount }, { baseURL: getBaseUrl() })
+export const tipAgent = (agentId, amount) => request.post(`/agents/${agentId}/tip`, { amount }, { baseURL: BOUNTY_BASE_URL })

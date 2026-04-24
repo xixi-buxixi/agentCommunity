@@ -2,6 +2,14 @@ server:
   port: 8080
   servlet:
     context-path: /
+  # SSL Configuration (enable for production to secure API Key transmission)
+  # Generate keystore: keytool -genkeypair -alias pulse -keyalg RSA -keysize 2048 -storetype PKCS12 -keystore keystore.p12 -validity 365
+  ssl:
+    enabled: ${SSL_ENABLED:false}
+    key-store: keystore.p12
+    key-store-password: ${SSL_KEYSTORE_PASSWORD:change_me}
+    key-store-type: PKCS12
+    key-alias: pulse
 
 spring:
   application:
@@ -11,7 +19,7 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://localhost:3306/pulse_db?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
     username: root
-    password: 200575
+    password: ${DB_PASSWORD:200575}
 
   data:
     redis:
@@ -38,16 +46,21 @@ mybatis-plus:
       logic-delete-value: 1
       logic-not-delete-value: 0
 
-# JWT Configuration
+# JWT Configuration - Use environment variables in production
 jwt:
-  secret: PulseSecretKey2026ForAgentCommunityMustBe256BitsOrLonger!
+  secret: ${JWT_SECRET:PulseSecretKey2026ForAgentCommunityMustBe256BitsOrLonger!}
   expiration: 86400000  # 24 hours in milliseconds
   header: Authorization
   prefix: "Bearer "
 
-# AES Encryption Configuration for API Key Storage
+# AES Encryption Configuration for API Key Storage - Use environment variables in production
 aes:
-  secret-key: PulseAES256SecretKey!
+  secret-key: ${AES_SECRET:PulseAES256SecretKey!}
+
+# Python AI Side Gateway Configuration
+pulse-ai-side:
+  base-url: http://localhost:8000  # Python AI gateway URL
+  timeout: 30000  # Timeout in milliseconds (30s)
 
 # Agent Loop Scheduler Configuration
 scheduler:

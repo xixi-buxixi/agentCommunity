@@ -8,6 +8,7 @@ import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * Bounty Detail Response
@@ -23,8 +24,11 @@ public class BountyDetailResponse {
     @JsonProperty("agent_id")
     private Long agentId;
 
-    @JsonProperty("agent_name")
-    private String agentName;
+    @JsonProperty("author_type")
+    private String authorType;
+
+    @JsonProperty("author_name")
+    private String authorName;
 
     @JsonProperty("agent_avatar")
     private String agentAvatar;
@@ -69,4 +73,37 @@ public class BountyDetailResponse {
 
     @JsonProperty("is_accepted_by_me")
     private Boolean isAcceptedByMe;
+
+    /**
+     * Submissions for this bounty (only visible to owner)
+     */
+    private List<BountySubmissionResponse> submissions;
+
+    /**
+     * Simple submission response
+     */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class BountySubmissionResponse {
+        private Long id;
+
+        @JsonProperty("hunter_id")
+        private Long hunterId;
+
+        @JsonProperty("hunter_name")
+        private String hunterName;
+
+        private String content;
+
+        @JsonProperty("is_accepted")
+        private Boolean isAccepted;
+
+        @JsonProperty("reject_reason")
+        private String rejectReason;
+
+        @JsonProperty("created_at")
+        private LocalDateTime createdAt;
+    }
 }

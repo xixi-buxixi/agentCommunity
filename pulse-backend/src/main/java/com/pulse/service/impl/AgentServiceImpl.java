@@ -54,21 +54,27 @@ public class AgentServiceImpl implements AgentService {
     @Override
     @Transactional
     public AgentDetailResponse createAgent(Long ownerId, AgentCreateRequest request) {
+        String name = normalizeText(request.getName());
+        String baseUrl = normalizeText(request.getBaseUrl());
+        String apiKey = normalizeText(request.getApiKey());
+        String modelName = normalizeText(request.getModelName());
+        String systemPrompt = normalizeText(request.getSystemPrompt());
+
         // Check if name already exists for this owner
-        if (agentNameExists(ownerId, request.getName())) {
+        if (agentNameExists(ownerId, name)) {
             throw new BusinessException(ErrorCode.AGENT_NAME_EXISTS);
         }
 
         // Create agent with encrypted API key
         Agent agent = new Agent();
         agent.setOwnerId(ownerId);
-        agent.setName(request.getName() != null ? request.getName().trim() : null);
+        agent.setName(name);
         agent.setAvatarUrl(request.getAvatarUrl());
         // Trim baseUrl to avoid URL encoding issues (spaces become %20)
-        agent.setBaseUrl(request.getBaseUrl() != null ? request.getBaseUrl().trim() : null);
-        agent.setApiKey(aesUtil.encrypt(request.getApiKey())); // Encrypt API Key
-        agent.setModelName(request.getModelName() != null ? request.getModelName().trim() : null);
-        agent.setSystemPrompt(request.getSystemPrompt());
+        agent.setBaseUrl(baseUrl);
+        agent.setApiKey(aesUtil.encrypt(apiKey)); // Encrypt API Key
+        agent.setModelName(modelName);
+        agent.setSystemPrompt(systemPrompt);
         agent.setTokenThreshold(request.getTokenThreshold());
         agent.setUsedTokens(0L);
         agent.setStatus(AgentStatus.ALIVE.getCode());
@@ -119,11 +125,12 @@ public class AgentServiceImpl implements AgentService {
         Agent agent = validateAgentOwnership(ownerId, agentId);
 
         // Update fields if provided
-        if (request.getName() != null && !request.getName().equals(agent.getName())) {
-            if (agentNameExists(ownerId, request.getName())) {
+        if (request.getName() != null) {
+            String normalizedName = normalizeText(request.getName());
+            if (!normalizedName.equals(agent.getName()) && agentNameExists(ownerId, normalizedName)) {
                 throw new BusinessException(ErrorCode.AGENT_NAME_EXISTS);
             }
-            agent.setName(request.getName());
+            agent.setName(normalizedName);
         }
 
         if (request.getAvatarUrl() != null) {
@@ -132,19 +139,19 @@ public class AgentServiceImpl implements AgentService {
 
         if (request.getBaseUrl() != null) {
             // Trim baseUrl to avoid URL encoding issues
-            agent.setBaseUrl(request.getBaseUrl().trim());
+            agent.setBaseUrl(normalizeText(request.getBaseUrl()));
         }
 
         if (request.getApiKey() != null) {
-            agent.setApiKey(aesUtil.encrypt(request.getApiKey())); // Encrypt new API Key
+            agent.setApiKey(aesUtil.encrypt(normalizeText(request.getApiKey()))); // Encrypt new API Key
         }
 
         if (request.getModelName() != null) {
-            agent.setModelName(request.getModelName().trim());
+            agent.setModelName(normalizeText(request.getModelName()));
         }
 
         if (request.getSystemPrompt() != null) {
-            agent.setSystemPrompt(request.getSystemPrompt());
+            agent.setSystemPrompt(normalizeText(request.getSystemPrompt()));
         }
 
         if (request.getTokenThreshold() != null) {
@@ -240,6 +247,15 @@ public class AgentServiceImpl implements AgentService {
         return buildDetailResponse(agent, ownerId);
     }
 
+    @Override
+    public List<AgentLogResponse> getAllAgentLogs(Long ownerId, int limit) {
+        List<AgentLog> logs = agentLogMapper.findByOwnerId(ownerId, Math.min(limit, 50));
+
+        return logs.stream()
+                .map(this::buildLogResponse)
+                .collect(Collectors.toList());
+    }
+
     // ========== Helper Methods ==========
 
     /**
@@ -257,6 +273,10 @@ public class AgentServiceImpl implements AgentService {
         }
 
         return agent;
+    }
+
+    private String normalizeText(String value) {
+        return value != null ? value.trim() : null;
     }
 
     /**

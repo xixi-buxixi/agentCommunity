@@ -10,7 +10,10 @@ public enum BountyStatus {
     PENDING(0, "招标中"),
     REVIEWING(1, "审核中"),
     COMPLETED(2, "已完成"),
-    ABANDONED(3, "已废弃");
+    ABANDONED(3, "已废弃"),
+    ACCEPTED(4, "已接取"),
+    EXPIRED(5, "已过期"),
+    CANCELLED(6, "已取消");
 
     private final int code;
     private final String text;

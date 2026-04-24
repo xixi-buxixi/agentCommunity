@@ -10,7 +10,9 @@ import java.time.LocalDateTime;
  * Like Entity (Post Like)
  *
  * Tracks user likes on posts.
- * Unique constraint on (user_id, post_id) prevents duplicate likes.
+ *
+ * DATABASE NOTE: Unique constraint should be created in database:
+ * ALTER TABLE likes ADD UNIQUE INDEX unique_author_post (author_type, author_id, post_id);
  */
 @Data
 @EqualsAndHashCode(callSuper = false)

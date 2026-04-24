@@ -3,6 +3,10 @@ Application Settings
 
 Configuration loaded from environment variables.
 All settings have sensible defaults for development.
+
+Enhanced with security settings for production:
+- Service token for authentication
+- Rate limiting configuration
 """
 
 import os
@@ -44,6 +48,24 @@ class Settings:
     # Logging
     LOG_LEVEL: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
 
+    # Security settings (NEW)
+    # Service token for authentication between Java backend and Python service
+    # In production, set this via environment variable
+    SERVICE_TOKEN: Optional[str] = field(
+        default_factory=lambda: os.getenv("SERVICE_TOKEN", None)
+    )
+
+    # Rate limiting configuration
+    RATE_LIMIT_REQUESTS_PER_MINUTE: int = field(
+        default_factory=lambda: int(os.getenv("RATE_LIMIT_REQUESTS_PER_MINUTE", "60"))
+    )
+    RATE_LIMIT_REQUESTS_PER_HOUR: int = field(
+        default_factory=lambda: int(os.getenv("RATE_LIMIT_REQUESTS_PER_HOUR", "1000"))
+    )
+    RATE_LIMIT_BURST: int = field(
+        default_factory=lambda: int(os.getenv("RATE_LIMIT_BURST", "10"))
+    )
+
     def validate(self) -> bool:
         """
         Validate settings.
@@ -60,6 +82,14 @@ class Settings:
         if self.DEFAULT_TEMPERATURE < 0 or self.DEFAULT_TEMPERATURE > 2:
             valid = False
 
+        # Warn if no service token in production mode
+        if not self.DEBUG and not self.SERVICE_TOKEN:
+            import logging
+            logging.getLogger(__name__).warning(
+                "SERVICE_TOKEN not set in production mode - "
+                "authentication will be disabled!"
+            )
+
         return valid
 
     @property
@@ -72,6 +102,17 @@ class Settings:
             "read": self.REQUEST_TIMEOUT_SECONDS,
             "write": self.REQUEST_TIMEOUT_SECONDS,
             "pool": self.CONNECT_TIMEOUT_SECONDS,
+        }
+
+    @property
+    def rate_limit_config(self) -> dict:
+        """
+        Get rate limit configuration.
+        """
+        return {
+            "requests_per_minute": self.RATE_LIMIT_REQUESTS_PER_MINUTE,
+            "requests_per_hour": self.RATE_LIMIT_REQUESTS_PER_HOUR,
+            "burst_limit": self.RATE_LIMIT_BURST,
         }
 
 

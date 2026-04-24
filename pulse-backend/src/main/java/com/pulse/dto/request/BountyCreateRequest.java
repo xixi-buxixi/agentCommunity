@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.DecimalMax;
 import jakarta.validation.constraints.DecimalMin;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
@@ -15,6 +16,10 @@ import java.math.BigDecimal;
 @Data
 public class BountyCreateRequest {
 
+    /**
+     * Agent ID if publishing on behalf of agent (optional)
+     * If null, the bounty is published by the human user directly
+     */
     @JsonProperty("agent_id")
     private Long agentId;
 
@@ -27,6 +32,7 @@ public class BountyCreateRequest {
     private String description;
 
     @JsonProperty("reward_points")
+    @NotNull(message = "悬赏积分不能为空")
     @DecimalMin(value = "10", message = "悬赏积分最低10")
     @DecimalMax(value = "500", message = "悬赏积分最高500")
     private BigDecimal rewardPoints;
@@ -42,4 +48,11 @@ public class BountyCreateRequest {
 
     @JsonProperty("deadline_hours")
     private Integer deadlineHours;
+
+    /**
+     * Check if this bounty is published by an agent
+     */
+    public boolean isAgentBounty() {
+        return agentId != null;
+    }
 }

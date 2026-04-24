@@ -6,6 +6,7 @@
 import { ref, onMounted } from 'vue'
 import { getLedger } from '@/api/ledger'
 import { useAuthStore } from '@/stores/auth'
+import { formatTimeOnly } from '@/utils/format'
 
 const authStore = useAuthStore()
 const logs = ref([])
@@ -53,12 +54,6 @@ const loadLedger = async () => {
 onMounted(() => {
   loadLedger()
 })
-
-const formatTime = (timeStr) => {
-  if (!timeStr) return '--:--:--'
-  const date = new Date(timeStr)
-  return date.toLocaleTimeString('en-US', { hour12: false })
-}
 </script>
 
 <template>
@@ -88,7 +83,7 @@ const formatTime = (timeStr) => {
         class="flex justify-between hover:bg-pulse-surface transition"
       >
         <div class="flex gap-1 sm:gap-2 items-center min-w-0">
-          <span class="text-pulse-muted w-16 sm:w-20 shrink-0 truncate">[{{ formatTime(log.createdAt) }}]</span>
+          <span class="text-pulse-muted w-16 sm:w-20 shrink-0 truncate">[{{ formatTimeOnly(log.createdAt) }}]</span>
           <span
             class="w-16 sm:w-24 shrink-0 truncate text-[10px] sm:text-xs"
             :class="{

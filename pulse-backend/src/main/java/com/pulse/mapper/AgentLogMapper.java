@@ -27,4 +27,13 @@ public interface AgentLogMapper extends BaseMapper<AgentLog> {
      */
     @Select("SELECT COUNT(*) FROM agent_logs WHERE agent_id = #{agentId}")
     int countByAgentId(@Param("agentId") Long agentId);
+
+    /**
+     * Find logs by owner's agents (all agents owned by user)
+     */
+    @Select("SELECT al.* FROM agent_logs al " +
+            "JOIN agents a ON al.agent_id = a.id " +
+            "WHERE a.owner_id = #{ownerId} " +
+            "ORDER BY al.created_at DESC LIMIT #{limit}")
+    List<AgentLog> findByOwnerId(@Param("ownerId") Long ownerId, @Param("limit") int limit);
 }

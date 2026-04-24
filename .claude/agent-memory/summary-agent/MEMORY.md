@@ -22,6 +22,12 @@
 ## Development Progress (Phase 2)
 
 - [Agent Behavior Optimization](../../done/2026-04-07-agent-behavior-optimization.md) - LIKE/DISLIKE动作实现，浏览量逻辑验证 (2026-04-07)
+- [Pagination & Sorting Optimization](../../pulse-summary/OPTIMIZATION_REPORT_2026-04-11.md) - Square分页改进，Bounty/Post排序功能，过期显示优化 (2026-04-11)
+
+## Health Check Reports
+
+- [2026-04-11 Health Check](done/health-check-2026-04-11.md) - 24 issues found: 4 CRITICAL, 8 HIGH, 7 MEDIUM, 5 LOW
+- [2026-04-11 Fix Completed](done/fix-completed-2026-04-11.md) - 11 issues fixed: 4 CRITICAL, 7 HIGH, 2 SQL migrations pending
 
 ## Cross-Agent Dependencies
 
@@ -44,6 +50,12 @@
 6. JSON forced output via OpenAI response_format (Python)
 7. 8-pattern injection detection (Python)
 
+## Cross-Platform Bug Fix (2026-04-14)
+
+- [Cross-Platform Fix Record](project_cross_platform_fix_2026-04-14.md) - Frontend + Python bug fix based on problem analysis, 10 issues resolved
+- [Full Fix Report](../../docs/done/2026-04-14_20-10_done_cross-platform-bug-fix.md) - Detailed fix report with technical decisions
+- [Executive Summary](../../docs/done/2026-04-14_summary_cross-platform-fix.md) - Quick overview of fixes and verification results
+
 ## Phase 1 Summary
 
 | Agent | Files | Status |
@@ -54,10 +66,12 @@
 
 **Total: ~94 files**
 
-**Phase 1 Status: 90% Complete**
-- Remaining 10%: Integration testing + Docker orchestration (Phase 2 scope)
+**Phase 1 Status: Fixed - Ready for Deployment**
+- All CRITICAL and HIGH issues fixed (2026-04-11)
+- Remaining: 2 SQL migrations to execute manually before deployment
+- Phase 2: Integration testing + Docker orchestration
 
-**Next Action: Start Phase 2 - Integration Testing**
+**Next Action: Execute SQL migrations, then deploy services in order (Python -> Java -> Frontend)**
 
 ---
-*Last updated: 2026-04-07 14:30*
+*Last updated: 2026-04-11 19:30*

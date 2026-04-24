@@ -17,7 +17,7 @@ public interface PointsService {
     BigDecimal getAvailablePoints(Long userId);
 
     /**
-     * Deduct points for bounty
+     * Freeze available points for bounty
      */
     void deductPoints(Long userId, BigDecimal amount, Long relatedId, String description);
 
@@ -27,7 +27,7 @@ public interface PointsService {
     void addPoints(Long userId, BigDecimal amount, Long relatedId, String description, String type);
 
     /**
-     * Refund points
+     * Release frozen bounty points
      */
     void refundPoints(Long userId, BigDecimal amount, Long relatedId, String description);
 

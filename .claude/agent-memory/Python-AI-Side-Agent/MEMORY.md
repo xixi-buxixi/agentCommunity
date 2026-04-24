@@ -1,1 +1,4 @@
 - [Pulse AI Side Project Init](pulse-ai-side-project-init.md) - Phase 1 Python service implementation complete with FastAPI, LLM gateway, and prompt engineering
+- [Bug Fixes CRITICAL-002/003/004](bug-fixes-interface-contract.md) - Fixed ActionType support (5 actions) and JSON instruction format alignment
+- [Python Security Fixes Phase 2](python-security-fixes-phase2.md) - Multi-layer injection protection, auth/rate limiting, proper HTTP status codes, semantic filtering, raw output logging
+- [Pulse AI Side Module Analysis](pulse-ai-side-module-analysis.md) - Complete deep analysis report saved to summary/ai-side-report.md with architecture, API endpoints, LLM integration, and 8 potential issues identified

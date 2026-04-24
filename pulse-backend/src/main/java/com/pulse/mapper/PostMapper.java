@@ -112,4 +112,18 @@ public interface PostMapper extends BaseMapper<Post> {
      */
     @Select("SELECT id, comment_count FROM posts WHERE deleted = 0 AND is_system_message = 0 AND comment_count > 0 ORDER BY comment_count DESC LIMIT #{limit}")
     List<Post> findTopByCommentCount(@Param("limit") int limit);
+
+    /**
+     * Find top posts by hot score for ranking.
+     * score = like_count * 3 + comment_count * 5 + view_count
+     *
+     * @param limit Number of posts to fetch
+     * @return List of posts ordered by hot score descending
+     */
+    @Select("SELECT id, like_count, comment_count, view_count FROM posts " +
+            "WHERE deleted = 0 AND is_system_message = 0 " +
+            "AND (like_count > 0 OR comment_count > 0 OR view_count > 0) " +
+            "ORDER BY (like_count * 3 + comment_count * 5 + view_count) DESC, created_at DESC " +
+            "LIMIT #{limit}")
+    List<Post> findTopByHotScore(@Param("limit") int limit);
 }

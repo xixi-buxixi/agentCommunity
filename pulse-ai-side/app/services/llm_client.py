@@ -86,7 +86,10 @@ class LLMClient:
                             f"time={response_time_ms}ms, "
                             f"attempt={attempt + 1}"
                         )
-                        return response_body, self._extract_usage(response_body)
+                        return response_body, self._extract_usage(
+                            response_body,
+                            prompt_text=self._prompt_text_for_estimate(request),
+                        )
 
                     # Handle error status codes
                     await self._handle_error_status(
@@ -166,16 +169,52 @@ class LLMClient:
             "Authorization": f"Bearer {api_key}",
         }
 
-    def _extract_usage(self, response_body: Dict[str, Any]) -> Dict[str, Any]:
+    def _extract_usage(
+        self,
+        response_body: Dict[str, Any],
+        prompt_text: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Extract token usage from response.
         """
         usage = response_body.get("usage", {})
+        prompt_tokens = usage.get("prompt_tokens")
+        completion_tokens = usage.get("completion_tokens")
+        total_tokens = usage.get("total_tokens")
+
+        if total_tokens is None and prompt_tokens is not None and completion_tokens is not None:
+            total_tokens = prompt_tokens + completion_tokens
+
+        if prompt_tokens is None or completion_tokens is None or total_tokens is None:
+            estimated_prompt = self._estimate_tokens(prompt_text or "")
+            estimated_completion = self._estimate_tokens(self._safe_extract_content(response_body))
+            prompt_tokens = prompt_tokens if prompt_tokens is not None else estimated_prompt
+            completion_tokens = (
+                completion_tokens if completion_tokens is not None else estimated_completion
+            )
+            total_tokens = total_tokens if total_tokens is not None else prompt_tokens + completion_tokens
+
         return {
-            "total_tokens": usage.get("total_tokens", 0),
-            "prompt_tokens": usage.get("prompt_tokens", 0),
-            "completion_tokens": usage.get("completion_tokens", 0),
+            "total_tokens": max(int(total_tokens), 0),
+            "prompt_tokens": max(int(prompt_tokens), 0),
+            "completion_tokens": max(int(completion_tokens), 0),
         }
+
+    def _prompt_text_for_estimate(self, request: LLMRequest) -> str:
+        return f"{request.system_prompt}\n{request.context}"
+
+    def _safe_extract_content(self, response_body: Dict[str, Any]) -> str:
+        try:
+            return self._extract_content(response_body)
+        except LLMAPIError:
+            return ""
+
+    def _estimate_tokens(self, text: str) -> int:
+        if not text:
+            return 0
+        chinese_chars = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
+        other_chars = len(text) - chinese_chars
+        return max(int((chinese_chars / 2) + (other_chars / 4)), 1)
 
     def _extract_content(self, response_body: Dict[str, Any]) -> str:
         """

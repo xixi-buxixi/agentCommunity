@@ -3,6 +3,7 @@ package com.pulse.controller;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.pulse.dto.request.BountyAuditRequest;
+import com.pulse.dto.request.BountyCancelRequest;
 import com.pulse.dto.request.BountyCreateRequest;
 import com.pulse.dto.request.BountySubmitRequest;
 import com.pulse.dto.response.*;
@@ -17,6 +18,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -33,7 +35,7 @@ public class BountyController {
     private final BountyService bountyService;
 
     /**
-     * Get Bounty List
+     * Get Bounty List (Public)
      */
     @Operation(summary = "Get bounty list", security = @SecurityRequirement(name = "Bearer"))
     @GetMapping
@@ -41,11 +43,13 @@ public class BountyController {
             @AuthenticationPrincipal UserPrincipal principal,
             @RequestParam(required = false) Integer status,
             @RequestParam(required = false) String task_type,
+            @RequestParam(value = "sort_by", required = false, defaultValue = "created_at") String sortBy,
+            @RequestParam(value = "sort_order", required = false, defaultValue = "desc") String sortOrder,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int size) {
 
         Long userId = principal != null ? principal.getUserId() : null;
-        IPage<BountyListResponse> bountyPage = bountyService.getBountyList(status, task_type, page, size);
+        IPage<BountyListResponse> bountyPage = bountyService.getBountyList(status, task_type, sortBy, sortOrder, page, size);
 
         Map<String, Object> data = new HashMap<>();
         data.put("list", bountyPage.getRecords());
@@ -54,6 +58,78 @@ public class BountyController {
         data.put("size", bountyPage.getSize());
 
         return ApiResponse.success(data);
+    }
+
+    /**
+     * Get My Bounties (审核列表 - bounties published by user or their agents)
+     */
+    @Operation(summary = "Get my bounties", security = @SecurityRequirement(name = "Bearer"))
+    @GetMapping("/my")
+    public ApiResponse<Map<String, Object>> getMyBounties(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @RequestParam(required = false) Integer status,
+            @RequestParam(value = "sort_by", required = false, defaultValue = "created_at") String sortBy,
+            @RequestParam(value = "sort_order", required = false, defaultValue = "desc") String sortOrder,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int size) {
+
+        IPage<BountyListResponse> bountyPage = bountyService.getMyBounties(principal.getUserId(), status, sortBy, sortOrder, page, size);
+
+        Map<String, Object> data = new HashMap<>();
+        data.put("list", bountyPage.getRecords());
+        data.put("total", bountyPage.getTotal());
+        data.put("page", bountyPage.getCurrent());
+        data.put("size", bountyPage.getSize());
+
+        return ApiResponse.success(data);
+    }
+
+    /**
+     * Get My Accepted Bounties (我的任务 - bounties accepted by user)
+     */
+    @Operation(summary = "Get my accepted bounties", security = @SecurityRequirement(name = "Bearer"))
+    @GetMapping("/accepted")
+    public ApiResponse<Map<String, Object>> getMyAcceptedBounties(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @RequestParam(required = false) Integer status,
+            @RequestParam(value = "sort_by", required = false, defaultValue = "created_at") String sortBy,
+            @RequestParam(value = "sort_order", required = false, defaultValue = "desc") String sortOrder,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int size) {
+
+        IPage<BountyListResponse> bountyPage = bountyService.getMyAcceptedBounties(principal.getUserId(), status, sortBy, sortOrder, page, size);
+
+        Map<String, Object> data = new HashMap<>();
+        data.put("list", bountyPage.getRecords());
+        data.put("total", bountyPage.getTotal());
+        data.put("page", bountyPage.getCurrent());
+        data.put("size", bountyPage.getSize());
+
+        return ApiResponse.success(data);
+    }
+
+    /**
+     * Get Recent Bounty Logs
+     */
+    @Operation(summary = "Get recent bounty logs", security = @SecurityRequirement(name = "Bearer"))
+    @GetMapping("/logs")
+    public ApiResponse<List<BountyLogResponse>> getBountyLogs(
+            @RequestParam(defaultValue = "20") int limit) {
+
+        List<BountyLogResponse> logs = bountyService.getRecentLogs(limit);
+        return ApiResponse.success(logs);
+    }
+
+    /**
+     * Get Logs for a specific bounty
+     */
+    @Operation(summary = "Get bounty logs by task id", security = @SecurityRequirement(name = "Bearer"))
+    @GetMapping("/{taskId}/logs")
+    public ApiResponse<List<BountyLogResponse>> getBountyLogsByTaskId(
+            @PathVariable Long taskId) {
+
+        List<BountyLogResponse> logs = bountyService.getLogsByTaskId(taskId);
+        return ApiResponse.success(logs);
     }
 
     /**
@@ -127,5 +203,20 @@ public class BountyController {
         } else {
             return ApiResponse.success("答案已拒绝", response);
         }
+    }
+
+    /**
+     * Cancel Bounty before submission review.
+     */
+    @Operation(summary = "Cancel bounty", security = @SecurityRequirement(name = "Bearer"))
+    @PostMapping("/{taskId}/cancel")
+    public ApiResponse<BountyDetailResponse> cancelBounty(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @PathVariable Long taskId,
+            @Valid @RequestBody(required = false) BountyCancelRequest request) {
+
+        String reason = request != null ? request.getReason() : null;
+        BountyDetailResponse response = bountyService.cancelBounty(principal.getUserId(), taskId, reason);
+        return ApiResponse.success("悬赏已取消，冻结积分已释放", response);
     }
 }

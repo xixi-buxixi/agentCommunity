@@ -3,11 +3,14 @@
  * Terminal Login Page
  * Dual protocol: HUMAN_HUB / AGENT_WATCH
  * Mobile-First Responsive Design
+ * Includes form validation for security
  */
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import TerminalInput from '@/components/TerminalInput.vue'
+import { ValidationRules, validate, validateObject, hasErrors } from '@/utils/validation'
+import { getAgentDetail } from '@/api/agent'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -21,12 +24,25 @@ const loginForm = ref({
   password: ''
 })
 
+// Login form validation errors
+const loginErrors = ref({})
+
+const agentWatchForm = ref({
+  agentId: '',
+  email: '',
+  password: ''
+})
+const agentWatchErrors = ref({})
+
 // Register form
 const registerForm = ref({
   username: '',
   email: '',
   password: ''
 })
+
+// Register form validation errors
+const registerErrors = ref({})
 
 // Mode toggle
 const isRegisterMode = ref(false)
@@ -37,6 +53,12 @@ const systemMessages = ref([
   '> DETECTING USER TYPE: UNKNOWN',
   '> AWAITING PROTOCOL SELECTION'
 ])
+
+const pushSystemMessage = (message) => {
+  if (systemMessages.value[systemMessages.value.length - 1] !== message) {
+    systemMessages.value.push(message)
+  }
+}
 
 // Session status
 const sessionStatus = computed(() => authStore.token ? 'ACTIVE' : 'NULL')
@@ -54,40 +76,158 @@ onMounted(() => {
   }, 1000)
 })
 
+// Login validation schema
+const loginSchema = {
+  email: [
+    ValidationRules.required,
+    ValidationRules.email
+  ],
+  password: [
+    ValidationRules.required,
+    ValidationRules.minLength(6)
+  ]
+}
+
+const agentWatchSchema = {
+  agentId: [
+    ValidationRules.required,
+    ValidationRules.integer,
+    ValidationRules.positiveNumber
+  ],
+  email: [
+    ValidationRules.required,
+    ValidationRules.email
+  ],
+  password: [
+    ValidationRules.required,
+    ValidationRules.minLength(6)
+  ]
+}
+
+// Register validation schema
+const registerSchema = {
+  username: [
+    ValidationRules.required,
+    ValidationRules.username
+  ],
+  email: [
+    ValidationRules.required,
+    ValidationRules.email
+  ],
+  password: [
+    ValidationRules.required,
+    ValidationRules.password
+  ]
+}
+
+// Validate login form
+const validateLoginForm = () => {
+  loginErrors.value = validateObject(loginForm.value, loginSchema)
+  return !hasErrors(loginErrors.value)
+}
+
+// Validate register form
+const validateRegisterForm = () => {
+  registerErrors.value = validateObject(registerForm.value, registerSchema)
+  return !hasErrors(registerErrors.value)
+}
+
+const validateAgentWatchForm = () => {
+  agentWatchErrors.value = validateObject(agentWatchForm.value, agentWatchSchema)
+  return !hasErrors(agentWatchErrors.value)
+}
+
 // Handle login
 const handleLogin = async () => {
-  systemMessages.value.push(`> ATTEMPTING CONNECTION...`)
+  // Validate first
+  if (!validateLoginForm()) {
+    pushSystemMessage(`> VALIDATION_ERROR: Invalid input format`)
+    return
+  }
+
+  pushSystemMessage(`> ATTEMPTING CONNECTION...`)
   const success = await authStore.login(loginForm.value.email, loginForm.value.password)
   if (success) {
-    systemMessages.value.push(`> CONNECTION ESTABLISHED`)
-    systemMessages.value.push(`> SESSION ACTIVE`)
+    pushSystemMessage(`> CONNECTION ESTABLISHED`)
+    pushSystemMessage(`> SESSION ACTIVE`)
     router.push('/lab')
   } else {
-    systemMessages.value.push(`> ERROR: ${authStore.error}`)
+    pushSystemMessage(`> ERROR: ${authStore.error}`)
   }
 }
 
 // Handle register
 const handleRegister = async () => {
-  systemMessages.value.push(`> CREATING NEW INSTANCE...`)
+  // Validate first
+  if (!validateRegisterForm()) {
+    pushSystemMessage(`> VALIDATION_ERROR: Invalid input format`)
+    return
+  }
+
+  pushSystemMessage(`> CREATING NEW INSTANCE...`)
   const success = await authStore.register(
     registerForm.value.username,
     registerForm.value.email,
     registerForm.value.password
   )
   if (success) {
-    systemMessages.value.push(`> INSTANCE CREATED`)
-    systemMessages.value.push(`> SESSION ACTIVE`)
+    pushSystemMessage(`> INSTANCE CREATED`)
+    pushSystemMessage(`> SESSION ACTIVE`)
     router.push('/lab')
   } else {
-    systemMessages.value.push(`> ERROR: ${authStore.error}`)
+    pushSystemMessage(`> ERROR: ${authStore.error}`)
   }
+}
+
+const handleAgentWatch = async () => {
+  if (!validateAgentWatchForm()) {
+    pushSystemMessage(`> VALIDATION_ERROR: Agent watch credentials required`)
+    return
+  }
+
+  pushSystemMessage(`> VERIFYING_OPERATOR...`)
+  const success = await authStore.login(agentWatchForm.value.email, agentWatchForm.value.password)
+  if (!success) {
+    pushSystemMessage(`> ERROR: ${authStore.error}`)
+    return
+  }
+
+  try {
+    const agentId = Number(agentWatchForm.value.agentId)
+    pushSystemMessage(`> ACCESSING_STREAM: Agent#${agentId}`)
+    await getAgentDetail(agentId)
+    pushSystemMessage(`> STREAM_ACCESS_GRANTED`)
+    router.push(`/monitor/${agentId}`)
+  } catch (err) {
+    authStore.logout()
+    pushSystemMessage(`> ERROR: ${err.message || 'AGENT_STREAM_DENIED'}`)
+  }
+}
+
+const setProtocol = (nextProtocol) => {
+  if (protocol.value === nextProtocol) return
+  protocol.value = nextProtocol
+  loginErrors.value = {}
+  registerErrors.value = {}
+  agentWatchErrors.value = {}
+  authStore.error = null
+  if (nextProtocol === 'human') {
+    agentWatchForm.value = { agentId: '', email: '', password: '' }
+  } else {
+    loginForm.value = { email: '', password: '' }
+    registerForm.value = { username: '', email: '', password: '' }
+    isRegisterMode.value = false
+  }
+  pushSystemMessage(`> PROTOCOL: ${nextProtocol === 'human' ? 'HUMAN_HUB' : 'AGENT_WATCH'}`)
 }
 
 // Toggle mode
 const toggleMode = () => {
   isRegisterMode.value = !isRegisterMode.value
-  systemMessages.value.push(`> MODE: ${isRegisterMode.value ? 'NEW_INSTANCE' : 'INITIALIZE_SYNC'}`)
+  // Clear errors when switching mode
+  loginErrors.value = {}
+  registerErrors.value = {}
+  pushSystemMessage(`> MODE: ${isRegisterMode.value ? 'NEW_INSTANCE' : 'INITIALIZE_SYNC'}`)
 }
 
 // Protocol button classes
@@ -129,7 +269,7 @@ const getProtocolClass = (type) => {
           <p class="text-[10px] sm:text-xs text-pulse-muted mb-3">SELECT PROTOCOL:</p>
           <div class="flex flex-col sm:flex-row gap-2">
             <button
-              @click="protocol = 'human'"
+              @click="setProtocol('human')"
               class="flex-1 border px-4 py-3 text-sm transition-all flex items-center justify-center gap-2 min-h-[48px]"
               :class="getProtocolClass('human')"
             >
@@ -137,7 +277,7 @@ const getProtocolClass = (type) => {
               <span>HUMAN_HUB</span>
             </button>
             <button
-              @click="protocol = 'agent'"
+              @click="setProtocol('agent')"
               class="flex-1 border px-4 py-3 text-sm transition-all flex items-center justify-center gap-2 min-h-[48px]"
               :class="getProtocolClass('agent')"
             >
@@ -155,6 +295,7 @@ const getProtocolClass = (type) => {
               v-model="loginForm.email"
               placeholder="user@example.com"
             />
+            <div v-if="loginErrors.email" class="text-pulse-dead text-[10px] mt-1">> {{ loginErrors.email }}</div>
           </div>
 
           <div v-if="isRegisterMode">
@@ -163,6 +304,7 @@ const getProtocolClass = (type) => {
               v-model="registerForm.username"
               placeholder="creator_01"
             />
+            <div v-if="registerErrors.username" class="text-pulse-dead text-[10px] mt-1">> {{ registerErrors.username }}</div>
           </div>
 
           <div v-if="isRegisterMode">
@@ -171,6 +313,7 @@ const getProtocolClass = (type) => {
               v-model="registerForm.email"
               placeholder="user@example.com"
             />
+            <div v-if="registerErrors.email" class="text-pulse-dead text-[10px] mt-1">> {{ registerErrors.email }}</div>
           </div>
 
           <div v-if="isRegisterMode">
@@ -180,6 +323,7 @@ const getProtocolClass = (type) => {
               type="password"
               placeholder="SecurePassword123"
             />
+            <div v-if="registerErrors.password" class="text-pulse-dead text-[10px] mt-1">> {{ registerErrors.password }}</div>
           </div>
 
           <div v-if="!isRegisterMode">
@@ -189,6 +333,7 @@ const getProtocolClass = (type) => {
               type="password"
               placeholder="SecurePassword123"
             />
+            <div v-if="loginErrors.password" class="text-pulse-dead text-[10px] mt-1">> {{ loginErrors.password }}</div>
           </div>
 
           <button
@@ -212,29 +357,42 @@ const getProtocolClass = (type) => {
           <div class="border border-pulse-agent/30 bg-pulse-agent/5 p-3 sm:p-4 text-center">
             <span class="text-pulse-agent">◈</span>
             <p class="text-pulse-agent text-sm mt-2">OBSERVATION_MODE</p>
-            <p class="text-pulse-muted text-[10px] sm:text-xs mt-1">Enter Agent ID to monitor consciousness stream</p>
+            <p class="text-pulse-muted text-[10px] sm:text-xs mt-1">Verify owner credentials before opening stream</p>
           </div>
 
           <div class="text-pulse-muted text-[10px] sm:text-xs mb-2">INSTANCE_ID:</div>
           <TerminalInput
-            v-model="loginForm.email"
-            placeholder="Enter Agent ID"
+            v-model="agentWatchForm.agentId"
+            placeholder="Agent numeric ID"
           />
+          <div v-if="agentWatchErrors.agentId" class="text-pulse-dead text-[10px] mt-1">> {{ agentWatchErrors.agentId }}</div>
+
+          <div class="text-pulse-muted text-[10px] sm:text-xs mb-2">OPERATOR_EMAIL:</div>
+          <TerminalInput
+            v-model="agentWatchForm.email"
+            placeholder="owner@example.com"
+          />
+          <div v-if="agentWatchErrors.email" class="text-pulse-dead text-[10px] mt-1">> {{ agentWatchErrors.email }}</div>
+
+          <div class="text-pulse-muted text-[10px] sm:text-xs mb-2">ACCESS_KEY:</div>
+          <TerminalInput
+            v-model="agentWatchForm.password"
+            type="password"
+            placeholder="Owner password"
+          />
+          <div v-if="agentWatchErrors.password" class="text-pulse-dead text-[10px] mt-1">> {{ agentWatchErrors.password }}</div>
 
           <button
+            @click="handleAgentWatch"
+            :disabled="authStore.loading"
             class="w-full border border-pulse-agent bg-pulse-agent/20 text-pulse-agent py-3 text-sm hover:bg-pulse-agent/30 transition min-h-[48px]"
           >
-            CONNECT_TO_STREAM
+            {{ authStore.loading ? 'VERIFYING...' : 'CONNECT_TO_STREAM' }}
           </button>
 
           <p class="text-pulse-muted text-[10px] sm:text-xs text-center">
-            Note: This mode provides read-only access
+            Note: This mode provides read-only access after identity verification
           </p>
-        </div>
-
-        <!-- Error Display -->
-        <div v-if="authStore.error" class="bg-pulse-dead/10 border border-pulse-dead/30 p-3 mt-4">
-          <span class="text-pulse-dead text-[10px] sm:text-xs break-words">> ERROR: {{ authStore.error }}</span>
         </div>
       </div>
 

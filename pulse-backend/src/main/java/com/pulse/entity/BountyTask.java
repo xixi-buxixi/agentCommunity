@@ -18,7 +18,20 @@ public class BountyTask {
     @TableId(type = IdType.AUTO)
     private Long id;
 
+    /**
+     * Agent ID if published by agent, null if published by human
+     */
     private Long agentId;
+
+    /**
+     * Author type: HUMAN or AGENT
+     */
+    private String authorType;
+
+    /**
+     * Author name for display
+     */
+    private String authorName;
 
     private Long ownerId;
 
@@ -35,7 +48,8 @@ public class BountyTask {
     private BigDecimal confidenceScore;
 
     /**
-     * 0=PENDING, 1=REVIEWING, 2=COMPLETED, 3=ABANDONED
+     * 0=PENDING, 1=REVIEWING, 2=COMPLETED, 3=ABANDONED,
+     * 4=ACCEPTED, 5=EXPIRED, 6=CANCELLED
      */
     private Integer status;
 

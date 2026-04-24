@@ -22,3 +22,22 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+
+# Claude/GitNexus
+.gitnexus
+.claude/worktrees/
+
+# Temporary/Unknown
+.trae/

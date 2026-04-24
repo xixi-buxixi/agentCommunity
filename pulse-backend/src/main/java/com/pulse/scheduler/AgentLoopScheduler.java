@@ -5,6 +5,7 @@ import com.pulse.client.LLMClient;
 import com.pulse.dto.AgentActionDecision;
 import com.pulse.dto.AgentContext;
 import com.pulse.dto.LLMResponse;
+import com.pulse.dto.request.BountyCreateRequest;
 import com.pulse.entity.Agent;
 import com.pulse.entity.AgentLog;
 import com.pulse.entity.Comment;
@@ -22,6 +23,7 @@ import com.pulse.mapper.LikeMapper;
 import com.pulse.mapper.PostMapper;
 import com.pulse.mapper.PostViewMapper;
 import com.pulse.entity.PostView;
+import com.pulse.service.BountyService;
 import com.pulse.util.AesUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -60,6 +62,7 @@ public class AgentLoopScheduler {
     private final LikeMapper likeMapper;
     private final DislikeMapper dislikeMapper;
     private final LLMClient llmClient;
+    private final BountyService bountyService;
     private final AesUtil aesUtil;
     private final ObjectMapper objectMapper;
 
@@ -127,14 +130,18 @@ public class AgentLoopScheduler {
             return;
         }
 
-        // Parse action decision
-        AgentActionDecision decision = llmClient.parseActionDecision(llmResponse.getContent());
+        // Parse action decisions from Python gateway's parsed response
+        List<AgentActionDecision> decisions = llmClient.convertToDecisions(llmResponse);
 
-        log.info("Agent {} decided: action={}, targetPostId={}",
-                agent.getId(), decision.getAction(), decision.getTargetPostId());
+        log.info("Agent {} decided {} action(s)", agent.getId(), decisions.size());
 
-        // Step 5: Execute action
-        boolean actionSuccess = executeAction(agent, decision);
+        // Step 5: Execute actions independently; one failure does not block others.
+        for (int i = 0; i < decisions.size(); i++) {
+            AgentActionDecision decision = decisions.get(i);
+            boolean actionSuccess = executeAction(agent, decision);
+            Integer loggedTokens = i == 0 ? llmResponse.getTotalTokens() : 0;
+            logAgentAction(agent, decision, loggedTokens, actionSuccess);
+        }
 
         // Step 6: Atomically update token consumption
         if (llmResponse.getTotalTokens() != null && llmResponse.getTotalTokens() > 0) {
@@ -145,9 +152,6 @@ public class AgentLoopScheduler {
                 log.warn("Token update failed for agent {} (might be dead)", agent.getId());
             }
         }
-
-        // Log the action
-        logAgentAction(agent, decision, llmResponse.getTotalTokens(), actionSuccess);
 
         // Step 7: Post-action death check
         Agent updatedAgent = agentMapper.selectById(agent.getId());
@@ -238,6 +242,8 @@ public class AgentLoopScheduler {
                 return executeLikeAction(agent, decision);
             case DISLIKE:
                 return executeDislikeAction(agent, decision);
+            case CREATE_BOUNTY:
+                return executeCreateBountyAction(agent, decision);
             case IGNORE:
                 return true; // No action needed
             default:
@@ -402,6 +408,26 @@ public class AgentLoopScheduler {
     }
 
     /**
+     * Execute CREATE_BOUNTY action - Agent publishes a bounty funded by owner.
+     */
+    private boolean executeCreateBountyAction(Agent agent, AgentActionDecision decision) {
+        try {
+            BountyCreateRequest request = new BountyCreateRequest();
+            request.setAgentId(agent.getId());
+            request.setTitle(decision.getTitle());
+            request.setDescription(decision.getDescription());
+            request.setRewardPoints(decision.getRewardPoints());
+            request.setDeadlineHours(decision.getDeadlineHours());
+            bountyService.createBounty(agent.getOwnerId(), request);
+            log.info("Agent created bounty: agentId={}, title={}", agent.getId(), decision.getTitle());
+            return true;
+        } catch (Exception e) {
+            log.warn("Agent create bounty failed: agentId={}, error={}", agent.getId(), e.getMessage());
+            return false;
+        }
+    }
+
+    /**
      * Mark agent as DEAD and publish death message
      */
     @Transactional
@@ -444,9 +470,16 @@ public class AgentLoopScheduler {
         logEntry.setTargetPostId(decision.getTargetPostId());
         logEntry.setTokensConsumed(tokensConsumed != null ? tokensConsumed : 0);
         logEntry.setActionResult(success ? "SUCCESS" : "FAILED");
-        logEntry.setActionContent(decision.getContent()); // Store action content
+        logEntry.setActionContent(buildActionLogContent(decision));
 
         agentLogMapper.insert(logEntry);
+    }
+
+    private String buildActionLogContent(AgentActionDecision decision) {
+        if (decision.getAction() == ActionType.CREATE_BOUNTY) {
+            return decision.getTitle();
+        }
+        return decision.getContent();
     }
 
     /**

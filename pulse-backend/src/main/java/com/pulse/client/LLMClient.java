@@ -6,23 +6,29 @@ import com.pulse.dto.AgentContext;
 import com.pulse.dto.AgentActionDecision;
 import com.pulse.dto.LLMResponse;
 import com.pulse.entity.Agent;
+import com.pulse.enums.ActionType;
 import com.pulse.util.AesUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 
+import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
+import java.util.Set;
 
 /**
  * LLM Client
  *
- * Handles communication with external LLM APIs (OpenAI-compatible).
- * Called by AgentLoopScheduler to get agent's action decision.
+ * Handles communication with Python AI Side Gateway.
+ * Calls /v1/llm/decision endpoint to get agent's action decision.
  */
 @Slf4j
 @Component
@@ -33,12 +39,18 @@ public class LLMClient {
     private final AesUtil aesUtil;
     private final ObjectMapper objectMapper;
 
+    @Value("${pulse-ai-side.base-url:http://localhost:8000}")
+    private String pythonGatewayBaseUrl;
+
+    @Value("${pulse-ai-side.timeout:30000}")
+    private Integer gatewayTimeout;
+
     /**
-     * Call LLM and get agent's action decision
+     * Call Python AI Gateway and get agent's action decision
      *
      * @param agent Agent entity
      * @param context Agent context (posts + system prompt)
-     * @return LLMResponse with action decision
+     * @return LLMResponse with parsed action decision
      */
     public LLMResponse callLLM(Agent agent, AgentContext context) {
         // Decrypt API Key
@@ -51,32 +63,24 @@ public class LLMClient {
                     .build();
         }
 
-        // Build request body (OpenAI-compatible format)
+        // Build request payload matching Python LLMRequest structure
         Map<String, Object> requestBody = new HashMap<>();
-        requestBody.put("model", agent.getModelName());
-        requestBody.put("messages", new Object[]{
-                Map.of("role", "system", "content", context.buildFullPrompt())
-        });
+        requestBody.put("api_key", apiKey);
+        requestBody.put("base_url", agent.getBaseUrl() != null ? agent.getBaseUrl().trim() : "https://api.openai.com/v1");
+        requestBody.put("model_name", agent.getModelName());
+        requestBody.put("system_prompt", context.getSystemPrompt());
+        requestBody.put("context", context.getPostsContext());
         requestBody.put("max_tokens", 200);
         requestBody.put("temperature", 0.7);
 
         // Build headers
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.setBearerAuth(apiKey);
 
         HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestBody, headers);
 
-        // Trim baseUrl to avoid URL encoding issues with leading/trailing spaces
-        String baseUrl = agent.getBaseUrl() != null ? agent.getBaseUrl().trim() : "";
-
-        // Defensive: Remove any remaining encoded spaces (%20) that might have been stored
-        baseUrl = baseUrl.replace("%20", "");
-
-        // Ensure baseUrl doesn't have any whitespace characters
-        baseUrl = baseUrl.replaceAll("\\s+", "");
-
-        String url = baseUrl + "/chat/completions";
+        // Call Python AI Gateway
+        String url = pythonGatewayBaseUrl + "/v1/llm/decision";
 
         long startTime = System.currentTimeMillis();
 
@@ -88,19 +92,19 @@ public class LLMClient {
             long responseTime = System.currentTimeMillis() - startTime;
 
             if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
-                return parseLLMResponse(response.getBody(), responseTime);
+                return parsePythonGatewayResponse(response.getBody(), responseTime);
             } else {
-                log.warn("LLM call failed: agent={}, status={}", agent.getId(), response.getStatusCode());
+                log.warn("Python Gateway call failed: agent={}, status={}", agent.getId(), response.getStatusCode());
                 return LLMResponse.builder()
                         .success(false)
-                        .errorMessage("LLM API returned non-2xx status")
+                        .errorMessage("Python Gateway returned non-2xx status")
                         .responseTimeMs(responseTime)
                         .build();
             }
 
         } catch (RestClientException e) {
             long responseTime = System.currentTimeMillis() - startTime;
-            log.error("LLM call exception: agent={}, error={}", agent.getId(), e.getMessage());
+            log.error("Python Gateway call exception: agent={}, error={}", agent.getId(), e.getMessage());
             return LLMResponse.builder()
                     .success(false)
                     .errorMessage(e.getMessage())
@@ -110,47 +114,57 @@ public class LLMClient {
     }
 
     /**
-     * Parse OpenAI-compatible API response
+     * Parse Python AI Gateway response (LLMResponse structure)
+     *
+     * Python returns either the legacy single-action shape or the evolution
+     * multi-action shape:
+     * - actions: [{type, target_post_id, content, ...}]
+     * - usage.total_tokens or total_tokens / totalTokens
+     * - model, response_time_ms, success, error_message
      */
-    private LLMResponse parseLLMResponse(String responseBody, long responseTime) {
+    private LLMResponse parsePythonGatewayResponse(String responseBody, long responseTime) {
         try {
             JsonNode root = objectMapper.readTree(responseBody);
 
-            // Extract usage info
+            List<AgentActionDecision> actions = parseActions(root);
+            AgentActionDecision firstAction = actions.isEmpty()
+                    ? AgentActionDecision.builder().action(ActionType.IGNORE).build()
+                    : actions.get(0);
+
             JsonNode usage = root.path("usage");
-            int totalTokens = usage.path("total_tokens").asInt(0);
-            int promptTokens = usage.path("prompt_tokens").asInt(0);
-            int completionTokens = usage.path("completion_tokens").asInt(0);
-
-            // Extract content
-            JsonNode choices = root.path("choices");
-            if (choices.isArray() && choices.size() > 0) {
-                String content = choices.get(0)
-                        .path("message")
-                        .path("content")
-                        .asText();
-
-                String model = root.path("model").asText();
-
-                return LLMResponse.builder()
-                        .content(content)
-                        .totalTokens(totalTokens)
-                        .promptTokens(promptTokens)
-                        .completionTokens(completionTokens)
-                        .model(model)
-                        .success(true)
-                        .responseTimeMs(responseTime)
-                        .build();
-            } else {
-                return LLMResponse.builder()
-                        .success(false)
-                        .errorMessage("No choices in response")
-                        .responseTimeMs(responseTime)
-                        .build();
+            Integer promptTokens = readInt(root, usage, "prompt_tokens", "promptTokens");
+            Integer completionTokens = readInt(root, usage, "completion_tokens", "completionTokens");
+            Integer totalTokens = readInt(root, usage, "total_tokens", "totalTokens");
+            if (totalTokens == null) {
+                totalTokens = safeInt(promptTokens) + safeInt(completionTokens);
             }
 
+            // Parse model
+            String model = root.path("model").asText(null);
+
+            // Parse success and error_message
+            boolean success = root.path("success").asBoolean(true);
+            String errorMessage = root.path("error_message").asText(null);
+            String reason = root.path("reason").asText(null);
+
+            return LLMResponse.builder()
+                    .action(firstAction.getAction())
+                    .targetPostId(firstAction.getTargetPostId())
+                    .parsedContent(firstAction.getContent())
+                    .actions(actions)
+                    .reason(reason)
+                    .content(responseBody)  // Keep raw JSON for backward compatibility
+                    .totalTokens(totalTokens)
+                    .promptTokens(safeInt(promptTokens))
+                    .completionTokens(safeInt(completionTokens))
+                    .model(model)
+                    .success(success)
+                    .errorMessage(errorMessage)
+                    .responseTimeMs(responseTime)
+                    .build();
+
         } catch (Exception e) {
-            log.error("Failed to parse LLM response: {}", e.getMessage());
+            log.error("Failed to parse Python Gateway response: {}", e.getMessage());
             return LLMResponse.builder()
                     .success(false)
                     .errorMessage("JSON parse error: " + e.getMessage())
@@ -159,74 +173,125 @@ public class LLMClient {
         }
     }
 
-    /**
-     * Parse action decision from LLM response content
-     */
-    public AgentActionDecision parseActionDecision(String content) {
-        if (content == null || content.isEmpty()) {
-            return AgentActionDecision.builder()
-                    .action(com.pulse.enums.ActionType.IGNORE)
-                    .build();
+    private List<AgentActionDecision> parseActions(JsonNode root) {
+        List<AgentActionDecision> actions = new ArrayList<>();
+        JsonNode actionsNode = root.path("actions");
+        if (actionsNode.isArray()) {
+            for (JsonNode actionNode : actionsNode) {
+                actions.add(parseActionNode(actionNode));
+            }
+        } else {
+            actions.add(parseActionNode(root));
+        }
+        return actions;
+    }
+
+    private AgentActionDecision parseActionNode(JsonNode node) {
+        String actionStr = node.path("type").asText(node.path("action").asText("ignore"));
+        BigDecimal reward = null;
+        JsonNode rewardNode = node.has("reward_points") ? node.path("reward_points") : node.path("reward");
+        if (!rewardNode.isMissingNode() && !rewardNode.isNull() && rewardNode.isNumber()) {
+            reward = rewardNode.decimalValue();
         }
 
-        try {
-            // Try to extract JSON from content (LLM might wrap it in markdown)
-            String jsonContent = extractJson(content);
+        return AgentActionDecision.builder()
+                .action(ActionType.fromCode(actionStr))
+                .targetPostId(readLong(node, "target_post_id", "targetPostId"))
+                .content(node.path("content").asText(null))
+                .title(node.path("title").asText(null))
+                .description(node.path("description").asText(null))
+                .rewardPoints(reward)
+                .deadlineHours(readInteger(node, "deadline_hours", "deadlineHours"))
+                .build();
+    }
 
-            JsonNode node = objectMapper.readTree(jsonContent);
-
-            String actionStr = node.path("action").asText("ignore");
-            com.pulse.enums.ActionType action = com.pulse.enums.ActionType.fromCode(actionStr);
-
-            Long targetPostId = null;
-            if (node.has("target_post_id")) {
-                targetPostId = node.path("target_post_id").asLong();
-            }
-
-            String actionContent = node.path("content").asText();
-
-            AgentActionDecision decision = AgentActionDecision.builder()
-                    .action(action)
-                    .targetPostId(targetPostId)
-                    .content(actionContent)
-                    .build();
-
-            if (!decision.isValid()) {
-                log.warn("Invalid action decision: {}", decision);
-                return AgentActionDecision.builder()
-                        .action(com.pulse.enums.ActionType.IGNORE)
-                        .build();
-            }
-
-            return decision;
-
-        } catch (Exception e) {
-            log.warn("Failed to parse action decision from content: {}", e.getMessage());
-            return AgentActionDecision.builder()
-                    .action(com.pulse.enums.ActionType.IGNORE)
-                    .build();
+    private Integer readInt(JsonNode root, JsonNode usage, String snakeName, String camelName) {
+        Integer value = readInteger(root, snakeName, camelName);
+        if (value != null) {
+            return value;
         }
+        return readInteger(usage, snakeName, camelName);
+    }
+
+    private Integer readInteger(JsonNode node, String snakeName, String camelName) {
+        if (node == null || node.isMissingNode()) {
+            return null;
+        }
+        JsonNode value = node.has(snakeName) ? node.path(snakeName) : node.path(camelName);
+        return !value.isMissingNode() && !value.isNull() ? value.asInt() : null;
+    }
+
+    private Long readLong(JsonNode node, String snakeName, String camelName) {
+        JsonNode value = node.has(snakeName) ? node.path(snakeName) : node.path(camelName);
+        return !value.isMissingNode() && !value.isNull() ? value.asLong() : null;
+    }
+
+    private int safeInt(Integer value) {
+        return value != null ? value : 0;
     }
 
     /**
-     * Extract JSON from potentially markdown-wrapped content
+     * Convert LLMResponse to AgentActionDecision
+     *
+     * After calling Python gateway, convert the parsed response to decision object.
      */
-    private String extractJson(String content) {
-        // Remove markdown code block wrapper if present
-        if (content.contains("```json")) {
-            int start = content.indexOf("```json") + 7;
-            int end = content.indexOf("```", start);
-            if (end > start) {
-                return content.substring(start, end).trim();
-            }
+    public AgentActionDecision convertToDecision(LLMResponse llmResponse) {
+        List<AgentActionDecision> decisions = convertToDecisions(llmResponse);
+        if (!decisions.isEmpty()) {
+            return decisions.get(0);
         }
-        if (content.contains("```")) {
-            int start = content.indexOf("```") + 3;
-            int end = content.lastIndexOf("```");
-            if (end > start) {
-                return content.substring(start, end).trim();
-            }
+        return AgentActionDecision.builder()
+                .action(ActionType.IGNORE)
+                .build();
+    }
+
+    /**
+     * Convert LLMResponse to validated multi-action decisions.
+     */
+    public List<AgentActionDecision> convertToDecisions(LLMResponse llmResponse) {
+        if (llmResponse == null || !Boolean.TRUE.equals(llmResponse.getSuccess())) {
+            return List.of(AgentActionDecision.builder().action(ActionType.IGNORE).build());
         }
-        return content.trim();
+
+        List<AgentActionDecision> source = llmResponse.getActions();
+        if (source == null || source.isEmpty()) {
+            source = List.of(AgentActionDecision.builder()
+                    .action(llmResponse.getAction())
+                    .targetPostId(llmResponse.getTargetPostId())
+                    .content(llmResponse.getParsedContent())
+                    .build());
+        }
+
+        List<AgentActionDecision> decisions = new ArrayList<>();
+        Set<Long> likedTargets = new HashSet<>();
+        Set<Long> dislikedTargets = new HashSet<>();
+        for (AgentActionDecision decision : source) {
+            if (decisions.size() >= 3) {
+                break;
+            }
+            if (decision == null || !decision.isValid()) {
+                log.warn("Invalid action decision from Python gateway: {}", decision);
+                continue;
+            }
+            if (decision.getAction() == ActionType.LIKE && dislikedTargets.contains(decision.getTargetPostId())) {
+                log.warn("Dropping conflicting like action on post {}", decision.getTargetPostId());
+                continue;
+            }
+            if (decision.getAction() == ActionType.DISLIKE && likedTargets.contains(decision.getTargetPostId())) {
+                log.warn("Dropping conflicting dislike action on post {}", decision.getTargetPostId());
+                continue;
+            }
+            if (decision.getAction() == ActionType.LIKE) {
+                likedTargets.add(decision.getTargetPostId());
+            } else if (decision.getAction() == ActionType.DISLIKE) {
+                dislikedTargets.add(decision.getTargetPostId());
+            }
+            decisions.add(decision);
+        }
+
+        if (decisions.isEmpty()) {
+            return List.of(AgentActionDecision.builder().action(ActionType.IGNORE).build());
+        }
+        return decisions;
     }
 }

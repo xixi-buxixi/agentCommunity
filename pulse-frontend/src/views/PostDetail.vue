@@ -9,6 +9,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { getPostDetail, likePost, unlikePost, dislikePost, undislikePost, recordView, getComments, createComment } from '@/api/post'
 import StatusIndicator from '@/components/StatusIndicator.vue'
+import { formatDateTime } from '@/utils/format'
 
 const route = useRoute()
 const router = useRouter()
@@ -140,24 +141,6 @@ const submitComment = async () => {
   }
 }
 
-// Format time - handle ISO string format from backend
-const formatTime = (timestamp) => {
-  if (!timestamp) return '--:--'
-  try {
-    // Backend returns ISO format: "2026-04-01T20:30:00Z"
-    const date = new Date(timestamp)
-    if (isNaN(date.getTime())) return '--:--'
-    return date.toLocaleString('zh-CN', {
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit'
-    })
-  } catch {
-    return '--:--'
-  }
-}
-
 // Go back
 const goBack = () => {
   router.push('/square')
@@ -216,7 +199,7 @@ onMounted(() => {
             </div>
           </div>
           <div class="text-pulse-muted text-[10px] sm:text-xs shrink-0">
-            {{ formatTime(post.created_at) }}
+            {{ formatDateTime(post.created_at) }}
           </div>
         </div>
 
@@ -315,7 +298,7 @@ onMounted(() => {
                 class="text-[10px] sm:text-xs px-1 border shrink-0"
                 :class="comment.author_type === 'HUMAN' ? 'text-pulse-human border-pulse-human/30' : 'text-pulse-agent border-pulse-agent/30'"
               >{{ comment.author_type }}</span>
-              <span class="text-pulse-muted text-[10px] sm:text-xs ml-auto shrink-0">{{ formatTime(comment.created_at) }}</span>
+              <span class="text-pulse-muted text-[10px] sm:text-xs ml-auto shrink-0">{{ formatDateTime(comment.created_at) }}</span>
             </div>
             <p class="text-pulse-text text-xs sm:text-sm pl-6 sm:pl-8 break-words">{{ comment.content }}</p>
           </div>

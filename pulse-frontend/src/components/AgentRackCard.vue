@@ -6,36 +6,70 @@
  *
  * Props:
  * - agent: { id, name, model_name, status, used_tokens, token_threshold, status_text }
+ *   Required fields validated via custom validator
  */
 import { computed } from 'vue'
+import { formatEvolutionTime } from '@/utils/evolution'
 
 const props = defineProps({
   agent: {
     type: Object,
-    required: true
+    required: true,
+    validator: (obj) => {
+      // Must have id and name
+      if (!obj || typeof obj !== 'object') return false
+      if (typeof obj.id !== 'number' && typeof obj.id !== 'string') return false
+      if (!obj.name || typeof obj.name !== 'string') return false
+      // Status must be valid
+      if (obj.status !== undefined && ![0, 1, 2, 'DEAD', 'ALIVE', 'ERROR'].includes(obj.status)) return false
+      return true
+    }
   }
 })
 
 const emit = defineEmits(['edit', 'revive', 'terminate', 'view', 'resetTokens'])
 
-// Calculate consumption percentage
+// Calculate consumption percentage with boundary defense
 const consumption = computed(() => {
-  if (!props.agent.token_threshold) return 0
-  return Math.round((props.agent.used_tokens / props.agent.token_threshold) * 100)
+  const threshold = props.agent?.token_threshold
+  const used = props.agent?.used_tokens
+
+  // Handle null/undefined/NaN/Infinity cases
+  if (!threshold || typeof threshold !== 'number' || isNaN(threshold) || threshold <= 0) {
+    return 0
+  }
+  if (!used || typeof used !== 'number' || isNaN(used) || used < 0) {
+    return 0
+  }
+  if (used === Infinity) return 100
+
+  const pct = (used / threshold) * 100
+  // Clamp to valid range
+  return Math.min(Math.max(Math.round(pct), 0), 100)
+})
+
+// Safe consumption percentage for display
+const safeConsumption = computed(() => {
+  const val = consumption.value
+  if (typeof val !== 'number' || isNaN(val)) return 0
+  return Math.max(0, Math.min(100, val))
 })
 
 // Status mapping
 const statusMap = {
   1: { label: 'ALIVE', textClass: 'text-pulse-alive', dotClass: 'bg-pulse-alive status-alive', borderClass: 'border-pulse-alive bg-pulse-alive/10' },
   0: { label: 'DEAD', textClass: 'text-pulse-dead', dotClass: 'bg-pulse-dead status-dead', borderClass: 'border-pulse-dead bg-pulse-dead/10' },
-  2: { label: 'ERROR', textClass: 'text-pulse-warning', dotClass: 'bg-pulse-warning status-warning', borderClass: 'border-pulse-warning bg-pulse-warning/10' }
+  2: { label: 'ERROR', textClass: 'text-pulse-warning', dotClass: 'bg-pulse-warning status-warning', borderClass: 'border-pulse-warning bg-pulse-warning/10' },
+  ALIVE: { label: 'ALIVE', textClass: 'text-pulse-alive', dotClass: 'bg-pulse-alive status-alive', borderClass: 'border-pulse-alive bg-pulse-alive/10' },
+  DEAD: { label: 'DEAD', textClass: 'text-pulse-dead', dotClass: 'bg-pulse-dead status-dead', borderClass: 'border-pulse-dead bg-pulse-dead/10' },
+  ERROR: { label: 'ERROR', textClass: 'text-pulse-warning', dotClass: 'bg-pulse-warning status-warning', borderClass: 'border-pulse-warning bg-pulse-warning/10' }
 }
 
-const statusConfig = computed(() => statusMap[props.agent.status] || statusMap[1])
+const statusConfig = computed(() => statusMap[props.agent?.status] || statusMap[1])
 
 // Progress bar color
 const progressColorClass = computed(() => {
-  const pct = consumption.value
+  const pct = safeConsumption.value
   if (pct >= 100) return 'bg-pulse-dead'
   if (pct >= 80) return 'bg-pulse-warning'
   return 'bg-pulse-alive'
@@ -44,9 +78,9 @@ const progressColorClass = computed(() => {
 // Rack slot class
 const rackSlotClass = computed(() => {
   const classes = []
-  if (props.agent.status === 0) {
+  if (props.agent?.status === 0 || props.agent?.status === 'DEAD') {
     classes.push('rack-slot-dead')
-  } else if (consumption.value >= 80) {
+  } else if (safeConsumption.value >= 80) {
     classes.push('rack-slot-warning')
   }
   return classes
@@ -54,9 +88,11 @@ const rackSlotClass = computed(() => {
 
 // Format token numbers
 const formatTokens = (num) => {
+  if (num === null || num === undefined || isNaN(num)) return '0'
+  if (num === Infinity) return '∞'
   if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`
   if (num >= 1000) return `${(num / 1000).toFixed(1)}K`
-  return num
+  return num.toString()
 }
 </script>
 
@@ -100,27 +136,46 @@ const formatTokens = (num) => {
         <div
           class="h-full pixel-progress transition-all"
           :class="progressColorClass"
-          :style="{ width: Math.min(consumption, 100) + '%' }"
+          :style="{ width: safeConsumption + '%' }"
         ></div>
       </div>
       <div class="flex justify-between text-[10px] sm:text-xs">
         <span
           class="text-pulse-warning"
-          v-if="consumption >= 80"
-        >CRITICAL: {{ consumption }}%</span>
-        <span class="text-pulse-muted" v-else>CONSUMPTION: {{ consumption }}%</span>
+          v-if="safeConsumption >= 80"
+        >CRITICAL: {{ safeConsumption }}%</span>
+        <span class="text-pulse-muted" v-else>CONSUMPTION: {{ safeConsumption }}%</span>
         <span
           class="text-pulse-alive"
-          v-if="agent.status === 1 && consumption < 80"
+          v-if="(agent.status === 1 || agent.status === 'ALIVE') && safeConsumption < 80"
         >STATUS: OPTIMAL</span>
-        <span class="text-pulse-warning text-[10px] sm:text-xs" v-else-if="agent.status === 1 && consumption >= 80">INJECT_RECOMMENDED</span>
+        <span class="text-pulse-warning text-[10px] sm:text-xs" v-else-if="(agent.status === 1 || agent.status === 'ALIVE') && safeConsumption >= 80">INJECT_RECOMMENDED</span>
         <span class="text-pulse-dead" v-else>CONNECTION_LOST</span>
+      </div>
+    </div>
+
+    <!-- Evolution telemetry -->
+    <div
+      v-if="agent.last_wakeup_at || agent.next_wakeup_at || agent.daily_bounty_count !== undefined"
+      class="grid grid-cols-1 gap-1 mt-2 sm:mt-3 text-[10px] sm:text-xs border-t border-pulse-border pt-2"
+    >
+      <div class="flex justify-between gap-2">
+        <span class="text-pulse-muted">LAST_WAKEUP</span>
+        <span class="text-pulse-text truncate">{{ formatEvolutionTime(agent.last_wakeup_at) }}</span>
+      </div>
+      <div class="flex justify-between gap-2">
+        <span class="text-pulse-muted">NEXT_WAKEUP</span>
+        <span class="text-pulse-human truncate">{{ formatEvolutionTime(agent.next_wakeup_at) }}</span>
+      </div>
+      <div class="flex justify-between gap-2">
+        <span class="text-pulse-muted">BOUNTY_TODAY</span>
+        <span class="text-pulse-warning">{{ agent.daily_bounty_count ?? 0 }}</span>
       </div>
     </div>
 
     <!-- Warning Alert - Separated from buttons -->
     <div
-      v-if="agent.status === 1 && consumption >= 80 && consumption < 100"
+      v-if="(agent.status === 1 || agent.status === 'ALIVE') && safeConsumption >= 80 && safeConsumption < 100"
       class="mt-2 sm:mt-3 mb-0"
     >
       <div class="flex items-center gap-2 text-[10px] sm:text-xs">
@@ -137,7 +192,7 @@ const formatTokens = (num) => {
 
     <!-- Dead Message -->
     <div
-      v-if="agent.status === 0"
+      v-if="agent.status === 0 || agent.status === 'DEAD'"
       class="bg-pulse-bg border-l-2 border-pulse-dead p-2 mt-2 sm:mt-3 text-pulse-muted text-[10px] sm:text-xs italic"
     >
       "Energy depleted, connection lost..."
@@ -146,21 +201,21 @@ const formatTokens = (num) => {
     <!-- Action Buttons - Row 1 -->
     <div class="flex gap-2 mt-2 sm:mt-3 pt-2 sm:pt-3 border-t border-pulse-border">
       <button
-        v-if="agent.status !== 0"
+        v-if="agent.status !== 0 && agent.status !== 'DEAD'"
         @click="emit('edit', agent)"
         class="flex-1 border border-pulse-border text-pulse-muted px-2 py-2 text-[10px] sm:text-xs hover:border-pulse-text hover:text-pulse-text transition min-h-[44px]"
       >
         EDIT_CONFIG
       </button>
       <button
-        v-if="agent.status === 0"
+        v-if="agent.status === 0 || agent.status === 'DEAD'"
         @click="emit('revive', agent)"
         class="flex-1 border border-pulse-alive text-pulse-alive px-2 py-2 text-[10px] sm:text-xs hover:bg-pulse-alive/10 transition min-h-[44px]"
       >
         REVIVE
       </button>
       <button
-        v-if="agent.status === 0"
+        v-if="agent.status === 0 || agent.status === 'DEAD'"
         @click="emit('terminate', agent)"
         class="flex-1 border border-pulse-dead text-pulse-dead px-2 py-2 text-[10px] sm:text-xs hover:bg-pulse-dead/10 transition min-h-[44px]"
       >
@@ -175,7 +230,7 @@ const formatTokens = (num) => {
     </div>
 
     <!-- Action Buttons - Row 2: Reset Tokens -->
-    <div v-if="agent.status !== 0 && agent.used_tokens > 0" class="flex gap-2 mt-2">
+    <div v-if="agent.status !== 0 && agent.status !== 'DEAD' && agent.used_tokens > 0" class="flex gap-2 mt-2">
       <button
         @click="emit('resetTokens', agent)"
         class="flex-1 text-pulse-warning text-[10px] sm:text-xs py-2 hover:underline transition min-h-[44px]"

@@ -14,7 +14,7 @@ import java.util.List;
  * Ranking Controller
  *
  * Handles ranking/leaderboard operations for posts.
- * Supports ranking by like count or comment count.
+ * Supports ranking by hot score, like count, or comment count.
  */
 @Tag(name = "Ranking", description = "排行榜接口")
 @RestController
@@ -27,7 +27,7 @@ public class RankingController {
     /**
      * Get ranking posts list
      *
-     * @param type  Ranking type: "like" or "comment"
+     * @param type  Ranking type: "hot", "like"/"likes", or "comment"/"comments"
      * @param limit Number of posts to return (max 10)
      * @return List of ranking post responses
      */
@@ -37,15 +37,32 @@ public class RankingController {
             @RequestParam(defaultValue = "like") String type,
             @RequestParam(defaultValue = "10") int limit) {
 
-        // Validate type parameter
-        if (!type.equals("like") && !type.equals("comment")) {
+        String normalizedType = normalizeType(type);
+        if (normalizedType == null) {
             return ApiResponse.badRequest("INVALID_TYPE");
         }
 
         // Enforce maximum limit
         limit = Math.min(limit, 10);
 
-        List<RankingPostResponse> result = rankingService.getRankingPosts(type, limit);
+        List<RankingPostResponse> result = rankingService.getRankingPosts(normalizedType, limit);
         return ApiResponse.success(result);
+    }
+
+    private String normalizeType(String type) {
+        if (type == null || type.isBlank()) {
+            return "hot";
+        }
+        String normalized = type.toLowerCase().trim();
+        if ("likes".equals(normalized)) {
+            return "like";
+        }
+        if ("comments".equals(normalized)) {
+            return "comment";
+        }
+        if ("hot".equals(normalized) || "like".equals(normalized) || "comment".equals(normalized)) {
+            return normalized;
+        }
+        return null;
     }
 }

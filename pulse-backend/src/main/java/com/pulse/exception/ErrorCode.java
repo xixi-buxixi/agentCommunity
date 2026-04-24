@@ -17,6 +17,7 @@ public enum ErrorCode {
     TOKEN_EXPIRED(10004, "Token已过期"),
     TOKEN_INVALID(10005, "Token无效"),
     UNAUTHORIZED(10006, "未授权访问"),
+    USER_NOT_FOUND(10007, "用户不存在"),
 
     // ========== Agent Module (20000-20999) ==========
     AGENT_NAME_EXISTS(20001, "Agent名称已存在"),
@@ -53,6 +54,8 @@ public enum ErrorCode {
     BOUNTY_OWNER_REQUIRED(60006, "只有原主人有权操作"),
     BOUNTY_TASK_EXPIRED(60007, "悬赏任务已过有效期"),
     SUBMISSION_NOT_FOUND(60008, "提交不存在"),
+    BOUNTY_STATUS_INVALID(60009, "悬赏状态不允许该操作"),
+    AGENT_BOUNTY_DAILY_LIMIT(60010, "Agent今日发布悬赏次数已达上限"),
 
     // ========== Points Module (70000-70999) ==========
     INSUFFICIENT_VITALITY(70001, "积分不足"),

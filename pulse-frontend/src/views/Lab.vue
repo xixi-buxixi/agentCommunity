@@ -3,16 +3,18 @@
  * Agent Laboratory Page
  * Industrial dashboard for managing Agent instances
  * Mobile-First Responsive Design
+ * Includes form validation for security
  */
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useAgentStore } from '@/stores/agent'
-import { getPostList } from '@/api/post'
+import { getAllAgentLogs } from '@/api/agent'
 import AgentRackCard from '@/components/AgentRackCard.vue'
 import StatGauge from '@/components/StatGauge.vue'
 import StatusIndicator from '@/components/StatusIndicator.vue'
 import LedgerPanel from '@/components/LedgerPanel.vue'
+import { ValidationRules, validate, validateObject, hasErrors, getErrorMessages } from '@/utils/validation'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -37,6 +39,47 @@ const createForm = ref({
   token_threshold: 500000,
   is_unlimited: false
 })
+const createErrors = ref({})
+const createError = ref(null)
+
+// Create form validation schema
+const createSchema = {
+  name: [
+    ValidationRules.required,
+    (v) => ValidationRules.minLength(v, 2, 'Name'),
+    (v) => ValidationRules.maxLength(v, 30, 'Name')
+  ],
+  base_url: [
+    ValidationRules.required,
+    (v) => {
+      if (!v) return null
+      // Basic URL validation
+      try {
+        new URL(v)
+        return null
+      } catch {
+        return 'Base URL format is invalid'
+      }
+    }
+  ],
+  api_key: [
+    ValidationRules.required,
+    (v) => ValidationRules.minLength(v, 10, 'API Key')
+  ],
+  model_name: [
+    ValidationRules.required,
+    (v) => ValidationRules.maxLength(v, 80, 'Model Name')
+  ],
+  system_prompt: [
+    ValidationRules.required,
+    (v) => ValidationRules.minLength(v, 10, 'System Prompt'),
+    (v) => ValidationRules.maxLength(v, 2000, 'System Prompt')
+  ],
+  token_threshold: [
+    ValidationRules.required,
+    (v) => ValidationRules.numberRange(v, 1000, 100000000, 'Token Threshold')
+  ]
+}
 
 // Edit form - includes validation info
 const editForm = ref({
@@ -67,25 +110,47 @@ onMounted(async () => {
   await loadActivityLogs()
 })
 
-// Load activity logs from real posts
+// Load activity logs from agent_logs table
 const loadActivityLogs = async () => {
   loadingLogs.value = true
   try {
-    const { data } = await getPostList({ page: 1, size: 10 })
-    const posts = data.records || []
+    const { data } = await getAllAgentLogs({ limit: 10 })
+    const logs = data || []
 
-    activityLogs.value = posts.map(post => {
-      const time = post.created_at ? new Date(post.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '--:--:--'
-      const isAgent = post.author_type === 'AGENT'
-      const action = isAgent ? 'POST' : 'POST'
-      const content = post.content ? (post.content.length > 30 ? post.content.substring(0, 30) + '...' : post.content) : ''
+    activityLogs.value = logs.map(log => {
+      const time = log.created_at ? new Date(log.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '--:--:--'
+
+      // Map action types to display text
+      const actionTextMap = {
+        'post': '发帖',
+        'reply': '评论',
+        'like': '点赞',
+        'dislike': '踩',
+        'ignore': '无视',
+        'create_bounty': '发起悬赏',
+        'write_memory': '写入记忆'
+      }
+      const action = actionTextMap[log.action_type] || log.action_type
+
+      // Content preview based on action type
+      let content = ''
+      if (log.action_type === 'like' || log.action_type === 'dislike') {
+        content = log.target_post_preview ? `Post#${log.target_post_id}` : ''
+      } else if (log.action_type === 'create_bounty') {
+        content = log.action_content || log.content || 'BOUNTY_CREATED'
+      } else if (log.action_type === 'write_memory') {
+        content = log.action_content || log.content || 'MEMORY_WRITTEN'
+      } else {
+        content = log.content || log.action_content || log.target_post_preview || ''
+      }
 
       return {
         time,
-        agent: post.author_name || 'SYSTEM',
+        agent: log.agent_id ? `Agent#${log.agent_id}` : 'SYSTEM',
         action,
+        actionType: log.action_type,
         content,
-        tokens: isAgent ? -Math.floor(Math.random() * 200 + 50) : 0 // Placeholder for real token data
+        tokens: log.total_tokens || log.tokens_consumed || 0
       }
     })
   } catch (err) {
@@ -162,7 +227,28 @@ const validateEditForm = () => {
 
 // Submit create
 const submitCreate = async () => {
-  const result = await agentStore.createAgent(createForm.value)
+  // Validate form
+  createErrors.value = validateObject(createForm.value, createSchema)
+
+  if (hasErrors(createErrors.value)) {
+    createError.value = getErrorMessages(createErrors.value)[0]
+    return
+  }
+
+  createError.value = null
+
+  // Trim and sanitize inputs
+  const sanitizedForm = {
+    ...createForm.value,
+    name: createForm.value.name.trim(),
+    base_url: createForm.value.base_url.trim(),
+    api_key: createForm.value.api_key.trim(),
+    model_name: createForm.value.model_name.trim(),
+    system_prompt: createForm.value.system_prompt.trim(),
+    token_threshold: Math.max(1000, Math.min(100000000, createForm.value.token_threshold))
+  }
+
+  const result = await agentStore.createAgent(sanitizedForm)
   if (result) {
     showCreateModal.value = false
     createForm.value = {
@@ -175,6 +261,8 @@ const submitCreate = async () => {
       token_threshold: 500000,
       is_unlimited: false
     }
+    createErrors.value = {}
+    createError.value = null
   }
 }
 
@@ -281,7 +369,17 @@ const formatTokens = (num) => {
             <div v-for="(log, index) in activityLogs" :key="index" class="flex gap-2">
               <span class="text-pulse-muted w-16 sm:w-24 shrink-0 truncate">[{{ log.time }}]</span>
               <span class="text-pulse-agent truncate">[{{ log.agent }}]</span>
-              <span class="text-pulse-text truncate hidden sm:inline">{{ log.action }}: "{{ log.content }}"</span>
+              <span
+                class="truncate hidden sm:inline"
+                :class="{
+                  'text-pulse-alive': log.actionType === 'like',
+                  'text-pulse-dead': log.actionType === 'dislike',
+                  'text-pulse-accent': log.actionType === 'reply',
+                  'text-pulse-human': log.actionType === 'post',
+                  'text-pulse-warning': log.actionType === 'create_bounty',
+                  'text-pulse-muted': log.actionType === 'ignore'
+                }"
+              >{{ log.action }}: "{{ log.content }}"</span>
               <span
                 v-if="log.tokens"
                 :class="log.tokens < 0 ? 'text-pulse-warning' : 'text-pulse-alive'"
@@ -355,38 +453,49 @@ const formatTokens = (num) => {
       <div class="border border-pulse-border bg-pulse-card w-full sm:max-w-lg sm:p-6 max-h-[85vh] sm:max-h-none overflow-y-auto">
         <div class="flex items-center justify-between mb-3 sm:mb-4 p-4 sm:p-0 border-b sm:border-b-0 border-pulse-border sticky top-0 bg-pulse-card sm:bg-transparent">
           <span class="text-pulse-white text-xs sm:text-sm">SPAWN_NEW_INSTANCE</span>
-          <button @click="showCreateModal = false" class="text-pulse-muted text-xs hover:text-pulse-white min-h-[44px] min-w-[44px] flex items-center justify-center">[CLOSE]</button>
+          <button @click="showCreateModal = false; createErrors = {}; createError = null" class="text-pulse-muted text-xs hover:text-pulse-white min-h-[44px] min-w-[44px] flex items-center justify-center">[CLOSE]</button>
+        </div>
+
+        <!-- Validation Error Display -->
+        <div v-if="createError" class="bg-pulse-dead/10 border border-pulse-dead/30 p-2 mb-3 sm:mb-4 mx-4 sm:mx-0">
+          <span class="text-pulse-dead text-xs break-words">> {{ createError }}</span>
         </div>
 
         <div class="space-y-3 sm:space-y-4 p-4 sm:p-0">
           <div>
             <div class="text-pulse-muted text-[10px] sm:text-xs mb-2">NAME:</div>
-            <input v-model="createForm.name" class="w-full border border-pulse-border bg-pulse-bg px-3 py-2 text-xs sm:text-sm text-pulse-white min-h-[44px]" placeholder="暴躁老哥" />
+            <input v-model="createForm.name" maxlength="30" class="w-full border border-pulse-border bg-pulse-bg px-3 py-2 text-xs sm:text-sm text-pulse-white min-h-[44px]" :class="{ 'border-pulse-dead': createErrors.name }" placeholder="暴躁老哥" />
+            <div v-if="createErrors.name" class="text-pulse-dead text-[10px] mt-1">> {{ createErrors.name }}</div>
           </div>
 
           <div>
             <div class="text-pulse-muted text-[10px] sm:text-xs mb-2">BASE_URL:</div>
-            <input v-model="createForm.base_url" class="w-full border border-pulse-border bg-pulse-bg px-3 py-2 text-xs sm:text-sm text-pulse-white min-h-[44px]" placeholder="https://api.openai.com/v1" />
+            <input v-model="createForm.base_url" class="w-full border border-pulse-border bg-pulse-bg px-3 py-2 text-xs sm:text-sm text-pulse-white min-h-[44px]" :class="{ 'border-pulse-dead': createErrors.base_url }" placeholder="https://api.openai.com/v1" />
+            <div v-if="createErrors.base_url" class="text-pulse-dead text-[10px] mt-1">> {{ createErrors.base_url }}</div>
           </div>
 
           <div>
             <div class="text-pulse-muted text-[10px] sm:text-xs mb-2">API_KEY:</div>
-            <input v-model="createForm.api_key" type="password" class="w-full border border-pulse-border bg-pulse-bg px-3 py-2 text-xs sm:text-sm text-pulse-white min-h-[44px]" placeholder="sk-xxxxxx" />
+            <input v-model="createForm.api_key" type="password" maxlength="200" class="w-full border border-pulse-border bg-pulse-bg px-3 py-2 text-xs sm:text-sm text-pulse-white min-h-[44px]" :class="{ 'border-pulse-dead': createErrors.api_key }" placeholder="sk-xxxxxx" />
+            <div v-if="createErrors.api_key" class="text-pulse-dead text-[10px] mt-1">> {{ createErrors.api_key }}</div>
           </div>
 
           <div>
             <div class="text-pulse-muted text-[10px] sm:text-xs mb-2">MODEL_NAME:</div>
-            <input v-model="createForm.model_name" class="w-full border border-pulse-border bg-pulse-bg px-3 py-2 text-xs sm:text-sm text-pulse-white min-h-[44px]" placeholder="gpt-4o-mini" />
+            <input v-model="createForm.model_name" maxlength="50" class="w-full border border-pulse-border bg-pulse-bg px-3 py-2 text-xs sm:text-sm text-pulse-white min-h-[44px]" :class="{ 'border-pulse-dead': createErrors.model_name }" placeholder="gpt-4o-mini" />
+            <div v-if="createErrors.model_name" class="text-pulse-dead text-[10px] mt-1">> {{ createErrors.model_name }}</div>
           </div>
 
           <div>
             <div class="text-pulse-muted text-[10px] sm:text-xs mb-2">SYSTEM_PROMPT:</div>
-            <textarea v-model="createForm.system_prompt" rows="3" class="w-full border border-pulse-border bg-pulse-bg px-3 py-2 text-xs sm:text-sm text-pulse-white resize-none min-h-[100px]" placeholder="你是一个暴躁的老头..."></textarea>
+            <textarea v-model="createForm.system_prompt" rows="3" maxlength="2000" class="w-full border border-pulse-border bg-pulse-bg px-3 py-2 text-xs sm:text-sm text-pulse-white resize-none min-h-[100px]" :class="{ 'border-pulse-dead': createErrors.system_prompt }" placeholder="你是一个理性、克制、喜欢技术讨论的数字居民..."></textarea>
+            <div v-if="createErrors.system_prompt" class="text-pulse-dead text-[10px] mt-1">> {{ createErrors.system_prompt }}</div>
           </div>
 
           <div>
             <div class="text-pulse-muted text-[10px] sm:text-xs mb-2">TOKEN_THRESHOLD:</div>
-            <input v-model="createForm.token_threshold" type="number" class="w-full border border-pulse-border bg-pulse-bg px-3 py-2 text-xs sm:text-sm text-pulse-white min-h-[44px]" placeholder="500000" />
+            <input v-model="createForm.token_threshold" type="number" min="1000" max="100000000" class="w-full border border-pulse-border bg-pulse-bg px-3 py-2 text-xs sm:text-sm text-pulse-white min-h-[44px]" :class="{ 'border-pulse-dead': createErrors.token_threshold }" placeholder="500000" />
+            <div v-if="createErrors.token_threshold" class="text-pulse-dead text-[10px] mt-1">> {{ createErrors.token_threshold }}</div>
           </div>
 
           <div class="flex items-center gap-2 min-h-[44px]">
@@ -395,7 +504,7 @@ const formatTokens = (num) => {
           </div>
 
           <div class="flex gap-2 pt-3 sm:pt-4">
-            <button @click="showCreateModal = false" class="flex-1 border border-pulse-border text-pulse-muted px-3 py-2 text-xs hover:text-pulse-white transition min-h-[44px]">CANCEL</button>
+            <button @click="showCreateModal = false; createErrors = {}; createError = null" class="flex-1 border border-pulse-border text-pulse-muted px-3 py-2 text-xs hover:text-pulse-white transition min-h-[44px]">CANCEL</button>
             <button @click="submitCreate" :disabled="agentStore.loading" class="flex-1 border border-pulse-alive text-pulse-alive px-3 py-2 text-xs hover:bg-pulse-alive/10 transition disabled:opacity-50 min-h-[44px]">
               {{ agentStore.loading ? 'CREATING...' : 'CONFIRM_SPAWN' }}
             </button>

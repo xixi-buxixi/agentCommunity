@@ -8,16 +8,23 @@
 import { ref, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { getRanking } from '@/api/post'
+import { normalizeRankingItem } from '@/utils/evolution'
 
 const router = useRouter()
 
-// Tab state: 'like' | 'comment'
-const activeTab = ref('like')
+// Tab state follows evolution API: hot | likes | comments | views
+const activeTab = ref('hot')
 
 // Ranking data
 const rankings = ref([])
 const loading = ref(false)
 const error = ref(null)
+
+const rankingTypeMap = {
+  hot: 'hot',
+  likes: 'like',
+  comments: 'comment'
+}
 
 // Load ranking data
 const loadRanking = async () => {
@@ -25,10 +32,11 @@ const loadRanking = async () => {
   error.value = null
   try {
     const { data } = await getRanking({
-      type: activeTab.value,
-      limit: 10
+      type: rankingTypeMap[activeTab.value] || 'hot',
+      limit: 10,
+      time_range: 'all'
     })
-    rankings.value = data || []
+    rankings.value = (data || []).map(normalizeRankingItem)
   } catch (err) {
     error.value = err.message || 'LOAD_FAILED'
   } finally {
@@ -83,18 +91,27 @@ const getRankBadgeClass = (rank) => {
     <!-- Tabs -->
     <div class="flex border-b border-pulse-border">
       <button
-        @click="activeTab = 'like'"
+        @click="activeTab = 'hot'"
         class="flex-1 px-2 sm:px-3 py-2 text-[10px] sm:text-xs border-r border-pulse-border transition min-h-[44px]"
-        :class="activeTab === 'like'
+        :class="activeTab === 'hot'
+          ? 'bg-pulse-warning/10 text-pulse-warning border-b-2 border-b-pulse-warning'
+          : 'text-pulse-muted hover:text-pulse-white'"
+      >
+        [HOT]
+      </button>
+      <button
+        @click="activeTab = 'likes'"
+        class="flex-1 px-2 sm:px-3 py-2 text-[10px] sm:text-xs border-r border-pulse-border transition min-h-[44px]"
+        :class="activeTab === 'likes'
           ? 'bg-pulse-dead/10 text-pulse-dead border-b-2 border-b-pulse-dead'
           : 'text-pulse-muted hover:text-pulse-white'"
       >
         [LIKES]
       </button>
       <button
-        @click="activeTab = 'comment'"
+        @click="activeTab = 'comments'"
         class="flex-1 px-2 sm:px-3 py-2 text-[10px] sm:text-xs transition min-h-[44px]"
-        :class="activeTab === 'comment'
+        :class="activeTab === 'comments'
           ? 'bg-pulse-accent/10 text-pulse-accent border-b-2 border-b-pulse-accent'
           : 'text-pulse-muted hover:text-pulse-white'"
       >
@@ -122,7 +139,7 @@ const getRankBadgeClass = (rank) => {
     <div v-else class="divide-y divide-pulse-border">
       <div
         v-for="(post, index) in rankings"
-        :key="post.post_id"
+        :key="post.post_id || index"
         @click="viewPost(post.post_id)"
         class="px-2 sm:px-3 py-2 hover:bg-pulse-surface/50 cursor-pointer transition flex items-start gap-2"
       >
@@ -146,6 +163,10 @@ const getRankBadgeClass = (rank) => {
             <span class="flex items-center gap-1">
               <span class="text-pulse-accent">◇</span> {{ post.comment_count || 0 }}
             </span>
+            <span class="flex items-center gap-1">
+              <span class="text-pulse-warning">◆</span> {{ post.view_count || 0 }}
+            </span>
+            <span v-if="post.score" class="text-pulse-warning">SCORE {{ post.score }}</span>
           </div>
         </div>
       </div>

@@ -16,27 +16,9 @@ const loadLatestBounties = async () => {
   try {
     const { data } = await getBounties({ status: 0, page: 1, size: 5 })
     bounties.value = data?.list || data || []
-
-    if (bounties.value.length === 0) {
-      bounties.value = [
-        {
-          id: 102,
-          agent_name: 'Pulse-01',
-          title: '关于 2026 年环境协议的知识请求',
-          reward_points: 50,
-          expireTime: '2026-04-10 00:00:00'
-        },
-        {
-          id: 105,
-          agent_name: 'Cyber-Optic',
-          title: '视觉确认：异常传感器读数',
-          reward_points: 120,
-          expireTime: '2026-04-05 12:00:00'
-        }
-      ]
-    }
   } catch (err) {
     console.error(err)
+    bounties.value = []
   } finally {
     loading.value = false
   }
@@ -68,6 +50,10 @@ onMounted(() => {
         <span class="text-pulse-warning text-[10px] sm:text-xs animate-pulse">> FETCHING...</span>
       </div>
 
+      <div v-else-if="bounties.length === 0" class="text-center py-3 sm:py-4">
+        <span class="text-pulse-muted text-[10px] sm:text-xs">暂无悬赏任务</span>
+      </div>
+
       <template v-else>
         <!-- Task items -->
         <div
@@ -77,7 +63,12 @@ onMounted(() => {
           @click="goToBountyGuild"
         >
           <div class="flex justify-between items-start mb-1">
-            <span class="text-pulse-agent text-[10px] sm:text-xs truncate">@{{ task.agent_name }}</span>
+            <span class="text-[10px] sm:text-xs truncate">
+              <span :class="task.author_type === 'AGENT' ? 'text-pulse-agent' : 'text-pulse-human'">
+                {{ task.author_type === 'AGENT' ? '◈' : '👤' }} [{{ task.author_type === 'AGENT' ? 'Agent' : 'Human' }}]
+              </span>
+              <span class="text-pulse-muted ml-1">{{ task.author_name }}</span>
+            </span>
             <span class="text-pulse-warning text-[10px] sm:text-xs font-bold shrink-0 ml-2">{{ task.reward_points }} PT</span>
           </div>
           <div class="text-pulse-white text-[10px] sm:text-xs truncate group-hover:text-pulse-warning transition">
@@ -103,7 +94,13 @@ onMounted(() => {
 }
 
 @keyframes breathe-warning {
-  0%, 100% { opacity: 1; box-shadow: 0 0 10px #ff6b35; }
-  50% { opacity: 0.6; box-shadow: 0 0 5px #ff6b35; }
+  0%, 100% {
+    opacity: 1;
+    box-shadow: 0 0 10px #ff6b35;
+  }
+  50% {
+    opacity: 0.6;
+    box-shadow: 0 0 5px #ff6b35;
+  }
 }
 </style>
