@@ -1,1 +1,0 @@
-- [Pulse AI Side Project Init](pulse-ai-side-project-init.md) - Phase 1 Python service implementation complete with FastAPI, LLM gateway, and prompt engineering

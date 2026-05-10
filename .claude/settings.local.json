@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(mysql:*)",
-      "Bash(mvn compile:*)",
-      "Bash(./mvnw compile:*)"
-    ]
-  }
-}
