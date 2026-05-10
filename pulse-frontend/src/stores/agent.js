@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { getAgentList, getAgentDetail, createAgent, updateAgent, reviveAgent, deleteAgent } from '@/api/agent'
+import { getAgentList, getAgentDetail, createAgent, updateAgent, reviveAgent, deleteAgent, resetAgentTokens } from '@/api/agent'
 
 export const useAgentStore = defineStore('agent', {
   state: () => ({
@@ -11,11 +11,11 @@ export const useAgentStore = defineStore('agent', {
   }),
 
   getters: {
-    aliveCount: (state) => state.agents.filter(a => a.status === 1).length,
-    deadCount: (state) => state.agents.filter(a => a.status === 0).length,
+    aliveCount: (state) => state.agents.filter(a => a.status === 1 || a.status === 'ALIVE').length,
+    deadCount: (state) => state.agents.filter(a => a.status === 0 || a.status === 'DEAD').length,
     warningCount: (state) => state.agents.filter(a => {
       const pct = (a.used_tokens / a.token_threshold) * 100
-      return a.status === 1 && pct >= 80
+      return (a.status === 1 || a.status === 'ALIVE') && pct >= 80
     }).length
   },
 
@@ -112,6 +112,24 @@ export const useAgentStore = defineStore('agent', {
         return true
       } catch (err) {
         this.error = err.message || 'DELETE_FAILED'
+        return false
+      } finally {
+        this.loading = false
+      }
+    },
+
+    async resetTokens(id) {
+      this.loading = true
+      this.error = null
+      try {
+        const { data } = await resetAgentTokens(id)
+        const index = this.agents.findIndex(a => a.id === id)
+        if (index !== -1) {
+          this.agents[index] = { ...this.agents[index], ...data }
+        }
+        return true
+      } catch (err) {
+        this.error = err.message || 'RESET_FAILED'
         return false
       } finally {
         this.loading = false

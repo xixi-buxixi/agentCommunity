@@ -1,5 +1,6 @@
 /* ========================================
    Pulse Design System - Global Styles
+   Mobile-First Responsive Design
    ======================================== */
 
 @tailwind base;
@@ -8,13 +9,13 @@
 
 /* --- Base Variables --- */
 :root {
-  --pulse-bg: #0a0c10;
-  --pulse-surface: #12151c;
-  --pulse-card: #181c25;
-  --pulse-border: #2a3142;
-  --pulse-muted: #4a5568;
-  --pulse-text: #94a3b8;
-  --pulse-white: #e2e8f0;
+  --pulse-bg: 248 249 250;
+  --pulse-surface: 233 236 239;
+  --pulse-card: 255 255 255;
+  --pulse-border: 222 226 230;
+  --pulse-muted: 108 117 125;
+  --pulse-text: 73 80 87;
+  --pulse-white: 33 37 41;
   --pulse-alive: #00ff41;
   --pulse-warning: #ff6b35;
   --pulse-dead: #8b0000;
@@ -23,10 +24,60 @@
   --pulse-agent: #a855f7;
 }
 
+[data-theme="dark"] {
+  --pulse-bg: 10 12 16;
+  --pulse-surface: 18 21 28;
+  --pulse-card: 24 28 37;
+  --pulse-border: 42 49 66;
+  --pulse-muted: 74 85 104;
+  --pulse-text: 148 163 184;
+  --pulse-white: 226 232 240;
+}
+
+/* ========================================
+   Mobile-First Responsive Base
+   ======================================== */
+
+/* Prevent horizontal scroll and overflow */
+html {
+  overflow-x: hidden;
+}
+
+body, #app {
+  overflow-x: hidden !important;
+  max-width: 100vw;
+}
+
+/* Force all media elements to be responsive */
+img, video, svg, canvas {
+  max-width: 100% !important;
+  height: auto !important;
+  display: block;
+}
+
+/* Force form elements to be responsive */
+input, textarea, select, button {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+/* Force tables to be responsive */
+table {
+  max-width: 100%;
+  display: block;
+  overflow-x: auto;
+}
+
+/* Prevent long text from breaking layout */
+p, span, div, li, a, label {
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
 /* --- Scrollbar --- */
 ::-webkit-scrollbar { width: 4px; height: 4px; }
-::-webkit-scrollbar-track { background: var(--pulse-surface); }
-::-webkit-scrollbar-thumb { background: var(--pulse-border); border-radius: 2px; }
+::-webkit-scrollbar-track { background: rgb(var(--pulse-surface)); }
+::-webkit-scrollbar-thumb { background: rgb(var(--pulse-border)); border-radius: 2px; }
 ::-webkit-scrollbar-thumb:hover { background: #3b4252; }
 
 /* --- Scanlines --- */
@@ -39,6 +90,10 @@
     rgba(0, 255, 65, 0.015) 4px
   );
   pointer-events: none;
+}
+
+[data-theme="light"] .scanlines {
+  opacity: 0.15;
 }
 
 /* --- Agent Scanlines --- */
@@ -146,10 +201,261 @@
 /* --- Input Focus --- */
 input:focus, textarea:focus {
   border-color: var(--pulse-human) !important;
+  outline: none;
 }
 
 /* --- Base Typography --- */
 body {
-  background-color: var(--pulse-bg);
+  background-color: rgb(var(--pulse-bg));
+  color: rgb(var(--pulse-text));
+}
+
+/* ========================================
+   Mobile Responsive Utilities
+   ======================================== */
+
+/* Touch-friendly button sizes on mobile */
+@media (max-width: 640px) {
+  button, a {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  /* Increase text readability */
+  .text-xs {
+    font-size: 0.875rem !important;
+  }
+
+  .text-sm {
+    font-size: 1rem !important;
+  }
+
+  /* Reduce padding on mobile */
+  .p-4 {
+    padding: 0.75rem !important;
+  }
+
+  .p-6 {
+    padding: 1rem !important;
+  }
+
+  /* Stack buttons vertically on mobile */
+  .mobile-stack {
+    flex-direction: column !important;
+  }
+
+  .mobile-stack > * {
+    width: 100% !important;
+  }
+
+  /* Full width modals on mobile */
+  .mobile-modal {
+    max-width: 100% !important;
+    margin: 0 !important;
+    max-height: 100vh !important;
+  }
+}
+
+/* Tablet adjustments */
+@media (min-width: 641px) and (max-width: 1024px) {
+  .tablet-compact {
+    padding: 0.75rem !important;
+  }
+}
+
+/* Desktop optimizations */
+@media (min-width: 1025px) {
+  .desktop-wide {
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+}
+
+/* ========================================
+   Modal Responsive Styles
+   ======================================== */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgb(var(--pulse-bg) / 0.9);
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.modal-content {
+  width: 100%;
+  max-width: 32rem;
+  max-height: 90vh;
+  overflow-y: auto;
+  border: 1px solid rgb(var(--pulse-border));
+  background: rgb(var(--pulse-card));
+}
+
+@media (max-width: 640px) {
+  .modal-overlay {
+    padding: 0;
+    align-items: flex-end;
+  }
+
+  .modal-content {
+    max-width: 100%;
+    max-height: 85vh;
+    border-radius: 0;
+    border-bottom: none;
+  }
+}
+
+/* ========================================
+   Card Grid Responsive
+   ======================================== */
+
+.card-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 768px) {
+  .card-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (min-width: 1024px) {
+  .card-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+/* ========================================
+   Stats Grid Responsive
+   ======================================== */
+
+.stats-grid {
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: repeat(2, 1fr);
+}
+
+@media (min-width: 640px) {
+  .stats-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+/* ========================================
+   Flex Utilities
+   ======================================== */
+
+.flex-responsive {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.flex-responsive > * {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Hide on mobile */
+@media (max-width: 640px) {
+  .hide-mobile {
+    display: none !important;
+  }
+}
+
+/* Show on mobile only */
+@media (min-width: 641px) {
+  .show-mobile-only {
+    display: none !important;
+  }
+}
+
+/* Safe area for bottom navigation */
+.pb-safe {
+  padding-bottom: 80px;
+}
+
+@media (max-width: 640px) {
+  .pb-safe {
+    padding-bottom: 100px;
+  }
+}
+
+/* Markdown content rendered from escaped, limited Markdown syntax */
+.markdown-content {
   color: var(--pulse-text);
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.markdown-content.markdown-muted {
+  color: var(--pulse-muted);
+}
+
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3 {
+  color: var(--pulse-white);
+  font-weight: 700;
+  line-height: 1.35;
+  margin: 0.25rem 0 0.5rem;
+}
+
+.markdown-content h1 { font-size: 1rem; }
+.markdown-content h2 { font-size: 0.95rem; }
+.markdown-content h3 { font-size: 0.9rem; }
+
+.markdown-content p,
+.markdown-content ul,
+.markdown-content blockquote,
+.markdown-content pre {
+  margin: 0 0 0.6rem;
+}
+
+.markdown-content p:last-child,
+.markdown-content ul:last-child,
+.markdown-content blockquote:last-child,
+.markdown-content pre:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-content ul {
+  list-style: square;
+  padding-left: 1.1rem;
+}
+
+.markdown-content blockquote {
+  border-left: 2px solid var(--pulse-accent);
+  color: var(--pulse-muted);
+  padding-left: 0.65rem;
+}
+
+.markdown-content code {
+  border: 1px solid var(--pulse-border);
+  background: var(--pulse-bg);
+  color: var(--pulse-accent);
+  padding: 0.05rem 0.25rem;
+}
+
+.markdown-content pre {
+  border: 1px solid var(--pulse-border);
+  background: var(--pulse-bg);
+  padding: 0.75rem;
+  overflow-x: auto;
+}
+
+.markdown-content pre code {
+  border: 0;
+  padding: 0;
+}
+
+.markdown-content a {
+  color: var(--pulse-accent);
+  text-decoration: underline;
 }

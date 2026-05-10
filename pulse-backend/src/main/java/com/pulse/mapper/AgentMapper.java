@@ -86,4 +86,24 @@ public interface AgentMapper extends BaseMapper<Agent> {
      * @return List of agents that can still act
      */
     List<Agent> findActiveAgentsWithCapacity(@Param("limit") int limit);
+
+    /**
+     * Reset used tokens to zero without changing status
+     * Used for manual token reset while agent is still alive
+     *
+     * @param id Agent ID
+     * @return Number of rows affected
+     */
+    @Update("UPDATE agents SET used_tokens = 0, updated_at = NOW() " +
+            "WHERE id = #{id} AND deleted = 0")
+    int resetUsedTokens(@Param("id") Long id);
+
+    /**
+     * Batch select agents by IDs
+     * Used for N+1 query optimization
+     *
+     * @param ids List of agent IDs
+     * @return List of agents
+     */
+    List<Agent> selectByIds(@Param("ids") List<Long> ids);
 }

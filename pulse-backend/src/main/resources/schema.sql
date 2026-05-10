@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS users (
     email VARCHAR(100) NOT NULL UNIQUE COMMENT 'Email address',
     password_hash VARCHAR(255) NOT NULL COMMENT 'BCrypt hashed password',
     avatar_url VARCHAR(500) DEFAULT NULL COMMENT 'Avatar URL',
+    points DECIMAL(12,2) NOT NULL DEFAULT 100.00 COMMENT 'Current points balance',
+    pending_bounty DECIMAL(12,2) NOT NULL DEFAULT 0.00 COMMENT 'Points frozen in bounty tasks',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT 'Registration time',
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Update time',
     deleted TINYINT DEFAULT 0 COMMENT 'Soft delete flag (0: active, 1: deleted)',
@@ -88,12 +90,19 @@ CREATE TABLE IF NOT EXISTS comments (
     author_id BIGINT NOT NULL COMMENT 'Author ID',
     author_type VARCHAR(20) NOT NULL COMMENT 'Author type (HUMAN/AGENT)',
     content VARCHAR(200) NOT NULL COMMENT 'Comment content (max 200 chars)',
+    parent_comment_id BIGINT DEFAULT NULL COMMENT 'Parent comment ID for replies',
+    root_comment_id BIGINT DEFAULT NULL COMMENT 'Root top-level comment ID for replies',
+    reply_depth INT NOT NULL DEFAULT 0 COMMENT 'Reply depth: top-level=0, replies=1..3',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT 'Creation time',
     deleted TINYINT DEFAULT 0 COMMENT 'Soft delete flag',
 
     FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
+    FOREIGN KEY (parent_comment_id) REFERENCES comments(id) ON DELETE CASCADE,
+    FOREIGN KEY (root_comment_id) REFERENCES comments(id) ON DELETE CASCADE,
     INDEX idx_post_id (post_id),
-    INDEX idx_author_id (author_id)
+    INDEX idx_author_id (author_id),
+    INDEX idx_parent_comment_id (parent_comment_id),
+    INDEX idx_root_comment_id (root_comment_id, reply_depth)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Post comments';
 
 -- ============================================================
@@ -158,12 +167,128 @@ CREATE TABLE IF NOT EXISTS agent_logs (
     target_post_id BIGINT DEFAULT NULL COMMENT 'Target post ID (for reply action)',
     tokens_consumed INT DEFAULT 0 COMMENT 'Tokens consumed in this action',
     action_result VARCHAR(500) COMMENT 'Action result or error message',
+    action_content VARCHAR(500) DEFAULT NULL COMMENT 'Action content preview',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT 'Log time',
 
     FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
     INDEX idx_agent_id (agent_id),
     INDEX idx_created_at (created_at DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Agent activity logs';
+
+-- ============================================================
+-- Table: bounty_tasks (Bounty Guild Tasks)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS bounty_tasks (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT 'Bounty task ID',
+    agent_id BIGINT DEFAULT NULL COMMENT 'Agent ID if published by agent',
+    author_type VARCHAR(20) NOT NULL COMMENT 'Author type (HUMAN/AGENT)',
+    author_name VARCHAR(100) NOT NULL COMMENT 'Author display name',
+    owner_id BIGINT NOT NULL COMMENT 'Owner user ID who funds and audits the task',
+    title VARCHAR(100) NOT NULL COMMENT 'Task title',
+    description TEXT NOT NULL COMMENT 'Task description',
+    reward_points DECIMAL(12,2) NOT NULL COMMENT 'Reward points',
+    task_type VARCHAR(50) NOT NULL DEFAULT 'KNOWLEDGE' COMMENT 'Task type',
+    crisis_level VARCHAR(20) NOT NULL DEFAULT 'LOW' COMMENT 'Crisis level',
+    confidence_score DECIMAL(5,2) DEFAULT NULL COMMENT 'Agent confidence score',
+    status TINYINT NOT NULL DEFAULT 0 COMMENT '0=PENDING, 1=REVIEWING, 2=COMPLETED, 3=ABANDONED, 4=ACCEPTED, 5=EXPIRED, 6=CANCELLED',
+    source_post_id BIGINT DEFAULT NULL COMMENT 'Source post ID',
+    deadline TIMESTAMP NOT NULL COMMENT 'Task deadline',
+    accepted_count INT NOT NULL DEFAULT 0 COMMENT 'Accepted hunter count',
+    submission_count INT NOT NULL DEFAULT 0 COMMENT 'Submission count',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT 'Creation time',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Update time',
+    deleted TINYINT DEFAULT 0 COMMENT 'Soft delete flag',
+
+    FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_owner_id (owner_id),
+    INDEX idx_agent_id (agent_id),
+    INDEX idx_status (status),
+    INDEX idx_deadline (deadline),
+    INDEX idx_created_at (created_at DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Bounty guild tasks';
+
+-- ============================================================
+-- Table: bounty_acceptances (Hunter Accept Records)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS bounty_acceptances (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT 'Acceptance ID',
+    task_id BIGINT NOT NULL COMMENT 'Bounty task ID',
+    hunter_id BIGINT NOT NULL COMMENT 'Hunter user ID',
+    status VARCHAR(20) NOT NULL DEFAULT 'ACCEPTED' COMMENT 'ACCEPTED/SUBMITTED/SELECTED/REJECTED',
+    accepted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT 'Accepted time',
+    submitted_at TIMESTAMP DEFAULT NULL COMMENT 'Submitted time',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT 'Creation time',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Update time',
+    deleted TINYINT DEFAULT 0 COMMENT 'Soft delete flag',
+
+    FOREIGN KEY (task_id) REFERENCES bounty_tasks(id) ON DELETE CASCADE,
+    FOREIGN KEY (hunter_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE KEY uk_task_hunter (task_id, hunter_id),
+    INDEX idx_hunter_id (hunter_id),
+    INDEX idx_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Bounty acceptance records';
+
+-- ============================================================
+-- Table: bounty_submissions (Hunter Answers)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS bounty_submissions (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT 'Submission ID',
+    task_id BIGINT NOT NULL COMMENT 'Bounty task ID',
+    hunter_id BIGINT NOT NULL COMMENT 'Hunter user ID',
+    content TEXT NOT NULL COMMENT 'Submission content',
+    attachment_urls JSON DEFAULT NULL COMMENT 'Attachment URL list',
+    quality_score DECIMAL(5,2) DEFAULT NULL COMMENT 'Optional quality score',
+    is_accepted BOOLEAN DEFAULT FALSE COMMENT 'Whether this answer was accepted',
+    reject_reason VARCHAR(500) DEFAULT NULL COMMENT 'Reject reason',
+    reviewed_at TIMESTAMP DEFAULT NULL COMMENT 'Reviewed time',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT 'Creation time',
+
+    FOREIGN KEY (task_id) REFERENCES bounty_tasks(id) ON DELETE CASCADE,
+    FOREIGN KEY (hunter_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE KEY uk_task_hunter (task_id, hunter_id),
+    INDEX idx_task_id (task_id),
+    INDEX idx_hunter_id (hunter_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Bounty submissions';
+
+-- ============================================================
+-- Table: bounty_logs (Bounty Activity Feed)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS bounty_logs (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT 'Bounty log ID',
+    task_id BIGINT NOT NULL COMMENT 'Bounty task ID',
+    task_title VARCHAR(100) NOT NULL COMMENT 'Task title snapshot',
+    hunter_id BIGINT DEFAULT NULL COMMENT 'Hunter user ID',
+    hunter_name VARCHAR(50) DEFAULT NULL COMMENT 'Hunter display name snapshot',
+    action_type VARCHAR(20) NOT NULL COMMENT 'ACCEPT/SUBMIT/COMPLETE/REJECT/CANCEL',
+    action_detail VARCHAR(500) DEFAULT NULL COMMENT 'Action detail',
+    reward_points DECIMAL(12,2) DEFAULT NULL COMMENT 'Reward points',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT 'Creation time',
+
+    FOREIGN KEY (task_id) REFERENCES bounty_tasks(id) ON DELETE CASCADE,
+    INDEX idx_task_id (task_id),
+    INDEX idx_created_at (created_at DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Bounty activity logs';
+
+-- ============================================================
+-- Table: sys_ledger (Points Transaction Ledger)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS sys_ledger (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT 'Ledger ID',
+    user_id BIGINT NOT NULL COMMENT 'User ID',
+    amount DECIMAL(12,2) NOT NULL COMMENT 'Positive income, negative expense',
+    type VARCHAR(30) NOT NULL COMMENT 'TIP_SEND/TIP_RECV/BOUNTY_PAY/BOUNTY_RECV/BOUNTY_RELEASE/REFUND/GRANT',
+    related_id BIGINT DEFAULT NULL COMMENT 'Related business ID',
+    related_type VARCHAR(30) DEFAULT NULL COMMENT 'Related business type',
+    description VARCHAR(500) DEFAULT NULL COMMENT 'Transaction description',
+    balance_before DECIMAL(12,2) DEFAULT NULL COMMENT 'Balance before transaction',
+    balance_after DECIMAL(12,2) DEFAULT NULL COMMENT 'Balance after transaction',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT 'Creation time',
+
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_user_id (user_id),
+    INDEX idx_created_at (created_at DESC),
+    INDEX idx_related (related_type, related_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Points transaction ledger';
 
 -- ============================================================
 -- Initial Data: System Messages

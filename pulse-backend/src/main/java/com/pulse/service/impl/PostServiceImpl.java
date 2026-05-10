@@ -17,11 +17,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDateTime;
-import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
 /**
@@ -42,9 +39,10 @@ public class PostServiceImpl implements PostService {
 
     private static final DateTimeFormatter DATE_FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
+    private static final int MAX_REPLY_DEPTH = 3;
 
     @Override
-    public Page<PostResponse> getPostList(Long userId, String authorType, boolean myAgents, int page, int size) {
+    public Page<PostResponse> getPostList(Long userId, String authorType, boolean myAgents, String sortBy, String sortOrder, int page, int size) {
         Page<Post> pageParam = new Page<>(page, Math.min(size, 50));
 
         LambdaQueryWrapper<Post> queryWrapper = new LambdaQueryWrapper<>();
@@ -66,28 +64,144 @@ public class PostServiceImpl implements PostService {
 
             if (!agentIds.isEmpty()) {
                 queryWrapper.and(w -> w
+                        .eq(Post::getAuthorType, AuthorType.HUMAN.getCode())
                         .eq(Post::getAuthorId, userId)
                         .or()
+                        .eq(Post::getAuthorType, AuthorType.AGENT.getCode())
                         .in(Post::getAuthorId, agentIds)
                 );
             } else {
-                queryWrapper.eq(Post::getAuthorId, userId);
+                queryWrapper.eq(Post::getAuthorType, AuthorType.HUMAN.getCode())
+                        .eq(Post::getAuthorId, userId);
             }
         }
 
         // @TableLogic on Post entity automatically filters deleted=1 records
-        queryWrapper.orderByDesc(Post::getCreatedAt);
+
+        // Apply sorting
+        applyPostSorting(queryWrapper, sortBy, sortOrder);
 
         Page<Post> postPage = postMapper.selectPage(pageParam, queryWrapper);
+        List<Post> posts = postPage.getRecords();
 
-        // Convert to response
-        Page<PostResponse> responsePage = new Page<>(postPage.getCurrent(), postPage.getSize(), postPage.getTotal());
-        List<PostResponse> responses = postPage.getRecords().stream()
-                .map(post -> buildPostResponse(post, userId))
+        // ========== N+1 Query Optimization: Batch preload author info ==========
+
+        // Collect all Human author IDs
+        Set<Long> humanAuthorIds = posts.stream()
+                .filter(p -> AuthorType.HUMAN.getCode().equalsIgnoreCase(p.getAuthorType()))
+                .map(Post::getAuthorId)
+                .collect(Collectors.toSet());
+
+        // Collect all Agent author IDs
+        Set<Long> agentAuthorIds = posts.stream()
+                .filter(p -> AuthorType.AGENT.getCode().equalsIgnoreCase(p.getAuthorType()))
+                .map(Post::getAuthorId)
+                .collect(Collectors.toSet());
+
+        // Batch load users (including human authors and agent owners)
+        Map<Long, User> userCache = new HashMap<>();
+        if (!humanAuthorIds.isEmpty()) {
+            List<User> users = userMapper.selectBatchIds(humanAuthorIds);
+            users.forEach(u -> userCache.put(u.getId(), u));
+        }
+
+        // Batch load agents
+        Map<Long, Agent> agentCache = new HashMap<>();
+        Set<Long> ownerIds = new HashSet<>();
+        if (!agentAuthorIds.isEmpty()) {
+            List<Agent> agents = agentMapper.selectBatchIds(agentAuthorIds);
+            agents.forEach(a -> {
+                agentCache.put(a.getId(), a);
+                if (a.getOwnerId() != null) {
+                    ownerIds.add(a.getOwnerId());
+                }
+            });
+
+            // Batch load agent owners
+            if (!ownerIds.isEmpty()) {
+                List<User> owners = userMapper.selectBatchIds(ownerIds);
+                owners.forEach(o -> userCache.put(o.getId(), o));
+            }
+        }
+
+        // Batch check liked/disliked status for logged-in user
+        Set<Long> likedPostIds = new HashSet<>();
+        Set<Long> dislikedPostIds = new HashSet<>();
+        if (userId != null && !posts.isEmpty()) {
+            List<Long> postIds = posts.stream().map(Post::getId).collect(Collectors.toList());
+
+            // Batch check likes
+            LambdaQueryWrapper<Like> likeQuery = new LambdaQueryWrapper<>();
+            likeQuery.eq(Like::getAuthorType, AuthorType.HUMAN.getCode())
+                    .eq(Like::getAuthorId, userId)
+                    .in(Like::getPostId, postIds);
+            likeMapper.selectList(likeQuery).forEach(l -> likedPostIds.add(l.getPostId()));
+
+            // Batch check dislikes
+            LambdaQueryWrapper<Dislike> dislikeQuery = new LambdaQueryWrapper<>();
+            dislikeQuery.eq(Dislike::getUserId, userId).in(Dislike::getPostId, postIds);
+            dislikeMapper.selectList(dislikeQuery).forEach(d -> dislikedPostIds.add(d.getPostId()));
+        }
+
+        // ========== Build responses using cached data ==========
+
+        List<PostResponse> responses = posts.stream()
+                .map(post -> buildPostResponseCached(post, userId, userCache, agentCache, likedPostIds, dislikedPostIds))
                 .collect(Collectors.toList());
+
+        Page<PostResponse> responsePage = new Page<>(postPage.getCurrent(), postPage.getSize(), postPage.getTotal());
         responsePage.setRecords(responses);
 
         return responsePage;
+    }
+
+    /**
+     * Apply sorting to post query
+     * @param queryWrapper Query wrapper
+     * @param sortBy Sort field: like_count, dislike_count, comment_count, view_count, created_at
+     * @param sortOrder Sort order: asc, desc
+     */
+    private void applyPostSorting(LambdaQueryWrapper<Post> queryWrapper, String sortBy, String sortOrder) {
+        boolean isAsc = "asc".equalsIgnoreCase(sortOrder);
+
+        switch (sortBy.toLowerCase()) {
+            case "like_count":
+                if (isAsc) {
+                    queryWrapper.orderByAsc(Post::getLikeCount);
+                } else {
+                    queryWrapper.orderByDesc(Post::getLikeCount);
+                }
+                break;
+            case "dislike_count":
+                if (isAsc) {
+                    queryWrapper.orderByAsc(Post::getDislikeCount);
+                } else {
+                    queryWrapper.orderByDesc(Post::getDislikeCount);
+                }
+                break;
+            case "comment_count":
+                if (isAsc) {
+                    queryWrapper.orderByAsc(Post::getCommentCount);
+                } else {
+                    queryWrapper.orderByDesc(Post::getCommentCount);
+                }
+                break;
+            case "view_count":
+                if (isAsc) {
+                    queryWrapper.orderByAsc(Post::getViewCount);
+                } else {
+                    queryWrapper.orderByDesc(Post::getViewCount);
+                }
+                break;
+            case "created_at":
+            default:
+                if (isAsc) {
+                    queryWrapper.orderByAsc(Post::getCreatedAt);
+                } else {
+                    queryWrapper.orderByDesc(Post::getCreatedAt);
+                }
+                break;
+        }
     }
 
     @Override
@@ -140,15 +254,26 @@ public class PostServiceImpl implements PostService {
 
         // Check if already liked
         LambdaQueryWrapper<Like> queryWrapper = new LambdaQueryWrapper<>();
-        queryWrapper.eq(Like::getUserId, userId);
+        queryWrapper.eq(Like::getAuthorType, AuthorType.HUMAN.getCode());
+        queryWrapper.eq(Like::getAuthorId, userId);
         queryWrapper.eq(Like::getPostId, postId);
         if (likeMapper.selectCount(queryWrapper) > 0) {
             throw new BusinessException(ErrorCode.POST_ALREADY_LIKED);
         }
 
+        // Like/dislike are mutually exclusive for the same author
+        Dislike existingDislike = dislikeMapper.findByAuthorAndPost(
+                AuthorType.HUMAN.getCode(), userId, postId);
+        if (existingDislike != null) {
+            dislikeMapper.deleteById(existingDislike.getId());
+            postMapper.decrementDislikeCount(postId);
+        }
+
         // Create like
         Like like = new Like();
         like.setUserId(userId);
+        like.setAuthorType(AuthorType.HUMAN.getCode());
+        like.setAuthorId(userId);
         like.setPostId(postId);
         likeMapper.insert(like);
 
@@ -162,7 +287,9 @@ public class PostServiceImpl implements PostService {
         return Map.of(
             "post_id", postId,
             "like_count", updatedPost.getLikeCount(),
-            "is_liked", true
+            "dislike_count", updatedPost.getDislikeCount(),
+            "is_liked", true,
+            "is_disliked", false
         );
     }
 
@@ -171,7 +298,8 @@ public class PostServiceImpl implements PostService {
     public Map<String, Object> unlikePost(Long userId, Long postId) {
         // Check if like exists
         LambdaQueryWrapper<Like> queryWrapper = new LambdaQueryWrapper<>();
-        queryWrapper.eq(Like::getUserId, userId);
+        queryWrapper.eq(Like::getAuthorType, AuthorType.HUMAN.getCode());
+        queryWrapper.eq(Like::getAuthorId, userId);
         queryWrapper.eq(Like::getPostId, postId);
         Like like = likeMapper.selectOne(queryWrapper);
 
@@ -192,7 +320,9 @@ public class PostServiceImpl implements PostService {
         return Map.of(
             "post_id", postId,
             "like_count", updatedPost.getLikeCount(),
-            "is_liked", false
+            "dislike_count", updatedPost.getDislikeCount(),
+            "is_liked", false,
+            "is_disliked", false
         );
     }
 
@@ -320,14 +450,37 @@ public class PostServiceImpl implements PostService {
 
         LambdaQueryWrapper<Comment> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.eq(Comment::getPostId, postId);
+        queryWrapper.isNull(Comment::getParentCommentId);
         queryWrapper.orderByAsc(Comment::getCreatedAt);
 
         Page<Comment> commentPage = commentMapper.selectPage(pageParam, queryWrapper);
 
-        // Convert to response
+        List<Comment> rootComments = commentPage.getRecords();
+        List<Long> rootIds = rootComments.stream()
+                .map(Comment::getId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+
+        List<Comment> replies = rootIds.isEmpty()
+                ? Collections.emptyList()
+                : commentMapper.findRepliesByRootIds(rootIds);
+
+        Map<Long, CommentResponse> responseById = new LinkedHashMap<>();
+        rootComments.forEach(comment -> responseById.put(comment.getId(), buildCommentResponse(comment)));
+        replies.forEach(comment -> responseById.put(comment.getId(), buildCommentResponse(comment)));
+
+        replies.forEach(reply -> {
+            CommentResponse replyResponse = responseById.get(reply.getId());
+            CommentResponse parentResponse = responseById.get(reply.getParentCommentId());
+            if (replyResponse != null && parentResponse != null) {
+                parentResponse.getReplies().add(replyResponse);
+            }
+        });
+
         Page<CommentResponse> responsePage = new Page<>(commentPage.getCurrent(), commentPage.getSize(), commentPage.getTotal());
-        List<CommentResponse> responses = commentPage.getRecords().stream()
-                .map(this::buildCommentResponse)
+        List<CommentResponse> responses = rootComments.stream()
+                .map(comment -> responseById.get(comment.getId()))
+                .filter(Objects::nonNull)
                 .collect(Collectors.toList());
         responsePage.setRecords(responses);
 
@@ -348,11 +501,49 @@ public class PostServiceImpl implements PostService {
             throw new BusinessException(ErrorCode.SYSTEM_POST_NO_COMMENT);
         }
 
+        User author = userMapper.selectById(userId);
+        if (author == null) {
+            throw new BusinessException(ErrorCode.UNAUTHORIZED);
+        }
+
+        Long parentCommentId = request.getParentCommentId();
+        Comment parentComment = null;
+        Long rootCommentId = null;
+        int replyDepth = 0;
+
+        if (parentCommentId == null) {
+            if (isPostOwnedByUser(post, userId)) {
+                throw new BusinessException(ErrorCode.SELF_POST_DIRECT_COMMENT_FORBIDDEN);
+            }
+        } else {
+            parentComment = commentMapper.selectById(parentCommentId);
+            if (parentComment == null || Objects.equals(parentComment.getDeleted(), 1) || !Objects.equals(parentComment.getPostId(), postId)) {
+                throw new BusinessException(ErrorCode.COMMENT_PARENT_NOT_FOUND);
+            }
+            if (AuthorType.HUMAN.getCode().equalsIgnoreCase(parentComment.getAuthorType())
+                    && Objects.equals(parentComment.getAuthorId(), userId)) {
+                throw new BusinessException(ErrorCode.SELF_COMMENT_REPLY_FORBIDDEN);
+            }
+
+            int parentDepth = parentComment.getReplyDepth() == null ? 0 : parentComment.getReplyDepth();
+            replyDepth = parentDepth + 1;
+            if (replyDepth > MAX_REPLY_DEPTH) {
+                throw new BusinessException(ErrorCode.COMMENT_REPLY_DEPTH_EXCEEDED);
+            }
+
+            rootCommentId = parentComment.getRootCommentId() != null
+                    ? parentComment.getRootCommentId()
+                    : parentComment.getId();
+        }
+
         Comment comment = new Comment();
         comment.setPostId(postId);
         comment.setAuthorId(userId);
         comment.setAuthorType(AuthorType.HUMAN.getCode());
         comment.setContent(request.getContent());
+        comment.setParentCommentId(parentCommentId);
+        comment.setRootCommentId(rootCommentId);
+        comment.setReplyDepth(replyDepth);
 
         commentMapper.insert(comment);
 
@@ -365,6 +556,17 @@ public class PostServiceImpl implements PostService {
     }
 
     // ========== Helper Methods ==========
+
+    private boolean isPostOwnedByUser(Post post, Long userId) {
+        if (AuthorType.HUMAN.getCode().equalsIgnoreCase(post.getAuthorType())) {
+            return Objects.equals(post.getAuthorId(), userId);
+        }
+        if (AuthorType.AGENT.getCode().equalsIgnoreCase(post.getAuthorType())) {
+            Agent agent = agentMapper.selectById(post.getAuthorId());
+            return agent != null && Objects.equals(agent.getOwnerId(), userId);
+        }
+        return false;
+    }
 
     private PostResponse buildPostResponse(Post post, Long userId) {
         String authorName = null;
@@ -400,7 +602,8 @@ public class PostServiceImpl implements PostService {
         boolean isLiked = false;
         if (userId != null) {
             LambdaQueryWrapper<Like> queryWrapper = new LambdaQueryWrapper<>();
-            queryWrapper.eq(Like::getUserId, userId);
+            queryWrapper.eq(Like::getAuthorType, AuthorType.HUMAN.getCode());
+            queryWrapper.eq(Like::getAuthorId, userId);
             queryWrapper.eq(Like::getPostId, post.getId());
             isLiked = likeMapper.selectCount(queryWrapper) > 0;
         }
@@ -410,6 +613,73 @@ public class PostServiceImpl implements PostService {
         if (userId != null) {
             isDisliked = dislikeMapper.existsByAuthorAndPost(AuthorType.HUMAN.getCode(), userId, post.getId());
         }
+
+        return PostResponse.builder()
+                .postId(post.getId())
+                .authorId(post.getAuthorId())
+                .authorType(post.getAuthorType())
+                .authorName(authorName)
+                .authorAvatar(authorAvatar)
+                .agentOwnerName(agentOwnerName)
+                .content(post.getContent())
+                .imageUrls(post.getImageUrls())
+                .likeCount(post.getLikeCount())
+                .dislikeCount(post.getDislikeCount())
+                .viewCount(post.getViewCount())
+                .commentCount(post.getCommentCount())
+                .isLiked(isLiked)
+                .isDisliked(isDisliked)
+                .isSystemMessage(post.getIsSystemMessage())
+                .createdAt(post.getCreatedAt() != null ? post.getCreatedAt().format(DATE_FORMATTER) : null)
+                .build();
+    }
+
+    /**
+     * Build PostResponse using pre-loaded cached data (N+1 optimization).
+     * Used by getPostList for batch processing.
+     */
+    private PostResponse buildPostResponseCached(
+            Post post,
+            Long userId,
+            Map<Long, User> userCache,
+            Map<Long, Agent> agentCache,
+            Set<Long> likedPostIds,
+            Set<Long> dislikedPostIds) {
+
+        String authorName = null;
+        String authorAvatar = null;
+        String agentOwnerName = null;
+
+        if (AuthorType.HUMAN.getCode().equalsIgnoreCase(post.getAuthorType())) {
+            // Human author - get from cache
+            User user = userCache.get(post.getAuthorId());
+            if (user != null) {
+                authorName = user.getUsername();
+                authorAvatar = user.getAvatarUrl();
+            }
+        } else if (AuthorType.AGENT.getCode().equalsIgnoreCase(post.getAuthorType())) {
+            // Agent author - get from cache
+            Agent agent = agentCache.get(post.getAuthorId());
+            if (agent != null) {
+                authorName = agent.getName();
+                authorAvatar = agent.getAvatarUrl();
+
+                // Get owner name from cache
+                if (agent.getOwnerId() != null) {
+                    User owner = userCache.get(agent.getOwnerId());
+                    if (owner != null) {
+                        agentOwnerName = owner.getUsername();
+                    }
+                }
+            }
+        } else if (AuthorType.SYSTEM.getCode().equalsIgnoreCase(post.getAuthorType())) {
+            // System message - use default values
+            authorName = "SYSTEM";
+        }
+
+        // Check liked/disliked from pre-loaded sets
+        boolean isLiked = userId != null && likedPostIds.contains(post.getId());
+        boolean isDisliked = userId != null && dislikedPostIds.contains(post.getId());
 
         return PostResponse.builder()
                 .postId(post.getId())
@@ -466,7 +736,11 @@ public class PostServiceImpl implements PostService {
                 .authorName(authorName)
                 .authorAvatar(authorAvatar)
                 .agentOwnerName(agentOwnerName)
+                .parentCommentId(comment.getParentCommentId())
+                .rootCommentId(comment.getRootCommentId())
+                .replyDepth(comment.getReplyDepth() == null ? 0 : comment.getReplyDepth())
                 .content(comment.getContent())
+                .replies(new ArrayList<>())
                 .createdAt(comment.getCreatedAt() != null ? comment.getCreatedAt().format(DATE_FORMATTER) : null)
                 .build();
     }

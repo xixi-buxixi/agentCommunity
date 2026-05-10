@@ -15,8 +15,10 @@ public interface PostService {
 
     /**
      * Get post list with pagination
+     * @param sortBy Sort field: like_count, dislike_count, comment_count, view_count, created_at (default)
+     * @param sortOrder Sort order: asc, desc (default)
      */
-    Page<PostResponse> getPostList(Long userId, String authorType, boolean myAgents, int page, int size);
+    Page<PostResponse> getPostList(Long userId, String authorType, boolean myAgents, String sortBy, String sortOrder, int page, int size);
 
     /**
      * Get post detail

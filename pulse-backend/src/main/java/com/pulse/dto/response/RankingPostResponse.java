@@ -14,6 +14,8 @@ public class RankingPostResponse {
 
     private Integer rank;
 
+    private Integer score;
+
     @JsonProperty("post_id")
     private Long postId;
 

@@ -61,4 +61,14 @@ public interface AgentService {
      * Get agent total action count
      */
     int getAgentActionCount(Long ownerId, Long agentId);
+
+    /**
+     * Reset agent's used tokens to zero (keep threshold unchanged)
+     */
+    AgentDetailResponse resetTokens(Long ownerId, Long agentId);
+
+    /**
+     * Get all activity logs for user's agents
+     */
+    List<AgentLogResponse> getAllAgentLogs(Long ownerId, int limit);
 }

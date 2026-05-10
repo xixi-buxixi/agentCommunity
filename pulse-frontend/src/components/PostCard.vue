@@ -2,11 +2,14 @@
 /**
  * Post Card Component
  * Square feed post display with human/agent/system distinction
+ * Mobile-First Responsive Design
  *
  * Props:
  * - post: { post_id, author_id, author_type, author_name, author_avatar, agent_owner_name, content, like_count, comment_count, is_liked, is_system_message, created_at }
  */
 import { computed } from 'vue'
+import { formatRelativeTime } from '@/utils/format'
+import { renderMarkdown } from '@/utils/markdown'
 
 const props = defineProps({
   post: {
@@ -39,85 +42,50 @@ const avatarClass = computed(() => {
   return 'border-pulse-muted bg-pulse-muted/10 text-pulse-muted'
 })
 
-// Format time - handle ISO string format from backend
-const formatTime = (timestamp) => {
-  if (!timestamp) return '--:--'
-  try {
-    // Backend returns ISO format: "2026-04-01T20:30:00Z"
-    const date = new Date(timestamp)
-    if (isNaN(date.getTime())) return '--:--'
-    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
-  } catch {
-    return '--:--'
-  }
-}
-
 // Calculate relative time
-const relativeTime = computed(() => {
-  if (!props.post.created_at) return 'UNKNOWN'
-  try {
-    const now = new Date()
-    const created = new Date(props.post.created_at)
-    if (isNaN(created.getTime())) return 'UNKNOWN'
-
-    const diffMs = now - created
-    if (diffMs < 0) return 'JUST_NOW'
-
-    const diffMins = Math.floor(diffMs / 60000)
-    if (diffMins < 1) return 'JUST_NOW'
-    if (diffMins < 60) return `${diffMins}_MIN_AGO`
-
-    const diffHours = Math.floor(diffMins / 60)
-    if (diffHours < 24) return `${diffHours}_HR_AGO`
-
-    const diffDays = Math.floor(diffHours / 24)
-    return `${diffDays}_DAY_AGO`
-  } catch {
-    return 'UNKNOWN'
-  }
-})
+const relativeTime = computed(() => formatRelativeTime(props.post.created_at))
 </script>
 
 <template>
   <!-- Human Post -->
   <div
     v-if="isHuman"
-    class="border-l-2 bg-pulse-card p-4 cursor-pointer hover:bg-pulse-card/80 transition"
+    class="border-l-2 bg-pulse-card p-3 sm:p-4 cursor-pointer hover:bg-pulse-card/80 transition"
     :class="borderClass"
     @click="emit('view', post.post_id)"
   >
     <div class="flex items-center gap-2 mb-2">
       <div
-        class="w-6 h-6 border flex items-center justify-center text-xs"
+        class="w-5 h-5 sm:w-6 sm:h-6 border flex items-center justify-center text-[10px] sm:text-xs shrink-0"
         :class="avatarClass"
       >
         {{ post.author_name?.charAt(0) || '?' }}
       </div>
-      <span class="text-pulse-white text-sm">{{ post.author_name }}</span>
+      <span class="text-pulse-white text-xs sm:text-sm truncate">{{ post.author_name }}</span>
       <span
-        class="text-xs px-1.5 py-0.5 border"
+        class="text-[10px] sm:text-xs px-1 sm:px-1.5 py-0.5 border shrink-0"
         :class="authorBadgeClass"
       >[HUMAN]</span>
-      <span class="text-pulse-muted text-xs ml-auto">{{ relativeTime }}</span>
+      <span class="text-pulse-muted text-[10px] sm:text-xs ml-auto shrink-0">{{ relativeTime }}</span>
     </div>
-    <p class="text-pulse-text text-sm leading-relaxed mb-3">{{ post.content }}</p>
-    <div class="flex gap-4 text-pulse-muted text-xs" @click.stop>
+    <div class="markdown-content text-xs sm:text-sm mb-2 sm:mb-3" v-html="renderMarkdown(post.content)"></div>
+    <div class="flex gap-3 sm:gap-4 text-pulse-muted text-[10px] sm:text-xs" @click.stop>
       <button
-        class="hover:text-pulse-dead transition flex items-center gap-1"
+        class="hover:text-pulse-dead transition flex items-center gap-1 min-h-[44px]"
         :class="{ 'text-pulse-dead': post.is_liked }"
         @click="emit('like', post.post_id)"
       >
         {{ post.is_liked ? '♥' : '♡' }} {{ post.like_count }}
       </button>
       <button
-        class="hover:text-pulse-accent transition flex items-center gap-1"
+        class="hover:text-pulse-accent transition flex items-center gap-1 min-h-[44px]"
         :class="{ 'text-pulse-accent': post.is_disliked }"
         @click="emit('dislike', post.post_id)"
       >
         {{ post.is_disliked ? '▼' : '▽' }} {{ post.dislike_count || 0 }}
       </button>
       <button
-        class="hover:text-pulse-accent transition flex items-center gap-1"
+        class="hover:text-pulse-accent transition flex items-center gap-1 min-h-[44px]"
         @click="emit('comment', post.post_id)"
       >
         ◇ {{ post.comment_count }}
@@ -131,43 +99,43 @@ const relativeTime = computed(() => {
   <!-- Agent Post (with scanlines) -->
   <div
     v-else-if="isAgent"
-    class="border-l-2 bg-pulse-card agent-scanlines p-4 relative overflow-hidden cursor-pointer hover:bg-pulse-card/80 transition"
+    class="border-l-2 bg-pulse-card agent-scanlines p-3 sm:p-4 relative overflow-hidden cursor-pointer hover:bg-pulse-card/80 transition"
     :class="borderClass"
     @click="emit('view', post.post_id)"
   >
     <div class="flex items-center gap-2 mb-2">
       <div
-        class="w-6 h-6 border flex items-center justify-center text-xs"
+        class="w-5 h-5 sm:w-6 sm:h-6 border flex items-center justify-center text-[10px] sm:text-xs shrink-0"
         :class="avatarClass"
       >
         {{ post.author_name?.charAt(0) || '?' }}
       </div>
-      <span class="text-pulse-white text-sm">{{ post.author_name }}</span>
+      <span class="text-pulse-white text-xs sm:text-sm truncate">{{ post.author_name }}</span>
       <span
-        class="text-xs px-1.5 py-0.5 border"
+        class="text-[10px] sm:text-xs px-1 sm:px-1.5 py-0.5 border shrink-0"
         :class="authorBadgeClass"
       >[AGENT]</span>
-      <span class="text-pulse-muted text-xs">@{{ post.agent_owner_name }}</span>
-      <span class="text-pulse-muted text-xs ml-auto">{{ relativeTime }}</span>
+      <span class="text-pulse-muted text-[10px] sm:text-xs truncate hidden sm:inline">@{{ post.agent_owner_name }}</span>
+      <span class="text-pulse-muted text-[10px] sm:text-xs ml-auto shrink-0">{{ relativeTime }}</span>
     </div>
-    <p class="text-pulse-text text-sm leading-relaxed mb-3">{{ post.content }}</p>
-    <div class="flex gap-4 text-pulse-muted text-xs" @click.stop>
+    <div class="markdown-content text-xs sm:text-sm mb-2 sm:mb-3" v-html="renderMarkdown(post.content)"></div>
+    <div class="flex gap-3 sm:gap-4 text-pulse-muted text-[10px] sm:text-xs" @click.stop>
       <button
-        class="flex items-center gap-1"
+        class="flex items-center gap-1 min-h-[44px]"
         :class="{ 'text-pulse-dead': post.is_liked }"
         @click="emit('like', post.post_id)"
       >
         {{ post.is_liked ? '♥' : '♡' }} {{ post.like_count }}
       </button>
       <button
-        class="flex items-center gap-1"
+        class="flex items-center gap-1 min-h-[44px]"
         :class="{ 'text-pulse-accent': post.is_disliked }"
         @click="emit('dislike', post.post_id)"
       >
         {{ post.is_disliked ? '▼' : '▽' }} {{ post.dislike_count || 0 }}
       </button>
       <button
-        class="hover:text-pulse-accent transition flex items-center gap-1"
+        class="hover:text-pulse-accent transition flex items-center gap-1 min-h-[44px]"
         @click="emit('comment', post.post_id)"
       >
         ◇ {{ post.comment_count }}
@@ -183,33 +151,33 @@ const relativeTime = computed(() => {
   <!-- System Post -->
   <div
     v-else-if="isSystem"
-    class="border-l-2 bg-pulse-card/50 p-4 cursor-pointer hover:bg-pulse-card/80 transition"
+    class="border-l-2 bg-pulse-card/50 p-3 sm:p-4 cursor-pointer hover:bg-pulse-card/80 transition"
     :class="borderClass"
     @click="emit('view', post.post_id)"
   >
     <div class="flex items-center gap-2 mb-2">
       <div
-        class="w-6 h-6 border flex items-center justify-center text-xs"
+        class="w-5 h-5 sm:w-6 sm:h-6 border flex items-center justify-center text-[10px] sm:text-xs shrink-0"
         :class="avatarClass"
       >
         SYS
       </div>
-      <span class="text-pulse-muted text-sm">SYSTEM</span>
+      <span class="text-pulse-muted text-xs sm:text-sm">SYSTEM</span>
       <span
-        class="text-xs px-1.5 py-0.5 border"
+        class="text-[10px] sm:text-xs px-1 sm:px-1.5 py-0.5 border shrink-0"
         :class="authorBadgeClass"
       >[SYSTEM]</span>
-      <span class="text-pulse-muted text-xs ml-auto">{{ relativeTime }}</span>
+      <span class="text-pulse-muted text-[10px] sm:text-xs ml-auto shrink-0">{{ relativeTime }}</span>
     </div>
-    <p class="text-pulse-muted text-sm leading-relaxed mb-3 italic">{{ post.content }}</p>
-    <div class="flex gap-4 text-pulse-muted text-xs" @click.stop>
-      <span class="flex items-center gap-1">
+    <div class="markdown-content markdown-muted text-xs sm:text-sm mb-2 sm:mb-3 italic" v-html="renderMarkdown(post.content)"></div>
+    <div class="flex gap-3 sm:gap-4 text-pulse-muted text-[10px] sm:text-xs" @click.stop>
+      <span class="flex items-center gap-1 min-h-[44px]">
         ♥ {{ post.like_count }}
       </span>
-      <span class="flex items-center gap-1">
+      <span class="flex items-center gap-1 min-h-[44px]">
         ▽ {{ post.dislike_count || 0 }}
       </span>
-      <span class="flex items-center gap-1">
+      <span class="flex items-center gap-1 min-h-[44px]">
         ◇ {{ post.comment_count }}
       </span>
       <span class="flex items-center gap-1 opacity-60">

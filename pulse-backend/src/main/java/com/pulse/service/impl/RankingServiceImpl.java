@@ -25,6 +25,7 @@ import java.util.stream.Collectors;
  * Core business logic for post ranking/leaderboard.
  *
  * Redis Key Design:
+ * - Hot ranking: pulse:rank:hot (Sorted Set, score = like_count * 3 + comment_count * 5 + view_count)
  * - Like ranking: pulse:rank:like (Sorted Set, score = like_count)
  * - Comment ranking: pulse:rank:comment (Sorted Set, score = comment_count)
  *
@@ -49,6 +50,7 @@ public class RankingServiceImpl implements RankingService {
 
     // Redis key prefixes
     private static final String REDIS_KEY_PREFIX = "pulse:rank:";
+    private static final String HOT_RANKING_KEY = REDIS_KEY_PREFIX + "hot";
     private static final String LIKE_RANKING_KEY = REDIS_KEY_PREFIX + "like";
     private static final String COMMENT_RANKING_KEY = REDIS_KEY_PREFIX + "comment";
 
@@ -127,6 +129,7 @@ public class RankingServiceImpl implements RankingService {
     @Override
     public void refreshAllRankingCaches() {
         log.info("Refreshing all ranking caches");
+        refreshRankingCache("hot");
         refreshRankingCache("like");
         refreshRankingCache("comment");
         log.info("All ranking caches refreshed");
@@ -139,12 +142,18 @@ public class RankingServiceImpl implements RankingService {
      */
     private String validateType(String type) {
         if (type == null || type.isBlank()) {
-            return "like";
+            return "hot";
         }
         String normalized = type.toLowerCase().trim();
-        if (!"like".equals(normalized) && !"comment".equals(normalized)) {
-            log.warn("Invalid ranking type: {}, using default 'like'", type);
+        if ("likes".equals(normalized)) {
             return "like";
+        }
+        if ("comments".equals(normalized)) {
+            return "comment";
+        }
+        if (!"hot".equals(normalized) && !"like".equals(normalized) && !"comment".equals(normalized)) {
+            log.warn("Invalid ranking type: {}, using default 'hot'", type);
+            return "hot";
         }
         return normalized;
     }
@@ -153,7 +162,13 @@ public class RankingServiceImpl implements RankingService {
      * Get Redis key for ranking type
      */
     private String getRedisKey(String type) {
-        return "like".equals(type) ? LIKE_RANKING_KEY : COMMENT_RANKING_KEY;
+        if ("like".equals(type)) {
+            return LIKE_RANKING_KEY;
+        }
+        if ("comment".equals(type)) {
+            return COMMENT_RANKING_KEY;
+        }
+        return HOT_RANKING_KEY;
     }
 
     /**
@@ -203,7 +218,7 @@ public class RankingServiceImpl implements RankingService {
         List<Post> posts = fetchTopPostsFromMySQL(type, limit);
         return posts.stream()
                 .map(post -> {
-                    int score = "like".equals(type) ? post.getLikeCount() : post.getCommentCount();
+                    int score = calculateScore(post, type);
                     scoreMap.put(post.getId(), score);
                     return post.getId();
                 })
@@ -216,8 +231,10 @@ public class RankingServiceImpl implements RankingService {
     private List<Post> fetchTopPostsFromMySQL(String type, int limit) {
         if ("like".equals(type)) {
             return postMapper.findTopByLikeCount(limit);
-        } else {
+        } else if ("comment".equals(type)) {
             return postMapper.findTopByCommentCount(limit);
+        } else {
+            return postMapper.findTopByHotScore(limit);
         }
     }
 
@@ -229,9 +246,8 @@ public class RankingServiceImpl implements RankingService {
         redisTemplate.executePipelined((org.springframework.data.redis.core.RedisCallback<Object>) connection -> {
             for (Post post : posts) {
                 String postIdStr = String.valueOf(post.getId());
-                double score = "like".equals(key.substring(REDIS_KEY_PREFIX.length()))
-                        ? post.getLikeCount()
-                        : post.getCommentCount();
+                String type = key.substring(REDIS_KEY_PREFIX.length());
+                double score = calculateScore(post, type);
                 // Use raw connection to add to sorted set
                 connection.zAdd(
                         redisTemplate.getStringSerializer().serialize(key),
@@ -283,6 +299,7 @@ public class RankingServiceImpl implements RankingService {
 
             RankingPostResponse response = RankingPostResponse.builder()
                     .rank(rank)
+                    .score(score)
                     .postId(post.getId())
                     .authorId(post.getAuthorId())
                     .authorType(post.getAuthorType())
@@ -350,6 +367,19 @@ public class RankingServiceImpl implements RankingService {
             return content;
         }
         return content.substring(0, maxLength) + "...";
+    }
+
+    private int calculateScore(Post post, String type) {
+        if ("like".equals(type)) {
+            return post.getLikeCount() != null ? post.getLikeCount() : 0;
+        }
+        if ("comment".equals(type)) {
+            return post.getCommentCount() != null ? post.getCommentCount() : 0;
+        }
+        int likes = post.getLikeCount() != null ? post.getLikeCount() : 0;
+        int comments = post.getCommentCount() != null ? post.getCommentCount() : 0;
+        int views = post.getViewCount() != null ? post.getViewCount() : 0;
+        return likes * 3 + comments * 5 + views;
     }
 
     /**

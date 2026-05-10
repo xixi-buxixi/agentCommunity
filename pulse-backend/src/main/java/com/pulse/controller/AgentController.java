@@ -141,4 +141,28 @@ public class AgentController {
         int count = agentService.getAgentActionCount(principal.getUserId(), agentId);
         return ApiResponse.success(count);
     }
+
+    /**
+     * Reset Agent Tokens (clear used_tokens, keep threshold unchanged)
+     */
+    @Operation(summary = "Reset agent tokens to zero", security = @SecurityRequirement(name = "Bearer"))
+    @PostMapping("/{agent_id}/reset-tokens")
+    public ApiResponse<AgentDetailResponse> resetTokens(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @PathVariable("agent_id") Long agentId) {
+        AgentDetailResponse response = agentService.resetTokens(principal.getUserId(), agentId);
+        return ApiResponse.success("Token已重置", response);
+    }
+
+    /**
+     * Get All Agent Logs (activity logs for all user's agents)
+     */
+    @Operation(summary = "Get all agent activity logs", security = @SecurityRequirement(name = "Bearer"))
+    @GetMapping("/logs")
+    public ApiResponse<List<AgentLogResponse>> getAllAgentLogs(
+            @AuthenticationPrincipal UserPrincipal principal,
+            @RequestParam(defaultValue = "20") int limit) {
+        List<AgentLogResponse> logs = agentService.getAllAgentLogs(principal.getUserId(), limit);
+        return ApiResponse.success(logs);
+    }
 }

@@ -2,18 +2,20 @@
 /**
  * Status Indicator Component
  * Breathing status light
+ * Mobile-First Responsive Design
  *
  * Props:
- * - status: 1 (ALIVE) | 0 (DEAD) | 2 (ERROR)
+ * - status: 1/ALIVE | 0/DEAD | 2/ERROR - validated enum
  * - showLabel: boolean
- * - size: 'sm' | 'md' | 'lg'
+ * - size: 'sm' | 'md' | 'lg' - validated enum
  */
 import { computed } from 'vue'
 
 const props = defineProps({
   status: {
-    type: Number,
-    default: 1
+    type: [Number, String],
+    default: 1,
+    validator: (val) => [0, 1, 2, 'ALIVE', 'DEAD', 'ERROR'].includes(val)
   },
   showLabel: {
     type: Boolean,
@@ -21,7 +23,8 @@ const props = defineProps({
   },
   size: {
     type: String,
-    default: 'md'
+    default: 'md',
+    validator: (val) => ['sm', 'md', 'lg'].includes(val)
   }
 })
 
@@ -34,19 +37,22 @@ const sizeClass = computed(() => ({
 const statusConfig = computed(() => ({
   1: { class: 'bg-pulse-alive status-alive', text: 'text-pulse-alive', label: 'ALIVE' },
   0: { class: 'bg-pulse-dead status-dead', text: 'text-pulse-dead', label: 'DEAD' },
-  2: { class: 'bg-pulse-warning status-warning', text: 'text-pulse-warning', label: 'ERROR' }
+  2: { class: 'bg-pulse-warning status-warning', text: 'text-pulse-warning', label: 'ERROR' },
+  ALIVE: { class: 'bg-pulse-alive status-alive', text: 'text-pulse-alive', label: 'ALIVE' },
+  DEAD: { class: 'bg-pulse-dead status-dead', text: 'text-pulse-dead', label: 'DEAD' },
+  ERROR: { class: 'bg-pulse-warning status-warning', text: 'text-pulse-warning', label: 'ERROR' }
 }[props.status] || { class: 'bg-pulse-muted', text: 'text-pulse-muted', label: 'UNKNOWN' }))
 </script>
 
 <template>
-  <div class="flex items-center gap-2">
+  <div class="flex items-center gap-1.5 sm:gap-2">
     <div
-      class="rounded-full"
+      class="rounded-full shrink-0"
       :class="[sizeClass, statusConfig.class]"
     ></div>
     <span
       v-if="showLabel"
-      class="text-xs"
+      class="text-[10px] sm:text-xs"
       :class="statusConfig.text"
     >{{ statusConfig.label }}</span>
   </div>

@@ -1,17 +1,41 @@
 import axios from 'axios'
 import { useAuthStore } from '@/stores/auth'
+import { pinia } from '@/main'
+import { DEFAULT_VERSION } from '@/api/config'
 
 const request = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || '/api/v1',
+  baseURL: DEFAULT_VERSION,
   timeout: 30000,
   headers: { 'Content-Type': 'application/json' }
 })
 
+const AUTH_ERROR_CODES = new Set([10004, 10005, 10006, 10007])
+
+// Get auth store instance safely (outside of component setup)
+// Must use the pinia instance created in main.js
+let authStoreInstance = null
+const getAuthStore = () => {
+  if (!authStoreInstance && pinia) {
+    authStoreInstance = useAuthStore(pinia)
+  }
+  return authStoreInstance
+}
+
+const clearAuthAndRedirect = () => {
+  const authStore = getAuthStore()
+  if (authStore) {
+    authStore.logout()
+  }
+  if (window.location.pathname !== '/terminal') {
+    window.location.href = '/terminal'
+  }
+}
+
 // Request interceptor - add auth token
 request.interceptors.request.use(
   (config) => {
-    const authStore = useAuthStore()
-    if (authStore.token) {
+    const authStore = getAuthStore()
+    if (authStore && authStore.token) {
       config.headers.Authorization = `Bearer ${authStore.token}`
     }
     return config
@@ -23,8 +47,11 @@ request.interceptors.request.use(
 request.interceptors.response.use(
   (response) => {
     const { code, message, data } = response.data
-    if (code === 200 || code === 201) {
+    if (code === 0 || code === 200 || code === 201) {
       return { data, message }
+    }
+    if (AUTH_ERROR_CODES.has(code)) {
+      clearAuthAndRedirect()
     }
     // Terminal-style error logging
     console.error(`> ERROR: ${message}`)
@@ -32,9 +59,7 @@ request.interceptors.response.use(
   },
   (error) => {
     if (error.response?.status === 401) {
-      const authStore = useAuthStore()
-      authStore.logout()
-      window.location.href = '/terminal'
+      clearAuthAndRedirect()
     }
     const message = error.response?.data?.message || 'CONNECTION_ERROR'
     console.error(`> ERROR: ${message}`)

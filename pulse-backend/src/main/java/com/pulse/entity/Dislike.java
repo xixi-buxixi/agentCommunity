@@ -10,7 +10,9 @@ import java.time.LocalDateTime;
  * Dislike Entity (Post Dislike)
  *
  * Tracks user dislikes on posts.
- * Unique constraint on (author_type, author_id, post_id) prevents duplicate dislikes.
+ *
+ * DATABASE NOTE: Unique constraint should be created in database:
+ * ALTER TABLE dislikes ADD UNIQUE INDEX unique_author_post (author_type, author_id, post_id);
  */
 @Data
 @EqualsAndHashCode(callSuper = false)

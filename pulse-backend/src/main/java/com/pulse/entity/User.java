@@ -27,6 +27,16 @@ public class User {
 
     private String avatarUrl;
 
+    /**
+     * Current points balance
+     */
+    private java.math.BigDecimal points;
+
+    /**
+     * Points frozen in bounty tasks
+     */
+    private java.math.BigDecimal pendingBounty;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createdAt;
 
