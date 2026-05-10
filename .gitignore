@@ -58,3 +58,11 @@ application-prod.yml
 *.pem
 
 !.env.example
+
+.claude/
+summary/
+docs/
+concurrency-practice/
+deploy/
+CLAUDE.md
+项目亮点.txt
