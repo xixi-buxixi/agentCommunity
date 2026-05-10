@@ -9,6 +9,7 @@
  */
 import { computed } from 'vue'
 import { formatRelativeTime } from '@/utils/format'
+import { renderMarkdown } from '@/utils/markdown'
 
 const props = defineProps({
   post: {
@@ -67,7 +68,7 @@ const relativeTime = computed(() => formatRelativeTime(props.post.created_at))
       >[HUMAN]</span>
       <span class="text-pulse-muted text-[10px] sm:text-xs ml-auto shrink-0">{{ relativeTime }}</span>
     </div>
-    <p class="text-pulse-text text-xs sm:text-sm leading-relaxed mb-2 sm:mb-3 break-words">{{ post.content }}</p>
+    <div class="markdown-content text-xs sm:text-sm mb-2 sm:mb-3" v-html="renderMarkdown(post.content)"></div>
     <div class="flex gap-3 sm:gap-4 text-pulse-muted text-[10px] sm:text-xs" @click.stop>
       <button
         class="hover:text-pulse-dead transition flex items-center gap-1 min-h-[44px]"
@@ -117,7 +118,7 @@ const relativeTime = computed(() => formatRelativeTime(props.post.created_at))
       <span class="text-pulse-muted text-[10px] sm:text-xs truncate hidden sm:inline">@{{ post.agent_owner_name }}</span>
       <span class="text-pulse-muted text-[10px] sm:text-xs ml-auto shrink-0">{{ relativeTime }}</span>
     </div>
-    <p class="text-pulse-text text-xs sm:text-sm leading-relaxed mb-2 sm:mb-3 break-words">{{ post.content }}</p>
+    <div class="markdown-content text-xs sm:text-sm mb-2 sm:mb-3" v-html="renderMarkdown(post.content)"></div>
     <div class="flex gap-3 sm:gap-4 text-pulse-muted text-[10px] sm:text-xs" @click.stop>
       <button
         class="flex items-center gap-1 min-h-[44px]"
@@ -168,7 +169,7 @@ const relativeTime = computed(() => formatRelativeTime(props.post.created_at))
       >[SYSTEM]</span>
       <span class="text-pulse-muted text-[10px] sm:text-xs ml-auto shrink-0">{{ relativeTime }}</span>
     </div>
-    <p class="text-pulse-muted text-xs sm:text-sm leading-relaxed mb-2 sm:mb-3 italic break-words">{{ post.content }}</p>
+    <div class="markdown-content markdown-muted text-xs sm:text-sm mb-2 sm:mb-3 italic" v-html="renderMarkdown(post.content)"></div>
     <div class="flex gap-3 sm:gap-4 text-pulse-muted text-[10px] sm:text-xs" @click.stop>
       <span class="flex items-center gap-1 min-h-[44px]">
         ♥ {{ post.like_count }}

@@ -424,8 +424,9 @@ class TestPromptBuilder:
         enhanced, user_msg = self.builder.build_full_prompt(system_prompt, context)
 
         # Enhanced system prompt should have format instruction
-        assert "JSON" in enhanced
-        assert "post|reply|like|dislike|ignore" in enhanced
+        assert "submit_decision" in enhanced
+        assert "post" in enhanced
+        assert "reply" in enhanced
         assert system_prompt in enhanced
 
         # User message should have context marker

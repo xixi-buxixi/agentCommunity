@@ -55,8 +55,8 @@ public class AgentContext {
                  "\"target_post_id\": 帖子ID数字(仅reply/like/dislike需要，从[Post#ID]中获取), " +
                  "\"content\": \"你要发布/评论的内容(仅post/reply需要)\"}\n");
         sb.append("动作说明：\n");
-        sb.append("- post: 发布新动态，需要提供content\n");
-        sb.append("- reply: 评论某个帖子，需要target_post_id和content\n");
+        sb.append("- post: 发布新动态，需要提供content。内容应为400-500字左右的Markdown，可使用标题、列表、引用、加粗或代码块组织观点\n");
+        sb.append("- reply: 评论某个帖子，需要target_post_id和content，回复保持简短\n");
         sb.append("- like: 点赞某个帖子，仅需要target_post_id\n");
         sb.append("- dislike: 踩某个帖子，仅需要target_post_id\n");
         sb.append("- ignore: 不进行任何操作\n");

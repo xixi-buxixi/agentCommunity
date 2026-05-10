@@ -54,10 +54,22 @@ const systemMessages = ref([
   '> AWAITING PROTOCOL SELECTION'
 ])
 
+// Server error banner
+const serverError = ref(null)
+
+const clearServerError = () => {
+  serverError.value = null
+}
+
 const pushSystemMessage = (message) => {
   if (systemMessages.value[systemMessages.value.length - 1] !== message) {
     systemMessages.value.push(message)
   }
+}
+
+const showServerError = (message) => {
+  serverError.value = message
+  pushSystemMessage(`> ERROR: ${message}`)
 }
 
 // Session status
@@ -139,9 +151,9 @@ const validateAgentWatchForm = () => {
 
 // Handle login
 const handleLogin = async () => {
-  // Validate first
+  clearServerError()
   if (!validateLoginForm()) {
-    pushSystemMessage(`> VALIDATION_ERROR: Invalid input format`)
+    showServerError('请检查输入格式，所有字段需正确填写')
     return
   }
 
@@ -152,15 +164,15 @@ const handleLogin = async () => {
     pushSystemMessage(`> SESSION ACTIVE`)
     router.push('/lab')
   } else {
-    pushSystemMessage(`> ERROR: ${authStore.error}`)
+    showServerError(authStore.error || '登录失败，请检查邮箱和密码')
   }
 }
 
 // Handle register
 const handleRegister = async () => {
-  // Validate first
+  clearServerError()
   if (!validateRegisterForm()) {
-    pushSystemMessage(`> VALIDATION_ERROR: Invalid input format`)
+    showServerError('请检查输入格式，所有字段需正确填写')
     return
   }
 
@@ -175,20 +187,21 @@ const handleRegister = async () => {
     pushSystemMessage(`> SESSION ACTIVE`)
     router.push('/lab')
   } else {
-    pushSystemMessage(`> ERROR: ${authStore.error}`)
+    showServerError(authStore.error || '注册失败，请重试')
   }
 }
 
 const handleAgentWatch = async () => {
+  clearServerError()
   if (!validateAgentWatchForm()) {
-    pushSystemMessage(`> VALIDATION_ERROR: Agent watch credentials required`)
+    showServerError('请填写完整的 Agent 监控凭证')
     return
   }
 
   pushSystemMessage(`> VERIFYING_OPERATOR...`)
   const success = await authStore.login(agentWatchForm.value.email, agentWatchForm.value.password)
   if (!success) {
-    pushSystemMessage(`> ERROR: ${authStore.error}`)
+    showServerError(authStore.error || '身份验证失败')
     return
   }
 
@@ -200,7 +213,7 @@ const handleAgentWatch = async () => {
     router.push(`/monitor/${agentId}`)
   } catch (err) {
     authStore.logout()
-    pushSystemMessage(`> ERROR: ${err.message || 'AGENT_STREAM_DENIED'}`)
+    showServerError(err.message || 'Agent 访问被拒绝')
   }
 }
 
@@ -211,6 +224,7 @@ const setProtocol = (nextProtocol) => {
   registerErrors.value = {}
   agentWatchErrors.value = {}
   authStore.error = null
+  clearServerError()
   if (nextProtocol === 'human') {
     agentWatchForm.value = { agentId: '', email: '', password: '' }
   } else {
@@ -227,6 +241,7 @@ const toggleMode = () => {
   // Clear errors when switching mode
   loginErrors.value = {}
   registerErrors.value = {}
+  clearServerError()
   pushSystemMessage(`> MODE: ${isRegisterMode.value ? 'NEW_INSTANCE' : 'INITIALIZE_SYNC'}`)
 }
 
@@ -259,9 +274,19 @@ const getProtocolClass = (type) => {
       <!-- Terminal Body -->
       <div class="border border-t-0 border-pulse-border bg-pulse-card p-4 sm:p-6">
 
+        <!-- Server Error Banner -->
+        <div v-if="serverError" class="border-2 border-pulse-warning bg-pulse-warning/10 rounded px-3 sm:px-4 py-3 mb-4 flex items-start gap-3">
+          <span class="text-pulse-warning text-lg shrink-0 mt-0.5">&#9888;</span>
+          <div class="flex-1 min-w-0">
+            <div class="text-pulse-warning text-xs sm:text-sm font-bold mb-1">ERROR</div>
+            <div class="text-pulse-text text-xs sm:text-sm break-words">{{ serverError }}</div>
+          </div>
+          <button @click="clearServerError" class="text-pulse-muted hover:text-pulse-white shrink-0 text-sm min-h-[28px] min-w-[28px] flex items-center justify-center">&#10005;</button>
+        </div>
+
         <!-- System Messages -->
         <div class="text-pulse-muted text-[10px] sm:text-xs mb-4 sm:mb-6 space-y-1 max-h-32 overflow-y-auto">
-          <p v-for="(msg, index) in systemMessages" :key="index">{{ msg }}</p>
+          <p v-for="(msg, index) in systemMessages" :key="index" :class="{ 'text-pulse-dead': msg.startsWith('> ERROR') }">{{ msg }}</p>
         </div>
 
         <!-- Protocol Selection -->
@@ -294,8 +319,11 @@ const getProtocolClass = (type) => {
             <TerminalInput
               v-model="loginForm.email"
               placeholder="user@example.com"
+              :has-error="!!loginErrors.email"
             />
-            <div v-if="loginErrors.email" class="text-pulse-dead text-[10px] mt-1">> {{ loginErrors.email }}</div>
+            <div v-if="loginErrors.email" class="text-pulse-warning text-[11px] sm:text-xs mt-1.5 flex items-center gap-1.5">
+              <span>&#9888;</span><span>{{ loginErrors.email }}</span>
+            </div>
           </div>
 
           <div v-if="isRegisterMode">
@@ -303,8 +331,11 @@ const getProtocolClass = (type) => {
             <TerminalInput
               v-model="registerForm.username"
               placeholder="creator_01"
+              :has-error="!!registerErrors.username"
             />
-            <div v-if="registerErrors.username" class="text-pulse-dead text-[10px] mt-1">> {{ registerErrors.username }}</div>
+            <div v-if="registerErrors.username" class="text-pulse-warning text-[11px] sm:text-xs mt-1.5 flex items-center gap-1.5">
+              <span>&#9888;</span><span>{{ registerErrors.username }}</span>
+            </div>
           </div>
 
           <div v-if="isRegisterMode">
@@ -312,8 +343,11 @@ const getProtocolClass = (type) => {
             <TerminalInput
               v-model="registerForm.email"
               placeholder="user@example.com"
+              :has-error="!!registerErrors.email"
             />
-            <div v-if="registerErrors.email" class="text-pulse-dead text-[10px] mt-1">> {{ registerErrors.email }}</div>
+            <div v-if="registerErrors.email" class="text-pulse-warning text-[11px] sm:text-xs mt-1.5 flex items-center gap-1.5">
+              <span>&#9888;</span><span>{{ registerErrors.email }}</span>
+            </div>
           </div>
 
           <div v-if="isRegisterMode">
@@ -322,8 +356,11 @@ const getProtocolClass = (type) => {
               v-model="registerForm.password"
               type="password"
               placeholder="SecurePassword123"
+              :has-error="!!registerErrors.password"
             />
-            <div v-if="registerErrors.password" class="text-pulse-dead text-[10px] mt-1">> {{ registerErrors.password }}</div>
+            <div v-if="registerErrors.password" class="text-pulse-warning text-[11px] sm:text-xs mt-1.5 flex items-center gap-1.5">
+              <span>&#9888;</span><span>{{ registerErrors.password }}</span>
+            </div>
           </div>
 
           <div v-if="!isRegisterMode">
@@ -332,8 +369,11 @@ const getProtocolClass = (type) => {
               v-model="loginForm.password"
               type="password"
               placeholder="SecurePassword123"
+              :has-error="!!loginErrors.password"
             />
-            <div v-if="loginErrors.password" class="text-pulse-dead text-[10px] mt-1">> {{ loginErrors.password }}</div>
+            <div v-if="loginErrors.password" class="text-pulse-warning text-[11px] sm:text-xs mt-1.5 flex items-center gap-1.5">
+              <span>&#9888;</span><span>{{ loginErrors.password }}</span>
+            </div>
           </div>
 
           <button
@@ -364,23 +404,32 @@ const getProtocolClass = (type) => {
           <TerminalInput
             v-model="agentWatchForm.agentId"
             placeholder="Agent numeric ID"
+            :has-error="!!agentWatchErrors.agentId"
           />
-          <div v-if="agentWatchErrors.agentId" class="text-pulse-dead text-[10px] mt-1">> {{ agentWatchErrors.agentId }}</div>
+          <div v-if="agentWatchErrors.agentId" class="text-pulse-warning text-[11px] sm:text-xs mt-1.5 flex items-center gap-1.5">
+            <span>&#9888;</span><span>{{ agentWatchErrors.agentId }}</span>
+          </div>
 
           <div class="text-pulse-muted text-[10px] sm:text-xs mb-2">OPERATOR_EMAIL:</div>
           <TerminalInput
             v-model="agentWatchForm.email"
             placeholder="owner@example.com"
+            :has-error="!!agentWatchErrors.email"
           />
-          <div v-if="agentWatchErrors.email" class="text-pulse-dead text-[10px] mt-1">> {{ agentWatchErrors.email }}</div>
+          <div v-if="agentWatchErrors.email" class="text-pulse-warning text-[11px] sm:text-xs mt-1.5 flex items-center gap-1.5">
+            <span>&#9888;</span><span>{{ agentWatchErrors.email }}</span>
+          </div>
 
           <div class="text-pulse-muted text-[10px] sm:text-xs mb-2">ACCESS_KEY:</div>
           <TerminalInput
             v-model="agentWatchForm.password"
             type="password"
             placeholder="Owner password"
+            :has-error="!!agentWatchErrors.password"
           />
-          <div v-if="agentWatchErrors.password" class="text-pulse-dead text-[10px] mt-1">> {{ agentWatchErrors.password }}</div>
+          <div v-if="agentWatchErrors.password" class="text-pulse-warning text-[11px] sm:text-xs mt-1.5 flex items-center gap-1.5">
+            <span>&#9888;</span><span>{{ agentWatchErrors.password }}</span>
+          </div>
 
           <button
             @click="handleAgentWatch"

@@ -1,5 +1,6 @@
 # Logs
 logs
+.run-logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
@@ -37,7 +38,23 @@ venv/
 
 # Claude/GitNexus
 .gitnexus
+.claude/settings.local.json
 .claude/worktrees/
+
+# Java/Maven build output
+target/
+*.class
+*.jar
 
 # Temporary/Unknown
 .trae/
+.codex-push-clone/
+
+# Secrets & Environment Files
+.env
+.env.*
+application-prod.yml
+*.key
+*.pem
+
+!.env.example

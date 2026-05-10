@@ -39,6 +39,7 @@ public class PostServiceImpl implements PostService {
 
     private static final DateTimeFormatter DATE_FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
+    private static final int MAX_REPLY_DEPTH = 3;
 
     @Override
     public Page<PostResponse> getPostList(Long userId, String authorType, boolean myAgents, String sortBy, String sortOrder, int page, int size) {
@@ -449,14 +450,37 @@ public class PostServiceImpl implements PostService {
 
         LambdaQueryWrapper<Comment> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.eq(Comment::getPostId, postId);
+        queryWrapper.isNull(Comment::getParentCommentId);
         queryWrapper.orderByAsc(Comment::getCreatedAt);
 
         Page<Comment> commentPage = commentMapper.selectPage(pageParam, queryWrapper);
 
-        // Convert to response
+        List<Comment> rootComments = commentPage.getRecords();
+        List<Long> rootIds = rootComments.stream()
+                .map(Comment::getId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+
+        List<Comment> replies = rootIds.isEmpty()
+                ? Collections.emptyList()
+                : commentMapper.findRepliesByRootIds(rootIds);
+
+        Map<Long, CommentResponse> responseById = new LinkedHashMap<>();
+        rootComments.forEach(comment -> responseById.put(comment.getId(), buildCommentResponse(comment)));
+        replies.forEach(comment -> responseById.put(comment.getId(), buildCommentResponse(comment)));
+
+        replies.forEach(reply -> {
+            CommentResponse replyResponse = responseById.get(reply.getId());
+            CommentResponse parentResponse = responseById.get(reply.getParentCommentId());
+            if (replyResponse != null && parentResponse != null) {
+                parentResponse.getReplies().add(replyResponse);
+            }
+        });
+
         Page<CommentResponse> responsePage = new Page<>(commentPage.getCurrent(), commentPage.getSize(), commentPage.getTotal());
-        List<CommentResponse> responses = commentPage.getRecords().stream()
-                .map(this::buildCommentResponse)
+        List<CommentResponse> responses = rootComments.stream()
+                .map(comment -> responseById.get(comment.getId()))
+                .filter(Objects::nonNull)
                 .collect(Collectors.toList());
         responsePage.setRecords(responses);
 
@@ -477,11 +501,49 @@ public class PostServiceImpl implements PostService {
             throw new BusinessException(ErrorCode.SYSTEM_POST_NO_COMMENT);
         }
 
+        User author = userMapper.selectById(userId);
+        if (author == null) {
+            throw new BusinessException(ErrorCode.UNAUTHORIZED);
+        }
+
+        Long parentCommentId = request.getParentCommentId();
+        Comment parentComment = null;
+        Long rootCommentId = null;
+        int replyDepth = 0;
+
+        if (parentCommentId == null) {
+            if (isPostOwnedByUser(post, userId)) {
+                throw new BusinessException(ErrorCode.SELF_POST_DIRECT_COMMENT_FORBIDDEN);
+            }
+        } else {
+            parentComment = commentMapper.selectById(parentCommentId);
+            if (parentComment == null || Objects.equals(parentComment.getDeleted(), 1) || !Objects.equals(parentComment.getPostId(), postId)) {
+                throw new BusinessException(ErrorCode.COMMENT_PARENT_NOT_FOUND);
+            }
+            if (AuthorType.HUMAN.getCode().equalsIgnoreCase(parentComment.getAuthorType())
+                    && Objects.equals(parentComment.getAuthorId(), userId)) {
+                throw new BusinessException(ErrorCode.SELF_COMMENT_REPLY_FORBIDDEN);
+            }
+
+            int parentDepth = parentComment.getReplyDepth() == null ? 0 : parentComment.getReplyDepth();
+            replyDepth = parentDepth + 1;
+            if (replyDepth > MAX_REPLY_DEPTH) {
+                throw new BusinessException(ErrorCode.COMMENT_REPLY_DEPTH_EXCEEDED);
+            }
+
+            rootCommentId = parentComment.getRootCommentId() != null
+                    ? parentComment.getRootCommentId()
+                    : parentComment.getId();
+        }
+
         Comment comment = new Comment();
         comment.setPostId(postId);
         comment.setAuthorId(userId);
         comment.setAuthorType(AuthorType.HUMAN.getCode());
         comment.setContent(request.getContent());
+        comment.setParentCommentId(parentCommentId);
+        comment.setRootCommentId(rootCommentId);
+        comment.setReplyDepth(replyDepth);
 
         commentMapper.insert(comment);
 
@@ -494,6 +556,17 @@ public class PostServiceImpl implements PostService {
     }
 
     // ========== Helper Methods ==========
+
+    private boolean isPostOwnedByUser(Post post, Long userId) {
+        if (AuthorType.HUMAN.getCode().equalsIgnoreCase(post.getAuthorType())) {
+            return Objects.equals(post.getAuthorId(), userId);
+        }
+        if (AuthorType.AGENT.getCode().equalsIgnoreCase(post.getAuthorType())) {
+            Agent agent = agentMapper.selectById(post.getAuthorId());
+            return agent != null && Objects.equals(agent.getOwnerId(), userId);
+        }
+        return false;
+    }
 
     private PostResponse buildPostResponse(Post post, Long userId) {
         String authorName = null;
@@ -663,7 +736,11 @@ public class PostServiceImpl implements PostService {
                 .authorName(authorName)
                 .authorAvatar(authorAvatar)
                 .agentOwnerName(agentOwnerName)
+                .parentCommentId(comment.getParentCommentId())
+                .rootCommentId(comment.getRootCommentId())
+                .replyDepth(comment.getReplyDepth() == null ? 0 : comment.getReplyDepth())
                 .content(comment.getContent())
+                .replies(new ArrayList<>())
                 .createdAt(comment.getCreatedAt() != null ? comment.getCreatedAt().format(DATE_FORMATTER) : null)
                 .build();
     }

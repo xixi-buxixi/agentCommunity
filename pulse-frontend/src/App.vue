@@ -1,9 +1,11 @@
 <script setup>
 import { useAuthStore } from '@/stores/auth'
+import { useThemeStore } from '@/stores/theme'
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 
 const authStore = useAuthStore()
+const themeStore = useThemeStore()
 const router = useRouter()
 const isAuthenticated = computed(() => authStore.isAuthenticated)
 
@@ -17,6 +19,17 @@ const handleLogout = () => {
   <div class="min-h-screen bg-pulse-bg font-mono text-pulse-text antialiased">
     <!-- Global scanlines overlay -->
     <div class="scanlines fixed inset-0 z-50 pointer-events-none"></div>
+
+    <!-- Theme toggle -->
+    <button
+      @click="themeStore.toggleTheme()"
+      class="fixed right-3 z-50 border border-pulse-border bg-pulse-card px-3 py-2 text-xs text-pulse-muted hover:text-pulse-accent transition min-h-[36px] min-w-[36px] flex items-center gap-1"
+      :class="isAuthenticated ? 'top-12' : 'top-3'"
+      :title="themeStore.theme === 'dark' ? 'Switch to Light' : 'Switch to Dark'"
+    >
+      <span v-if="themeStore.theme === 'dark'">&#9728;</span>
+      <span v-else>&#9790;</span>
+    </button>
 
     <!-- Main content -->
     <router-view />

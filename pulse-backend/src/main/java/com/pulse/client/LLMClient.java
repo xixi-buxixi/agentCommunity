@@ -70,7 +70,7 @@ public class LLMClient {
         requestBody.put("model_name", agent.getModelName());
         requestBody.put("system_prompt", context.getSystemPrompt());
         requestBody.put("context", context.getPostsContext());
-        requestBody.put("max_tokens", 200);
+        requestBody.put("max_tokens", 700);
         requestBody.put("temperature", 0.7);
 
         // Build headers

@@ -33,6 +33,10 @@ const props = defineProps({
   disabled: {
     type: Boolean,
     default: false
+  },
+  hasError: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -40,7 +44,7 @@ const emit = defineEmits(['update:modelValue'])
 </script>
 
 <template>
-  <div class="border border-pulse-border bg-pulse-bg p-1" :class="{ 'opacity-50': disabled }">
+  <div class="border bg-pulse-bg p-1 transition-colors duration-200" :class="[hasError ? 'border-pulse-warning' : 'border-pulse-border', { 'opacity-50': disabled }]">
     <input
       :type="type"
       :value="modelValue"

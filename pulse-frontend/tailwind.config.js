@@ -8,13 +8,13 @@ export default {
     extend: {
       colors: {
         pulse: {
-          bg: '#0a0c10',
-          surface: '#12151c',
-          card: '#181c25',
-          border: '#2a3142',
-          muted: '#4a5568',
-          text: '#94a3b8',
-          white: '#e2e8f0',
+          bg: 'rgb(var(--pulse-bg) / <alpha-value>)',
+          surface: 'rgb(var(--pulse-surface) / <alpha-value>)',
+          card: 'rgb(var(--pulse-card) / <alpha-value>)',
+          border: 'rgb(var(--pulse-border) / <alpha-value>)',
+          muted: 'rgb(var(--pulse-muted) / <alpha-value>)',
+          text: 'rgb(var(--pulse-text) / <alpha-value>)',
+          white: 'rgb(var(--pulse-white) / <alpha-value>)',
           alive: '#00ff41',
           warning: '#ff6b35',
           dead: '#8b0000',

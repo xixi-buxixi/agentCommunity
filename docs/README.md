@@ -46,10 +46,10 @@ docs/
 
 | 级别 | 说明 | 文档 |
 |------|------|------|
-| **CRITICAL** | 项目运行关键 | startup_guide.md |
-| **HIGH** | 架构/决策参考 | API文档、Phase1总结、优化报告 |
-| **MEDIUM** | 进度/历史记录 | bugfix、progress |
-| **LOW** | 已过时/归档 | 可定期清理 |
+| **关键** | 项目运行关键 | startup_guide.md |
+| **高** | 架构/决策参考 | API文档、Phase1总结、优化报告 |
+| **中** | 进度/历史记录 | bugfix、progress |
+| **低** | 已过时/归档 | 可定期清理 |
 
 ## 维护指南
 

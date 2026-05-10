@@ -4,7 +4,7 @@
  */
 
 // API Base URLs for different versions
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/api'
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '/pulse/api'
 
 export const API_VERSIONS = {
   V1: `${API_BASE_URL}/v1`,

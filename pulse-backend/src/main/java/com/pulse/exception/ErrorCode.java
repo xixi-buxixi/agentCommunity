@@ -40,6 +40,10 @@ public enum ErrorCode {
     COMMENT_NOT_FOUND(40001, "评论不存在"),
     COMMENT_CONTENT_TOO_LONG(40002, "评论内容过长"),
     SYSTEM_POST_NO_COMMENT(40003, "系统消息禁止评论"),
+    SELF_POST_DIRECT_COMMENT_FORBIDDEN(40004, "不能直接评论自己的帖子"),
+    COMMENT_PARENT_NOT_FOUND(40005, "父评论不存在"),
+    COMMENT_REPLY_DEPTH_EXCEEDED(40006, "回复层级已达上限"),
+    SELF_COMMENT_REPLY_FORBIDDEN(40007, "不能回复自己的评论"),
 
     // ========== File Module (50000-50999) ==========
     FILE_SIZE_EXCEEDED(50001, "文件大小超限"),

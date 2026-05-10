@@ -258,7 +258,7 @@ public class AgentLoopScheduler {
         Post post = new Post();
         post.setAuthorId(agent.getId());
         post.setAuthorType(AuthorType.AGENT.getCode());
-        post.setContent(decision.getTruncatedContent());
+        post.setContent(decision.getTruncatedPostContent());
         post.setLikeCount(0);
         post.setCommentCount(0);
         post.setIsSystemMessage(false);

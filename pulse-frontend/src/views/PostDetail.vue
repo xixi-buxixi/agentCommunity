@@ -8,8 +8,9 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { getPostDetail, likePost, unlikePost, dislikePost, undislikePost, recordView, getComments, createComment } from '@/api/post'
-import StatusIndicator from '@/components/StatusIndicator.vue'
+import CommentThread from '@/components/CommentThread.vue'
 import { formatDateTime } from '@/utils/format'
+import { renderMarkdown } from '@/utils/markdown'
 
 const route = useRoute()
 const router = useRouter()
@@ -26,12 +27,23 @@ const totalComments = ref(0)
 const loadingComments = ref(false)
 const newCommentContent = ref('')
 const submittingComment = ref(false)
+const commentError = ref(null)
 
 // Author type styling - check is_system_message first
 const isSystem = computed(() => post.value?.is_system_message === true)
 const isHuman = computed(() => !isSystem.value && post.value?.author_type === 'HUMAN')
 const isAgent = computed(() => !isSystem.value && post.value?.author_type === 'AGENT')
 const canComment = computed(() => !isSystem.value) // SYSTEM帖子禁止评论
+const isOwnPost = computed(() => {
+  if (post.value?.author_type === 'HUMAN') {
+    return Number(post.value?.author_id) === Number(authStore.userId)
+  }
+  if (post.value?.author_type === 'AGENT') {
+    return post.value?.agent_owner_name && post.value.agent_owner_name === authStore.username
+  }
+  return false
+})
+const canTopLevelComment = computed(() => canComment.value && !isOwnPost.value)
 const borderClass = computed(() => {
   if (isHuman.value) return 'border-pulse-human'
   if (isAgent.value) return 'border-pulse-agent'
@@ -58,7 +70,7 @@ const loadComments = async () => {
   try {
     const { data } = await getComments(route.params.id, { page: 1, size: 50 })
     comments.value = data.records || []
-    totalComments.value = data.total || 0
+    totalComments.value = post.value?.comment_count ?? data.total ?? 0
   } catch (err) {
     console.error('Failed to load comments:', err)
     comments.value = []
@@ -126,16 +138,37 @@ const submitComment = async () => {
   if (!newCommentContent.value.trim() || submittingComment.value) return
 
   submittingComment.value = true
+  commentError.value = null
   try {
-    const { data } = await createComment(route.params.id, {
-      content: newCommentContent.value
+    await createComment(route.params.id, {
+      content: newCommentContent.value.trim()
     })
-    comments.value.unshift(data)
     post.value.comment_count++
     totalComments.value++
     newCommentContent.value = ''
+    await loadComments()
   } catch (err) {
-    console.error('Comment failed:', err)
+    commentError.value = err.message || 'COMMENT_FAILED'
+  } finally {
+    submittingComment.value = false
+  }
+}
+
+const submitReply = async ({ parentCommentId, content, done }) => {
+  if (submittingComment.value) return
+  submittingComment.value = true
+  commentError.value = null
+  try {
+    await createComment(route.params.id, {
+      content,
+      parent_comment_id: parentCommentId
+    })
+    post.value.comment_count++
+    totalComments.value++
+    if (done) done()
+    await loadComments()
+  } catch (err) {
+    commentError.value = err.message || 'REPLY_FAILED'
   } finally {
     submittingComment.value = false
   }
@@ -205,7 +238,7 @@ onMounted(() => {
 
         <!-- Post Content -->
         <div class="border-l-2 pl-3 sm:pl-4 mb-3 sm:mb-4" :class="borderClass">
-          <p class="text-pulse-text text-sm sm:text-base leading-relaxed whitespace-pre-wrap" :class="{ 'italic text-pulse-muted': isSystem }">{{ post.content }}</p>
+          <div class="markdown-content text-sm sm:text-base" :class="{ 'markdown-muted italic': isSystem }" v-html="renderMarkdown(post.content)"></div>
         </div>
 
         <!-- Actions -->
@@ -237,18 +270,18 @@ onMounted(() => {
         </div>
       </div>
 
-      <!-- Comment Input (禁止评论SYSTEM帖子) -->
-      <div v-if="post && canComment" class="border border-pulse-border bg-pulse-card p-3 sm:p-4 mb-3 sm:mb-4">
+      <!-- Comment Input (SYSTEM posts disabled; own posts allow replies only) -->
+      <div v-if="post && canTopLevelComment" class="border border-pulse-border bg-pulse-card p-3 sm:p-4 mb-3 sm:mb-4">
         <div class="text-pulse-muted text-[10px] sm:text-xs mb-2">COMMENT_INPUT:</div>
         <textarea
           v-model="newCommentContent"
           placeholder="> TYPE_YOUR_COMMENT..."
           rows="2"
           class="w-full bg-pulse-bg border border-pulse-border p-2 sm:p-3 text-xs sm:text-sm text-pulse-white placeholder-pulse-muted resize-none outline-none"
-          :maxlength="300"
+          :maxlength="200"
         ></textarea>
         <div class="flex justify-between items-center mt-2">
-          <span class="text-pulse-muted text-[10px] sm:text-xs">{{ newCommentContent.length }}/300</span>
+          <span class="text-pulse-muted text-[10px] sm:text-xs">{{ newCommentContent.length }}/200</span>
           <button
             @click="submitComment"
             :disabled="submittingComment || !newCommentContent.trim()"
@@ -259,9 +292,17 @@ onMounted(() => {
         </div>
       </div>
 
+      <div v-if="post && canComment && isOwnPost" class="border border-pulse-border bg-pulse-card/50 p-3 sm:p-4 mb-3 sm:mb-4">
+        <span class="text-pulse-muted text-[10px] sm:text-xs italic">> OWN_POST: 不能直接评论自己的帖子，可回复其他人的评论</span>
+      </div>
+
       <!-- SYSTEM Post Notice -->
       <div v-if="post && isSystem" class="border border-pulse-border bg-pulse-card/50 p-3 sm:p-4 mb-3 sm:mb-4">
         <span class="text-pulse-muted text-[10px] sm:text-xs italic">> SYSTEM_MESSAGE: 评论功能已禁用</span>
+      </div>
+
+      <div v-if="commentError" class="bg-pulse-dead/10 border border-pulse-dead/30 p-3 sm:p-4 mb-3 sm:mb-4">
+        <span class="text-pulse-dead text-xs break-words">> ERROR: {{ commentError }}</span>
       </div>
 
       <!-- Comments List -->
@@ -269,7 +310,7 @@ onMounted(() => {
         <div class="border-b border-pulse-border px-3 sm:px-4 py-2 flex items-center gap-1 sm:gap-2">
           <span class="text-pulse-muted text-[10px] sm:text-xs">COMMENTS</span>
           <span class="text-pulse-border text-[10px] sm:text-xs">|</span>
-          <span class="text-pulse-accent text-[10px] sm:text-xs">{{ totalComments }} TOTAL</span>
+          <span class="text-pulse-accent text-[10px] sm:text-xs">{{ post?.comment_count ?? totalComments }} TOTAL</span>
         </div>
 
         <div v-if="loadingComments" class="p-3 sm:p-4 text-center">
@@ -280,28 +321,12 @@ onMounted(() => {
           <span class="text-pulse-muted text-xs">NO_COMMENTS_YET</span>
         </div>
 
-        <div v-else class="divide-y divide-pulse-border">
-          <div
-            v-for="comment in comments"
-            :key="comment.comment_id"
-            class="p-3 sm:p-4"
-          >
-            <div class="flex items-center gap-1 sm:gap-2 mb-2">
-              <div
-                class="w-5 h-5 sm:w-6 sm:h-6 border flex items-center justify-center text-[10px] sm:text-xs shrink-0"
-                :class="comment.author_type === 'HUMAN' ? 'border-pulse-human bg-pulse-human/10 text-pulse-human' : 'border-pulse-agent bg-pulse-agent/10 text-pulse-agent'"
-              >
-                {{ comment.author_name?.charAt(0) || '?' }}
-              </div>
-              <span class="text-pulse-white text-xs sm:text-sm truncate">{{ comment.author_name }}</span>
-              <span
-                class="text-[10px] sm:text-xs px-1 border shrink-0"
-                :class="comment.author_type === 'HUMAN' ? 'text-pulse-human border-pulse-human/30' : 'text-pulse-agent border-pulse-agent/30'"
-              >{{ comment.author_type }}</span>
-              <span class="text-pulse-muted text-[10px] sm:text-xs ml-auto shrink-0">{{ formatDateTime(comment.created_at) }}</span>
-            </div>
-            <p class="text-pulse-text text-xs sm:text-sm pl-6 sm:pl-8 break-words">{{ comment.content }}</p>
-          </div>
+        <div v-else class="p-3 sm:p-4">
+          <CommentThread
+            :comments="comments"
+            :current-user-id="authStore.userId"
+            @reply="submitReply"
+          />
         </div>
       </div>
     </div>

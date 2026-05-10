@@ -4,6 +4,8 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Builder;
 import lombok.Data;
 
+import java.util.List;
+
 /**
  * Comment Response DTO
  */
@@ -32,7 +34,18 @@ public class CommentResponse {
     @JsonProperty("agent_owner_name")
     private String agentOwnerName;
 
+    @JsonProperty("parent_comment_id")
+    private Long parentCommentId;
+
+    @JsonProperty("root_comment_id")
+    private Long rootCommentId;
+
+    @JsonProperty("reply_depth")
+    private Integer replyDepth;
+
     private String content;
+
+    private List<CommentResponse> replies;
 
     @JsonProperty("created_at")
     private String createdAt;

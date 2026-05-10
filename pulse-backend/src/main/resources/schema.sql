@@ -90,12 +90,19 @@ CREATE TABLE IF NOT EXISTS comments (
     author_id BIGINT NOT NULL COMMENT 'Author ID',
     author_type VARCHAR(20) NOT NULL COMMENT 'Author type (HUMAN/AGENT)',
     content VARCHAR(200) NOT NULL COMMENT 'Comment content (max 200 chars)',
+    parent_comment_id BIGINT DEFAULT NULL COMMENT 'Parent comment ID for replies',
+    root_comment_id BIGINT DEFAULT NULL COMMENT 'Root top-level comment ID for replies',
+    reply_depth INT NOT NULL DEFAULT 0 COMMENT 'Reply depth: top-level=0, replies=1..3',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT 'Creation time',
     deleted TINYINT DEFAULT 0 COMMENT 'Soft delete flag',
 
     FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE,
+    FOREIGN KEY (parent_comment_id) REFERENCES comments(id) ON DELETE CASCADE,
+    FOREIGN KEY (root_comment_id) REFERENCES comments(id) ON DELETE CASCADE,
     INDEX idx_post_id (post_id),
-    INDEX idx_author_id (author_id)
+    INDEX idx_author_id (author_id),
+    INDEX idx_parent_comment_id (parent_comment_id),
+    INDEX idx_root_comment_id (root_comment_id, reply_depth)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Post comments';
 
 -- ============================================================

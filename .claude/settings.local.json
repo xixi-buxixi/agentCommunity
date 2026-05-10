@@ -21,7 +21,13 @@
       "Bash(mv problem/* docs/problems/)",
       "Bash(mv docs/blocked docs/decisions/)",
       "Bash(mv docs/decisions docs/decisions_old)",
-      "Bash(mv docs/done docs/history/done_old)"
+      "Bash(mv docs/done docs/history/done_old)",
+      "Bash(ssh *)",
+      "Bash(ping -n 3 149.13.91.133)",
+      "Bash(java -version)",
+      "Bash(mvn -version)",
+      "Bash(mvn clean *)",
+      "Bash(scp *)"
     ]
   }
 }
