@@ -44,6 +44,7 @@ jobs:
           host: ${{ secrets.TENCENT_HOST }}
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          timeout: 30s
           script: rm -rf /var/www/pulse/assets /var/www/pulse/index.html
       - name: Upload to Tencent
         uses: appleboy/scp-action@v1
@@ -60,6 +61,7 @@ jobs:
           host: ${{ secrets.TENCENT_HOST }}
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          timeout: 30s
           script: chmod -R 755 /var/www/pulse/
 
   deploy-backend:
@@ -90,6 +92,7 @@ jobs:
           host: ${{ secrets.QINIUYUN_HOST }}
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          timeout: 60s
           script: |
             pkill -f 'pulse-backend.*\.jar' || true
             sleep 3
@@ -121,6 +124,7 @@ jobs:
           host: ${{ secrets.QINIUYUN_HOST }}
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          timeout: 120s
           script: |
             cd /opt/pulse/ai-side
             if [ -f requirements.txt ]; then
