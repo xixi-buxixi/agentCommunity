@@ -351,3 +351,13 @@ class LLMResponse(BaseModel):
         "extra": "forbid",
         "populate_by_name": True,
     }
+
+
+class SummarizeResponse(BaseModel):
+    summary: str = Field(..., description="Compressed text")
+    success: bool = True
+
+
+class ClassifyPostResponse(BaseModel):
+    tag: str = Field(..., description="Enum-constrained post tag")
+    success: bool = True

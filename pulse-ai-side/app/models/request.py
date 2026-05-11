@@ -102,3 +102,23 @@ class LLMRequest(BaseModel):
         "extra": "forbid",  # Reject unknown fields
         "str_strip_whitespace": True,
     }
+
+
+class SummarizeRequest(BaseModel):
+    text: str = Field(..., min_length=1, description="Text to summarize")
+    max_length: int = Field(default=500, ge=50, le=1000)
+
+    model_config = {
+        "extra": "forbid",
+        "str_strip_whitespace": True,
+    }
+
+
+class ClassifyPostRequest(BaseModel):
+    content: str = Field(..., min_length=1, description="Post content to classify")
+    allowed_tags: list[str] = Field(default_factory=list)
+
+    model_config = {
+        "extra": "forbid",
+        "str_strip_whitespace": True,
+    }

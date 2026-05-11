@@ -28,6 +28,7 @@ const loadingComments = ref(false)
 const newCommentContent = ref('')
 const submittingComment = ref(false)
 const commentError = ref(null)
+const guestNotice = '当前为访客模式，功能无法正常使用，如需使用，请登录账号'
 
 // Author type styling - check is_system_message first
 const isSystem = computed(() => post.value?.is_system_message === true)
@@ -49,6 +50,13 @@ const borderClass = computed(() => {
   if (isAgent.value) return 'border-pulse-agent'
   return 'border-pulse-muted'
 })
+const guardGuestAction = () => {
+  if (authStore.isGuest) {
+    commentError.value = guestNotice
+    return true
+  }
+  return false
+}
 
 // Load post detail
 const loadPost = async () => {
@@ -82,6 +90,7 @@ const loadComments = async () => {
 
 // Handle like
 const handleLike = async () => {
+  if (guardGuestAction()) return
   if (!post.value) return
   try {
     if (post.value.is_liked) {
@@ -104,6 +113,7 @@ const handleLike = async () => {
 
 // Handle dislike
 const handleDislike = async () => {
+  if (guardGuestAction()) return
   if (!post.value) return
   try {
     if (post.value.is_disliked) {
@@ -126,6 +136,7 @@ const handleDislike = async () => {
 
 // Record post view
 const recordPostView = async () => {
+  if (authStore.isGuest) return
   try {
     await recordView(route.params.id)
   } catch (err) {
@@ -135,6 +146,7 @@ const recordPostView = async () => {
 
 // Submit comment
 const submitComment = async () => {
+  if (guardGuestAction()) return
   if (!newCommentContent.value.trim() || submittingComment.value) return
 
   submittingComment.value = true
@@ -155,6 +167,7 @@ const submitComment = async () => {
 }
 
 const submitReply = async ({ parentCommentId, content, done }) => {
+  if (guardGuestAction()) return
   if (submittingComment.value) return
   submittingComment.value = true
   commentError.value = null
@@ -229,6 +242,7 @@ onMounted(() => {
                 :class="isHuman ? 'text-pulse-human border-pulse-human/30' : isAgent ? 'text-pulse-agent border-pulse-agent/30' : 'text-pulse-muted border-pulse-muted/30'"
               >[{{ post.author_type }}]</span>
               <span v-if="post.agent_owner_name" class="text-pulse-muted truncate">@{{ post.agent_owner_name }}</span>
+              <span class="px-1 sm:px-1.5 py-0.5 border border-pulse-accent/30 text-pulse-accent">#{{ post.tag || 'OTHER' }}</span>
             </div>
           </div>
           <div class="text-pulse-muted text-[10px] sm:text-xs shrink-0">

@@ -95,6 +95,35 @@ public interface PostMapper extends BaseMapper<Post> {
             "ORDER BY p.created_at DESC LIMIT #{limit}")
     List<Post> findLatestPostsForAgent(@Param("limit") int limit, @Param("agentId") Long agentId);
 
+    @Select("<script>" +
+            "SELECT p.* FROM posts p " +
+            "WHERE p.deleted = 0 " +
+            "AND NOT (p.author_type = 'AGENT' AND p.author_id = #{agentId}) " +
+            "AND NOT EXISTS (SELECT 1 FROM post_views pv WHERE pv.post_id = p.id AND pv.author_type = 'AGENT' AND pv.author_id = #{agentId}) " +
+            "<if test='tags != null and tags.size() &gt; 0'>" +
+            "AND p.tag_code IN " +
+            "<foreach collection='tags' item='tag' open='(' separator=',' close=')'>#{tag}</foreach> " +
+            "</if>" +
+            "ORDER BY p.created_at DESC LIMIT #{limit}" +
+            "</script>")
+    List<Post> findInterestPostsForAgent(@Param("agentId") Long agentId,
+                                         @Param("tags") List<String> tags,
+                                         @Param("limit") int limit);
+
+    @Select("SELECT p.* FROM posts p " +
+            "WHERE p.deleted = 0 " +
+            "AND NOT (p.author_type = 'AGENT' AND p.author_id = #{agentId}) " +
+            "AND NOT EXISTS (SELECT 1 FROM post_views pv WHERE pv.post_id = p.id AND pv.author_type = 'AGENT' AND pv.author_id = #{agentId}) " +
+            "ORDER BY (p.like_count * 3 + p.comment_count * 5 + p.view_count) DESC, p.created_at DESC LIMIT #{limit}")
+    List<Post> findHotPostsForAgent(@Param("agentId") Long agentId, @Param("limit") int limit);
+
+    @Select("SELECT p.* FROM posts p " +
+            "WHERE p.deleted = 0 " +
+            "AND NOT (p.author_type = 'AGENT' AND p.author_id = #{agentId}) " +
+            "AND NOT EXISTS (SELECT 1 FROM post_views pv WHERE pv.post_id = p.id AND pv.author_type = 'AGENT' AND pv.author_id = #{agentId}) " +
+            "ORDER BY p.created_at DESC LIMIT #{limit}")
+    List<Post> findLatestUnviewedPostsForAgent(@Param("agentId") Long agentId, @Param("limit") int limit);
+
     /**
      * Find top posts by like count for ranking
      *

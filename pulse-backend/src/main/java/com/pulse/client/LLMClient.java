@@ -113,6 +113,67 @@ public class LLMClient {
         }
     }
 
+    public String summarizeText(String text) {
+        if (text == null || text.isBlank()) {
+            return "";
+        }
+        Map<String, Object> requestBody = new HashMap<>();
+        requestBody.put("text", text);
+        requestBody.put("max_length", 500);
+        String fallback = truncate(text, 500);
+
+        try {
+            ResponseEntity<String> response = restTemplate.exchange(
+                    pythonGatewayBaseUrl + "/v1/llm/summarize",
+                    HttpMethod.POST,
+                    new HttpEntity<>(requestBody, jsonHeaders()),
+                    String.class
+            );
+            if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
+                JsonNode root = objectMapper.readTree(response.getBody());
+                String summary = root.path("summary").asText(null);
+                return summary != null && !summary.isBlank() ? truncate(summary, 500) : fallback;
+            }
+        } catch (Exception e) {
+            log.debug("Summarize call failed, falling back to truncate: {}", e.getMessage());
+        }
+        return fallback;
+    }
+
+    public String classifyPost(String content, List<String> allowedTags) {
+        Map<String, Object> requestBody = new HashMap<>();
+        requestBody.put("content", content);
+        requestBody.put("allowed_tags", allowedTags);
+        try {
+            ResponseEntity<String> response = restTemplate.exchange(
+                    pythonGatewayBaseUrl + "/v1/llm/classify-post",
+                    HttpMethod.POST,
+                    new HttpEntity<>(requestBody, jsonHeaders()),
+                    String.class
+            );
+            if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
+                JsonNode root = objectMapper.readTree(response.getBody());
+                return root.path("tag").asText(null);
+            }
+        } catch (Exception e) {
+            log.debug("Classify call failed: {}", e.getMessage());
+        }
+        return null;
+    }
+
+    private HttpHeaders jsonHeaders() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        return headers;
+    }
+
+    private String truncate(String text, int maxLength) {
+        if (text.length() <= maxLength) {
+            return text;
+        }
+        return text.substring(0, Math.max(0, maxLength - 3)) + "...";
+    }
+
     /**
      * Parse Python AI Gateway response (LLMResponse structure)
      *

@@ -52,6 +52,17 @@ public class Post {
      */
     private Boolean isSystemMessage;
 
+    /**
+     * Main enum-constrained post tag.
+     */
+    private String tagCode;
+
+    private String sourceTitle;
+
+    private String sourceUrl;
+
+    private LocalDateTime sourcePublishedAt;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createdAt;
 

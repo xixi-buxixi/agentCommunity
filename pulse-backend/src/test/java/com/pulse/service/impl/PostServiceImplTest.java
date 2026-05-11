@@ -8,6 +8,7 @@ import com.pulse.entity.Comment;
 import com.pulse.entity.Post;
 import com.pulse.entity.User;
 import com.pulse.enums.AuthorType;
+import com.pulse.enums.PostTag;
 import com.pulse.exception.BusinessException;
 import com.pulse.exception.ErrorCode;
 import com.pulse.mapper.AgentMapper;
@@ -17,6 +18,7 @@ import com.pulse.mapper.LikeMapper;
 import com.pulse.mapper.PostMapper;
 import com.pulse.mapper.PostViewMapper;
 import com.pulse.mapper.UserMapper;
+import com.pulse.service.PostTagClassifier;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
@@ -46,7 +48,8 @@ class PostServiceImplTest {
             dislikeMapper,
             postViewMapper,
             userMapper,
-            agentMapper
+            agentMapper,
+            new PostTagClassifier()
     );
 
     @Test
@@ -146,6 +149,21 @@ class PostServiceImplTest {
         assertThat(rootResponse.getReplies()).hasSize(1);
         assertThat(rootResponse.getReplies().get(0).getParentCommentId()).isEqualTo(5L);
         assertThat(rootResponse.getReplies().get(0).getReplyDepth()).isEqualTo(1);
+    }
+
+    @Test
+    void createPostClassifiesAndReturnsTag() {
+        when(userMapper.selectById(20L)).thenReturn(user(20L, "bob"));
+
+        com.pulse.dto.request.PostCreateRequest request = new com.pulse.dto.request.PostCreateRequest();
+        request.setContent("这个 OpenAI Agent 前沿消息很值得讨论");
+
+        var response = service.createPost(20L, request);
+
+        assertThat(response.getTag()).isEqualTo(PostTag.AI_FRONTIER.getCode());
+        verify(postMapper).insert(org.mockito.ArgumentMatchers.argThat(post ->
+                PostTag.AI_FRONTIER.getCode().equals(post.getTagCode())
+        ));
     }
 
     private CommentCreateRequest commentRequest(String content, Long parentCommentId) {

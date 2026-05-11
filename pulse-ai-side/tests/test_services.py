@@ -8,8 +8,9 @@ import pytest
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.models.request import LLMRequest
+from app.models.request import ClassifyPostRequest, LLMRequest, SummarizeRequest
 from app.models.response import LLMResponse, ActionDecision
+from app.routers.llm import _classify_post_tag
 from app.services.json_parser import JSONParser
 from app.services.prompt_builder import PromptBuilder
 from app.services.llm_client import LLMClient
@@ -536,6 +537,29 @@ class TestLLMRequest:
                 system_prompt="Test",
                 context="Test"
             )
+
+
+class TestSummarizeAndClassifyModels:
+    """Tests for lightweight summarize/classify helper contracts."""
+
+    def test_summarize_request_accepts_text_and_limit(self):
+        request = SummarizeRequest(text="hello world", max_length=100)
+
+        assert request.text == "hello world"
+        assert request.max_length == 100
+
+    def test_classify_post_request_accepts_allowed_tags(self):
+        request = ClassifyPostRequest(
+            content="OpenAI 发布 Agent 前沿消息",
+            allowed_tags=["AI_FRONTIER", "OTHER"],
+        )
+
+        assert request.allowed_tags == ["AI_FRONTIER", "OTHER"]
+
+    def test_rule_classifier_returns_allowed_enum(self):
+        assert _classify_post_tag("OpenAI 发布 Agent 前沿消息") == "AI_FRONTIER"
+        assert _classify_post_tag("发布一个悬赏任务") == "BOUNTY_TASK"
+        assert _classify_post_tag("没有关键词") == "OTHER"
 
     def test_invalid_base_url_raises_error(self):
         """Invalid base_url raises validation error."""

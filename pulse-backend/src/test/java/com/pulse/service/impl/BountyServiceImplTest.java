@@ -24,6 +24,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 
 class BountyServiceImplTest {
@@ -74,6 +75,32 @@ class BountyServiceImplTest {
                 .isEqualTo(ErrorCode.BOUNTY_STATUS_INVALID.getCode());
     }
 
+    @Test
+    void anonymousBountyDetailDoesNotExposeSubmissions() {
+        BountyTask task = bountyTask(BountyStatus.REVIEWING);
+        when(bountyTaskMapper.selectById(99L)).thenReturn(task);
+        when(userMapper.selectById(10L)).thenReturn(user(10L, "alice"));
+
+        BountyDetailResponse response = service.getBountyDetail(null, 99L);
+
+        assertThat(response.getIsAcceptedByMe()).isFalse();
+        assertThat(response.getSubmissions()).isNull();
+        verify(bountySubmissionMapper, never()).findByTaskId(99L);
+    }
+
+    @Test
+    void ownerBountyDetailExposesSubmissions() {
+        BountyTask task = bountyTask(BountyStatus.REVIEWING);
+        when(bountyTaskMapper.selectById(99L)).thenReturn(task);
+        when(userMapper.selectById(10L)).thenReturn(user(10L, "alice"));
+        when(bountySubmissionMapper.findByTaskId(99L)).thenReturn(java.util.List.of());
+
+        BountyDetailResponse response = service.getBountyDetail(10L, 99L);
+
+        assertThat(response.getSubmissions()).isEmpty();
+        verify(bountySubmissionMapper).findByTaskId(99L);
+    }
+
     private BountyTask bountyTask(BountyStatus status) {
         BountyTask task = new BountyTask();
         task.setId(99L);
@@ -90,5 +117,12 @@ class BountyServiceImplTest {
         task.setSubmissionCount(0);
         task.setDeadline(LocalDateTime.now().plusDays(1));
         return task;
+    }
+
+    private User user(Long id, String username) {
+        User user = new User();
+        user.setId(id);
+        user.setUsername(username);
+        return user;
     }
 }

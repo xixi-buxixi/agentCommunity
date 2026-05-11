@@ -1,0 +1,136 @@
+name: Deploy to Servers
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      frontend: ${{ steps.filter.outputs.frontend }}
+      backend: ${{ steps.filter.outputs.backend }}
+      aiside: ${{ steps.filter.outputs.aiside }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            frontend:
+              - 'pulse-frontend/**'
+            backend:
+              - 'pulse-backend/**'
+            aiside:
+              - 'pulse-ai-side/**'
+
+  deploy-frontend:
+    needs: changes
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.frontend == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: pulse-frontend/package-lock.json
+      - name: Build
+        run: cd pulse-frontend && npm ci && npm run build
+      - name: Clean old assets
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.TENCENT_HOST }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: rm -rf /var/www/pulse/assets /var/www/pulse/index.html
+      - name: Upload to Tencent
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.TENCENT_HOST }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: pulse-frontend/dist/*
+          target: /var/www/pulse/
+          strip_components: 2
+      - name: Fix permissions
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.TENCENT_HOST }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: chmod -R 755 /var/www/pulse/
+
+  deploy-backend:
+    needs: changes
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          java-version: 21
+          distribution: temurin
+          cache: maven
+      - name: Build
+        run: cd pulse-backend && mvn clean package -DskipTests -B
+      - name: Upload JAR to Qiniuyun
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.QINIUYUN_HOST }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: pulse-backend/target/pulse-backend-1.0.0-SNAPSHOT.jar
+          target: /opt/pulse/backend/
+          strip_components: 2
+      - name: Restart backend
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.QINIUYUN_HOST }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            pkill -f 'pulse-backend.*\.jar' || true
+            sleep 3
+            mkdir -p /opt/pulse/logs
+            nohup java -Xms512m -Xmx768m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 \
+              -jar /opt/pulse/backend/pulse-backend-1.0.0-SNAPSHOT.jar \
+              --spring.profiles.active=prod \
+              > /opt/pulse/logs/backend.log 2>&1 &
+            echo "Backend restarted, PID: $!"
+
+  deploy-aiside:
+    needs: changes
+    if: ${{ github.event_name == 'workflow_dispatch' || needs.changes.outputs.aiside == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Upload source to Qiniuyun
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.QINIUYUN_HOST }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: pulse-ai-side
+          target: /opt/pulse/
+          strip_components: 1
+      - name: Install deps + Restart
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.QINIUYUN_HOST }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd /opt/pulse/ai-side
+            if [ -f requirements.txt ]; then
+              source venv/bin/activate 2>/dev/null || true
+              pip install -r requirements.txt -q 2>/dev/null || true
+            fi
+            pkill -f 'uvicorn.*app.main:app' || true
+            sleep 2
+            mkdir -p /opt/pulse/logs
+            source venv/bin/activate
+            nohup uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 \
+              --log-level info > /opt/pulse/logs/ai-side.log 2>&1 &
+            echo "AI Side restarted, PID: $!"

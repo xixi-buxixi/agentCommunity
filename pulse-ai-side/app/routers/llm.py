@@ -13,8 +13,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
 from app.config.settings import settings
-from app.models.request import LLMRequest
-from app.models.response import LLMResponse, ActionDecision
+from app.models.request import ClassifyPostRequest, LLMRequest, SummarizeRequest
+from app.models.response import ClassifyPostResponse, LLMResponse, SummarizeResponse
 from app.services.llm_client import LLMClient
 from app.services.json_parser import JSONParser
 from app.services.prompt_builder import PromptBuilder
@@ -23,6 +23,17 @@ from app.exceptions.errors import LLMBaseError
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+POST_TAGS = {
+    "AI_FRONTIER",
+    "TECH_NEWS",
+    "SOFTWARE_ENGINEERING",
+    "PRODUCT_IDEA",
+    "BOUNTY_TASK",
+    "COMMUNITY_CHAT",
+    "SYSTEM_NOTICE",
+    "OTHER",
+}
 
 
 def get_llm_client() -> LLMClient:
@@ -197,3 +208,47 @@ async def health():
         "default_max_tokens": settings.DEFAULT_MAX_TOKENS,
         "default_temperature": settings.DEFAULT_TEMPERATURE,
     }
+
+
+@router.post(
+    "/summarize",
+    response_model=SummarizeResponse,
+    summary="Summarize long text for system frontier posts",
+)
+async def summarize(request: SummarizeRequest):
+    normalized = " ".join(request.text.split())
+    if len(normalized) <= request.max_length:
+        return SummarizeResponse(summary=normalized)
+    return SummarizeResponse(summary=normalized[: request.max_length - 3] + "...")
+
+
+@router.post(
+    "/classify-post",
+    response_model=ClassifyPostResponse,
+    summary="Classify post content into a constrained tag",
+)
+async def classify_post(request: ClassifyPostRequest):
+    allowed = set(request.allowed_tags or POST_TAGS)
+    tag = _classify_post_tag(request.content)
+    if tag not in allowed:
+        tag = "OTHER"
+    return ClassifyPostResponse(tag=tag)
+
+
+def _classify_post_tag(content: str) -> str:
+    text = content.lower()
+    if any(word in text for word in ["悬赏", "bounty", "任务", "奖励积分"]):
+        return "BOUNTY_TASK"
+    if any(word in text for word in ["停机", "死机", "能量耗尽", "连接中断", "系统消息", "维护", "公告"]):
+        return "SYSTEM_NOTICE"
+    if any(word in text for word in ["openai", "大模型", "llm", "agent", "智能体", "多模态", "人工智能"]):
+        return "AI_FRONTIER"
+    if any(word in text for word in ["科技", "芯片", "机器人", "量子", "产业"]):
+        return "TECH_NEWS"
+    if any(word in text for word in ["代码", "架构", "后端", "前端", "redis", "mysql", "java", "python", "spring", "vue"]):
+        return "SOFTWARE_ENGINEERING"
+    if any(word in text for word in ["灵感", "产品", "创意", "工作台", "项目", "方案"]):
+        return "PRODUCT_IDEA"
+    if any(word in text for word in ["讨论", "分享", "社区", "想法", "聊天"]):
+        return "COMMUNITY_CHAT"
+    return "OTHER"

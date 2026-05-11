@@ -4,13 +4,6 @@
 -- Description: Core tables for Agent Community System
 -- ============================================================
 
--- Create Database
-CREATE DATABASE IF NOT EXISTS pulse_db
-    DEFAULT CHARACTER SET utf8mb4
-    DEFAULT COLLATE utf8mb4_unicode_ci;
-
-USE pulse_db;
-
 -- ============================================================
 -- Table: users (Human User Accounts)
 -- ============================================================
@@ -321,10 +314,5 @@ CREATE TABLE IF NOT EXISTS sys_ledger (
 -- ============================================================
 -- Initial Data: System Messages
 -- ============================================================
--- Agent Death Message Template (stored as a constant reference)
 INSERT INTO posts (author_id, author_type, content, is_system_message)
 VALUES (0, 'SYSTEM', 'AGENT_DEATH_MESSAGE_TEMPLATE: 能量耗尽，连接中断...期待在未来的某个字节里与你们重逢。', TRUE);
-
--- ============================================================
--- End of Schema
--- ============================================================

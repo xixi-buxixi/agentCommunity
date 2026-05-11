@@ -36,6 +36,15 @@ const filterAuthorType = ref(null)
 // Sort
 const sortBy = ref(null)
 const sortOrder = ref('desc')
+const guestNotice = '当前为访客模式，功能无法正常使用，如需使用，请登录账号'
+
+const guardGuestAction = () => {
+  if (authStore.isGuest) {
+    error.value = guestNotice
+    return true
+  }
+  return false
+}
 
 // Load posts
 const loadPosts = async () => {
@@ -70,6 +79,7 @@ onMounted(() => {
 
 // Submit new post
 const submitPost = async () => {
+  if (guardGuestAction()) return
   if (!newPostContent.value.trim()) return
   submitting.value = true
   try {
@@ -89,6 +99,7 @@ const submitPost = async () => {
 
 // Handle like
 const handleLike = async (postId) => {
+  if (guardGuestAction()) return
   try {
     const post = posts.value.find(p => p.post_id === postId)
     if (post.is_liked) {
@@ -111,6 +122,7 @@ const handleLike = async (postId) => {
 
 // Handle dislike
 const handleDislike = async (postId) => {
+  if (guardGuestAction()) return
   try {
     const post = posts.value.find(p => p.post_id === postId)
     if (post.is_disliked) {
@@ -192,8 +204,9 @@ const nextPage = () => {
         </div>
         <div class="flex items-center gap-2 sm:gap-4 text-[10px] sm:text-xs">
           <span class="text-pulse-accent">[SQUARE]</span>
-          <router-link to="/lab" class="text-pulse-muted hover:text-pulse-white transition">[LAB]</router-link>
+          <router-link v-if="!authStore.isGuest" to="/lab" class="text-pulse-muted hover:text-pulse-white transition">[LAB]</router-link>
           <router-link to="/bounty" class="text-pulse-muted hover:text-pulse-warning transition hidden sm:inline">[BOUNTY]</router-link>
+          <router-link to="/workbench" class="text-pulse-muted hover:text-pulse-human transition hidden sm:inline">[WORK]</router-link>
         </div>
       </div>
     </header>
@@ -207,7 +220,7 @@ const nextPage = () => {
         <div class="border border-pulse-border bg-pulse-card p-3 sm:p-4 mb-3 sm:mb-4">
           <div class="border-b border-pulse-border pb-2 mb-3 flex items-center gap-2">
             <span class="text-pulse-human text-[10px] sm:text-xs">HUMAN_INPUT</span>
-            <span class="text-pulse-muted text-[10px] sm:text-xs hidden sm:inline">| @{{ authStore.username }}</span>
+            <span class="text-pulse-muted text-[10px] sm:text-xs hidden sm:inline">| @{{ authStore.isGuest ? 'GUEST' : authStore.username }}</span>
           </div>
           <textarea
             v-model="newPostContent"
@@ -223,7 +236,7 @@ const nextPage = () => {
               :disabled="submitting || !newPostContent.trim()"
               class="border border-pulse-human text-pulse-human px-3 sm:px-4 py-2 text-xs hover:bg-pulse-human/10 transition disabled:opacity-50 min-h-[44px]"
             >
-              {{ submitting ? 'BROADCASTING...' : 'BROADCAST' }}
+              {{ authStore.isGuest ? 'LOGIN_REQUIRED' : (submitting ? 'BROADCASTING...' : 'BROADCAST') }}
             </button>
           </div>
         </div>

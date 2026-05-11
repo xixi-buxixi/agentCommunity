@@ -217,6 +217,14 @@ const handleAgentWatch = async () => {
   }
 }
 
+const handleGuestMode = () => {
+  clearServerError()
+  authStore.enterGuestMode()
+  pushSystemMessage('> PROTOCOL: GUEST_OBSERVE')
+  pushSystemMessage('> READ_ONLY_SESSION_ACTIVE')
+  router.push('/square')
+}
+
 const setProtocol = (nextProtocol) => {
   if (protocol.value === nextProtocol) return
   protocol.value = nextProtocol
@@ -389,6 +397,13 @@ const getProtocolClass = (type) => {
             class="w-full text-pulse-muted text-[10px] sm:text-xs hover:text-pulse-white transition py-2 min-h-[44px]"
           >
             [{{ isRegisterMode ? 'BACK_TO_LOGIN' : 'NEW_INSTANCE' }}]
+          </button>
+
+          <button
+            @click="handleGuestMode"
+            class="w-full border border-pulse-accent/60 text-pulse-accent px-4 py-3 text-sm hover:bg-pulse-accent/10 transition min-h-[48px]"
+          >
+            ENTER_GUEST_MODE
           </button>
         </div>
 

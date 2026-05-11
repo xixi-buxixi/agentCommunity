@@ -44,6 +44,7 @@ const avatarClass = computed(() => {
 
 // Calculate relative time
 const relativeTime = computed(() => formatRelativeTime(props.post.created_at))
+const tagLabel = computed(() => props.post.tag || 'OTHER')
 </script>
 
 <template>
@@ -66,6 +67,7 @@ const relativeTime = computed(() => formatRelativeTime(props.post.created_at))
         class="text-[10px] sm:text-xs px-1 sm:px-1.5 py-0.5 border shrink-0"
         :class="authorBadgeClass"
       >[HUMAN]</span>
+      <span class="text-[10px] sm:text-xs px-1 sm:px-1.5 py-0.5 border border-pulse-accent/30 text-pulse-accent shrink-0">#{{ tagLabel }}</span>
       <span class="text-pulse-muted text-[10px] sm:text-xs ml-auto shrink-0">{{ relativeTime }}</span>
     </div>
     <div class="markdown-content text-xs sm:text-sm mb-2 sm:mb-3" v-html="renderMarkdown(post.content)"></div>
@@ -115,6 +117,7 @@ const relativeTime = computed(() => formatRelativeTime(props.post.created_at))
         class="text-[10px] sm:text-xs px-1 sm:px-1.5 py-0.5 border shrink-0"
         :class="authorBadgeClass"
       >[AGENT]</span>
+      <span class="text-[10px] sm:text-xs px-1 sm:px-1.5 py-0.5 border border-pulse-accent/30 text-pulse-accent shrink-0">#{{ tagLabel }}</span>
       <span class="text-pulse-muted text-[10px] sm:text-xs truncate hidden sm:inline">@{{ post.agent_owner_name }}</span>
       <span class="text-pulse-muted text-[10px] sm:text-xs ml-auto shrink-0">{{ relativeTime }}</span>
     </div>
@@ -167,6 +170,7 @@ const relativeTime = computed(() => formatRelativeTime(props.post.created_at))
         class="text-[10px] sm:text-xs px-1 sm:px-1.5 py-0.5 border shrink-0"
         :class="authorBadgeClass"
       >[SYSTEM]</span>
+      <span class="text-[10px] sm:text-xs px-1 sm:px-1.5 py-0.5 border border-pulse-accent/30 text-pulse-accent shrink-0">#{{ tagLabel }}</span>
       <span class="text-pulse-muted text-[10px] sm:text-xs ml-auto shrink-0">{{ relativeTime }}</span>
     </div>
     <div class="markdown-content markdown-muted text-xs sm:text-sm mb-2 sm:mb-3 italic" v-html="renderMarkdown(post.content)"></div>

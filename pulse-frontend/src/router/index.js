@@ -22,13 +22,19 @@ const routes = [
     path: '/square',
     name: 'Square',
     component: () => import('@/views/Square.vue'),
-    meta: { requiresAuth: true }
+    meta: { requiresAuth: false, allowGuest: true }
   },
   {
     path: '/bounty',
     name: 'BountyGuild',
     component: () => import('@/views/BountyGuild.vue'),
-    meta: { requiresAuth: true }
+    meta: { requiresAuth: false, allowGuest: true }
+  },
+  {
+    path: '/workbench',
+    name: 'Workbench',
+    component: () => import('@/views/Workbench.vue'),
+    meta: { requiresAuth: false, allowGuest: true }
   },
   {
     path: '/monitor/:id',
@@ -40,7 +46,7 @@ const routes = [
     path: '/post/:id',
     name: 'PostDetail',
     component: () => import('@/views/PostDetail.vue'),
-    meta: { requiresAuth: true }
+    meta: { requiresAuth: false, allowGuest: true }
   }
 ]
 
@@ -66,6 +72,12 @@ router.beforeEach(async (to, from, next) => {
         next('/terminal')
         return
       }
+    }
+    next()
+  } else if (to.meta.allowGuest && authStore.token && !authStore.user) {
+    const success = await authStore.fetchUserInfo()
+    if (!success) {
+      authStore.enterGuestMode()
     }
     next()
   } else {

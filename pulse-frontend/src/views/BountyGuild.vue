@@ -51,6 +51,15 @@ const showAuditModal = ref(false)
 const auditing = ref(false)
 const canceling = ref(false)
 const currentSubmission = ref(null)
+const guestNotice = '当前为访客模式，功能无法正常使用，如需使用，请登录账号'
+
+const guardGuestAction = () => {
+  if (authStore.isGuest) {
+    error.value = guestNotice
+    return true
+  }
+  return false
+}
 
 // Load public bounty list
 const loadBounties = async () => {
@@ -85,6 +94,7 @@ const setBountySort = (sort) => {
 
 // Load my bounties (audit list)
 const loadMyBounties = async () => {
+  if (guardGuestAction()) return
   loading.value = true
   error.value = null
   try {
@@ -101,6 +111,7 @@ const loadMyBounties = async () => {
 
 // Load my accepted tasks
 const loadMyAcceptedTasks = async () => {
+  if (guardGuestAction()) return
   loading.value = true
   error.value = null
   try {
@@ -139,6 +150,7 @@ const viewDetail = async (task, source = 'list') => {
 
 // Accept task
 const handleAccept = async (task) => {
+  if (guardGuestAction()) return
   try {
     await acceptBounty(task.id)
     task.is_accepted_by_me = true
@@ -153,6 +165,7 @@ const handleAccept = async (task) => {
 
 // Open submit modal
 const openSubmitModal = (task) => {
+  if (guardGuestAction()) return
   currentTask.value = task
   showSubmitModal.value = true
 }
@@ -180,6 +193,7 @@ const handleSubmitAnswer = async ({ content, onSuccess }) => {
 
 // Open audit modal
 const openAuditModal = (submission) => {
+  if (guardGuestAction()) return
   currentSubmission.value = submission
   showAuditModal.value = true
 }
@@ -205,6 +219,7 @@ const handleAudit = async ({ payload, onSuccess }) => {
 
 // Cancel bounty before review starts
 const handleCancelBounty = async (task) => {
+  if (guardGuestAction()) return
   const reason = window.prompt('CANCEL_REASON', '需求已变化，暂不需要继续征集答案')
   if (reason === null) return
   canceling.value = true
@@ -237,6 +252,7 @@ const handleCancelBounty = async (task) => {
 
 // Create bounty
 const handleCreateBounty = async ({ payload, onSuccess, error: createError }) => {
+  if (guardGuestAction()) return
   if (createError) {
     error.value = createError
     return
@@ -257,6 +273,11 @@ const handleCreateBounty = async ({ payload, onSuccess, error: createError }) =>
 
 // Switch view
 const switchView = (view) => {
+  if (authStore.isGuest && view !== 'list') {
+    guardGuestAction()
+    currentView.value = 'list'
+    return
+  }
   currentView.value = view
   error.value = null
   if (view === 'list') loadBounties()
@@ -296,8 +317,9 @@ onMounted(() => loadBounties())
           </div>
         </div>
         <div class="flex items-center gap-2 sm:gap-4 text-[10px] sm:text-xs">
-          <router-link to="/lab" class="text-pulse-muted hover:text-pulse-white transition">[LAB]</router-link>
+          <router-link v-if="!authStore.isGuest" to="/lab" class="text-pulse-muted hover:text-pulse-white transition">[LAB]</router-link>
           <router-link to="/square" class="text-pulse-muted hover:text-pulse-white transition hidden sm:inline">[SQUARE]</router-link>
+          <router-link to="/workbench" class="text-pulse-muted hover:text-pulse-human transition hidden sm:inline">[WORK]</router-link>
           <span class="text-pulse-warning">[BOUNTY]</span>
         </div>
       </div>
@@ -315,6 +337,7 @@ onMounted(() => loadBounties())
             [BOUNTY_LIST]
           </button>
           <button
+            v-if="!authStore.isGuest"
             @click="switchView('audit')"
             class="px-4 py-2 text-xs border transition whitespace-nowrap min-h-[44px]"
             :class="currentView === 'audit' ? 'border-pulse-accent bg-pulse-accent/20 text-pulse-accent' : 'border-pulse-border text-pulse-muted hover:text-pulse-white'"
@@ -322,6 +345,7 @@ onMounted(() => loadBounties())
             [MY_BOUNTIES]
           </button>
           <button
+            v-if="!authStore.isGuest"
             @click="switchView('my-tasks')"
             class="px-4 py-2 text-xs border transition whitespace-nowrap min-h-[44px]"
             :class="currentView === 'my-tasks' ? 'border-pulse-human bg-pulse-human/20 text-pulse-human' : 'border-pulse-border text-pulse-muted hover:text-pulse-white'"
@@ -330,6 +354,7 @@ onMounted(() => loadBounties())
           </button>
         </div>
         <button
+          v-if="!authStore.isGuest"
           @click="showCreateModal = true"
           class="border border-pulse-alive text-pulse-alive px-4 py-2 text-xs hover:bg-pulse-alive/10 min-h-[44px] whitespace-nowrap"
         >

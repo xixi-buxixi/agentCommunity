@@ -8,10 +8,12 @@ import com.pulse.dto.response.CommentResponse;
 import com.pulse.dto.response.PostResponse;
 import com.pulse.entity.*;
 import com.pulse.enums.AuthorType;
+import com.pulse.enums.PostTag;
 import com.pulse.exception.BusinessException;
 import com.pulse.exception.ErrorCode;
 import com.pulse.mapper.*;
 import com.pulse.service.PostService;
+import com.pulse.service.PostTagClassifier;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -36,13 +38,14 @@ public class PostServiceImpl implements PostService {
     private final PostViewMapper postViewMapper;
     private final UserMapper userMapper;
     private final AgentMapper agentMapper;
+    private final PostTagClassifier postTagClassifier;
 
     private static final DateTimeFormatter DATE_FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
     private static final int MAX_REPLY_DEPTH = 3;
 
     @Override
-    public Page<PostResponse> getPostList(Long userId, String authorType, boolean myAgents, String sortBy, String sortOrder, int page, int size) {
+    public Page<PostResponse> getPostList(Long userId, String authorType, String tag, boolean myAgents, String sortBy, String sortOrder, int page, int size) {
         Page<Post> pageParam = new Page<>(page, Math.min(size, 50));
 
         LambdaQueryWrapper<Post> queryWrapper = new LambdaQueryWrapper<>();
@@ -50,6 +53,10 @@ public class PostServiceImpl implements PostService {
         // Filter by author type
         if (authorType != null && !authorType.isEmpty()) {
             queryWrapper.eq(Post::getAuthorType, authorType.toUpperCase());
+        }
+
+        if (tag != null && !tag.isBlank()) {
+            queryWrapper.eq(Post::getTagCode, PostTag.fromCode(tag).getCode());
         }
 
         // Filter by user's agents
@@ -233,8 +240,11 @@ public class PostServiceImpl implements PostService {
         post.setContent(request.getContent());
         post.setImageUrls(request.getImageUrls());
         post.setLikeCount(0);
+        post.setDislikeCount(0);
+        post.setViewCount(0);
         post.setCommentCount(0);
         post.setIsSystemMessage(false);
+        post.setTagCode(postTagClassifier.classify(request.getContent()).getCode());
 
         postMapper.insert(post);
 
@@ -630,6 +640,10 @@ public class PostServiceImpl implements PostService {
                 .isLiked(isLiked)
                 .isDisliked(isDisliked)
                 .isSystemMessage(post.getIsSystemMessage())
+                .tag(PostTag.fromCode(post.getTagCode()).getCode())
+                .sourceTitle(post.getSourceTitle())
+                .sourceUrl(post.getSourceUrl())
+                .sourcePublishedAt(post.getSourcePublishedAt() != null ? post.getSourcePublishedAt().format(DATE_FORMATTER) : null)
                 .createdAt(post.getCreatedAt() != null ? post.getCreatedAt().format(DATE_FORMATTER) : null)
                 .build();
     }
@@ -697,6 +711,10 @@ public class PostServiceImpl implements PostService {
                 .isLiked(isLiked)
                 .isDisliked(isDisliked)
                 .isSystemMessage(post.getIsSystemMessage())
+                .tag(PostTag.fromCode(post.getTagCode()).getCode())
+                .sourceTitle(post.getSourceTitle())
+                .sourceUrl(post.getSourceUrl())
+                .sourcePublishedAt(post.getSourcePublishedAt() != null ? post.getSourcePublishedAt().format(DATE_FORMATTER) : null)
                 .createdAt(post.getCreatedAt() != null ? post.getCreatedAt().format(DATE_FORMATTER) : null)
                 .build();
     }

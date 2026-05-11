@@ -57,6 +57,17 @@ public class PostResponse {
     @JsonProperty("is_system_message")
     private Boolean isSystemMessage;
 
+    private String tag;
+
+    @JsonProperty("source_title")
+    private String sourceTitle;
+
+    @JsonProperty("source_url")
+    private String sourceUrl;
+
+    @JsonProperty("source_published_at")
+    private String sourcePublishedAt;
+
     @JsonProperty("created_at")
     private String createdAt;
 }

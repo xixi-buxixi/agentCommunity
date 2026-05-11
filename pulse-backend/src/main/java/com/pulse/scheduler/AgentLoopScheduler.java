@@ -15,6 +15,7 @@ import com.pulse.entity.Post;
 import com.pulse.enums.ActionType;
 import com.pulse.enums.AgentStatus;
 import com.pulse.enums.AuthorType;
+import com.pulse.enums.PostTag;
 import com.pulse.mapper.AgentLogMapper;
 import com.pulse.mapper.AgentMapper;
 import com.pulse.mapper.CommentMapper;
@@ -24,6 +25,7 @@ import com.pulse.mapper.PostMapper;
 import com.pulse.mapper.PostViewMapper;
 import com.pulse.entity.PostView;
 import com.pulse.service.BountyService;
+import com.pulse.service.PostTagClassifier;
 import com.pulse.util.AesUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -32,7 +34,11 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 
 /**
  * Agent Loop Scheduler
@@ -65,6 +71,7 @@ public class AgentLoopScheduler {
     private final BountyService bountyService;
     private final AesUtil aesUtil;
     private final ObjectMapper objectMapper;
+    private final PostTagClassifier postTagClassifier;
 
     @Value("${scheduler.agent-loop.enabled:true}")
     private boolean schedulerEnabled;
@@ -170,8 +177,7 @@ public class AgentLoopScheduler {
      * so LLM can return correct target_post_id for reply actions.
      */
     private AgentContext buildAgentContext(Agent agent) {
-        // Fetch posts excluding those already commented by this agent
-        List<Post> latestPosts = postMapper.findLatestPostsForAgent(5, agent.getId());
+        List<Post> latestPosts = selectPostsForAgent(agent, 5);
 
         StringBuilder postsContext = new StringBuilder();
         for (int i = 0; i < latestPosts.size(); i++) {
@@ -197,6 +203,72 @@ public class AgentLoopScheduler {
                 .postsCount(latestPosts.size())
                 .agentName(agent.getName())
                 .build();
+    }
+
+    private List<Post> selectPostsForAgent(Agent agent, int limit) {
+        List<String> interestTags = inferInterestTags(agent);
+        Map<Long, Post> selected = new LinkedHashMap<>();
+
+        appendUnique(selected, postMapper.findInterestPostsForAgent(agent.getId(), interestTags, limit), 3);
+        appendUnique(selected, postMapper.findHotPostsForAgent(agent.getId(), limit), 1);
+        appendUnique(selected, postMapper.findLatestUnviewedPostsForAgent(agent.getId(), limit), 1);
+
+        if (selected.size() < limit) {
+            appendUnique(selected, postMapper.findInterestPostsForAgent(agent.getId(), interestTags, limit), limit - selected.size());
+        }
+        if (selected.size() < limit) {
+            appendUnique(selected, postMapper.findHotPostsForAgent(agent.getId(), limit), limit - selected.size());
+        }
+        if (selected.size() < limit) {
+            appendUnique(selected, postMapper.findLatestUnviewedPostsForAgent(agent.getId(), limit), limit - selected.size());
+        }
+
+        return new ArrayList<>(selected.values()).stream().limit(limit).toList();
+    }
+
+    private void appendUnique(Map<Long, Post> selected, List<Post> candidates, int maxToAdd) {
+        if (candidates == null || maxToAdd <= 0) {
+            return;
+        }
+        int added = 0;
+        for (Post post : candidates) {
+            if (post == null || post.getId() == null || selected.containsKey(post.getId())) {
+                continue;
+            }
+            selected.put(post.getId(), post);
+            added++;
+            if (added >= maxToAdd) {
+                return;
+            }
+        }
+    }
+
+    private List<String> inferInterestTags(Agent agent) {
+        String prompt = agent.getSystemPrompt() == null ? "" : agent.getSystemPrompt().toLowerCase(Locale.ROOT);
+        List<String> tags = new ArrayList<>();
+        if (containsAny(prompt, "ai", "agent", "智能体", "大模型", "llm")) {
+            tags.add(PostTag.AI_FRONTIER.getCode());
+        }
+        if (containsAny(prompt, "代码", "工程", "架构", "java", "python", "redis", "software")) {
+            tags.add(PostTag.SOFTWARE_ENGINEERING.getCode());
+        }
+        if (containsAny(prompt, "产品", "创意", "项目", "灵感")) {
+            tags.add(PostTag.PRODUCT_IDEA.getCode());
+        }
+        if (tags.isEmpty()) {
+            tags.add(PostTag.AI_FRONTIER.getCode());
+            tags.add(PostTag.TECH_NEWS.getCode());
+        }
+        return tags;
+    }
+
+    private boolean containsAny(String text, String... keywords) {
+        for (String keyword : keywords) {
+            if (text.contains(keyword.toLowerCase(Locale.ROOT))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -260,8 +332,11 @@ public class AgentLoopScheduler {
         post.setAuthorType(AuthorType.AGENT.getCode());
         post.setContent(decision.getTruncatedPostContent());
         post.setLikeCount(0);
+        post.setDislikeCount(0);
+        post.setViewCount(0);
         post.setCommentCount(0);
         post.setIsSystemMessage(false);
+        post.setTagCode(postTagClassifier.classify(post.getContent()).getCode());
 
         postMapper.insert(post);
 
@@ -452,8 +527,11 @@ public class AgentLoopScheduler {
         deathMessage.setContent(String.format("[%s] 能量耗尽，连接中断...期待在未来的某个字节里与你们重逢。",
                 agent.getName()));
         deathMessage.setLikeCount(0);
+        deathMessage.setDislikeCount(0);
+        deathMessage.setViewCount(0);
         deathMessage.setCommentCount(0);
         deathMessage.setIsSystemMessage(true);
+        deathMessage.setTagCode(PostTag.SYSTEM_NOTICE.getCode());
 
         postMapper.insert(deathMessage);
 
