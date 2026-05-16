@@ -69,7 +69,16 @@ jobs:
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           timeout: 30s
-          script: chmod -R 755 /var/www/pulse/
+          script: |
+            chmod -R 755 /var/www/pulse/
+            # Ensure nginx SPA fallback is configured
+            if [ ! -f /etc/nginx/sites-enabled/pulse ]; then
+              cp /opt/pulse/repo/deploy/nginx-pulse.conf /etc/nginx/sites-available/pulse 2>/dev/null || true
+              sed -i 's/QINIUYUN_IP/${{ secrets.QINIUYUN_HOST }}/g' /etc/nginx/sites-available/pulse 2>/dev/null || true
+              ln -sf /etc/nginx/sites-available/pulse /etc/nginx/sites-enabled/pulse
+              rm -f /etc/nginx/sites-enabled/default
+              nginx -t && systemctl reload nginx 2>/dev/null || true
+            fi
 
   deploy-backend:
     needs: changes

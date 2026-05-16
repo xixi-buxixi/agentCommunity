@@ -46,6 +46,21 @@ deploy_frontend() {
     mkdir -p /var/www/pulse
     cp -r dist/* /var/www/pulse/
     chmod -R 755 /var/www/pulse/
+
+    # Setup nginx SPA config if not exists
+    if command -v nginx &>/dev/null; then
+        if [ ! -f /etc/nginx/sites-enabled/pulse ]; then
+            log "Setting up nginx SPA config..."
+            cp "$REPO_DIR/deploy/nginx-pulse.conf" /etc/nginx/sites-available/pulse
+            sed -i "s/QINIUYUN_IP/your-qiniuyun-server-ip/g" /etc/nginx/sites-available/pulse
+            ln -sf /etc/nginx/sites-available/pulse /etc/nginx/sites-enabled/pulse
+            rm -f /etc/nginx/sites-enabled/default
+            nginx -t && systemctl reload nginx
+            log "Nginx configured OK"
+        else
+            log "Nginx already configured, skipping"
+        fi
+    fi
     log "Frontend deployed OK"
 }
 
