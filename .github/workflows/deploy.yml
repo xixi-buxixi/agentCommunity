@@ -38,6 +38,13 @@ jobs:
           cache-dependency-path: pulse-frontend/package-lock.json
       - name: Build
         run: cd pulse-frontend && npm ci && npm run build
+      - name: Test SSH connectivity (Tencent)
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes -o ServerAliveInterval=30 -i ~/.ssh/deploy_key root@${{ secrets.TENCENT_HOST }} "echo SSH_OK" 2>&1 || echo "SSH_FAILED"
+        continue-on-error: true
       - name: Clean old assets
         uses: appleboy/ssh-action@v1
         with:
@@ -77,6 +84,13 @@ jobs:
           cache: maven
       - name: Build
         run: cd pulse-backend && mvn clean package -DskipTests -B
+      - name: Test SSH connectivity (Qiniuyun)
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes -o ServerAliveInterval=30 -i ~/.ssh/deploy_key root@${{ secrets.QINIUYUN_HOST }} "echo SSH_OK" 2>&1 || echo "SSH_FAILED"
+        continue-on-error: true
       - name: Upload JAR + config to Qiniuyun
         uses: appleboy/scp-action@v1
         with:
