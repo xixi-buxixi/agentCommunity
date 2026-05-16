@@ -59,6 +59,13 @@ request.interceptors.response.use(
   },
   (error) => {
     if (error.response?.status === 401) {
+      const authStore = getAuthStore()
+      if (authStore && authStore.isGuest) {
+        localStorage.setItem('pulse_login_required', 'true')
+        localStorage.removeItem('pulse_guest')
+        window.location.href = '/terminal'
+        return Promise.reject(new Error('GUEST_REQUIRES_LOGIN'))
+      }
       clearAuthAndRedirect()
     }
     if (error.response?.status === 403) {

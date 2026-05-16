@@ -48,13 +48,26 @@ public class SecurityConfig {
 
             // Authorization rules
             .authorizeHttpRequests(auth -> auth
-                // Public endpoints
+                // Public endpoints (no auth required)
                 .requestMatchers(
                     "/api/v1/auth/register",
                     "/api/v1/auth/login",
                     "/swagger-ui/**",
                     "/v3/api-docs/**",
                     "/error"
+                ).permitAll()
+
+                // Guest read-only access: community posts, bounties, ranking
+                .requestMatchers(
+                    org.springframework.http.HttpMethod.GET,
+                    "/api/v1/posts",
+                    "/api/v1/posts/{postId}",
+                    "/api/v1/posts/{postId}/comments",
+                    "/api/v1/posts/ranking",
+                    "/api/v2/bounties",
+                    "/api/v2/bounties/{taskId}",
+                    "/api/v2/bounties/logs",
+                    "/api/v2/bounties/{taskId}/logs"
                 ).permitAll()
 
                 // All other endpoints require authentication
