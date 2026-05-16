@@ -209,23 +209,39 @@ const nextPage = () => {
             <span class="text-pulse-human text-[10px] sm:text-xs">HUMAN_INPUT</span>
             <span class="text-pulse-muted text-[10px] sm:text-xs hidden sm:inline">| @{{ authStore.username }}</span>
           </div>
-          <textarea
-            v-model="newPostContent"
-            placeholder="> TYPE_YOUR_MESSAGE..."
-            rows="3"
-            class="w-full bg-pulse-bg border border-pulse-border p-2 sm:p-3 text-xs sm:text-sm text-pulse-white placeholder-pulse-muted resize-none outline-none transition"
-            :maxlength="500"
-          ></textarea>
-          <div class="flex justify-between items-center mt-3">
-            <span class="text-pulse-muted text-[10px] sm:text-xs">{{ newPostContent.length }}/500</span>
-            <button
-              @click="submitPost"
-              :disabled="submitting || !newPostContent.trim()"
-              class="border border-pulse-human text-pulse-human px-3 sm:px-4 py-2 text-xs hover:bg-pulse-human/10 transition disabled:opacity-50 min-h-[44px]"
+
+          <!-- Guest mode: show login prompt -->
+          <div v-if="authStore.isGuest" class="border border-pulse-warning/40 bg-pulse-warning/5 p-4 text-center">
+            <div class="text-pulse-warning text-xs sm:text-sm mb-3">GUEST_MODE // 游客无法发布内容</div>
+            <p class="text-pulse-muted text-[10px] sm:text-xs mb-4">登录后可以发布动态、评论互动和参与悬赏任务</p>
+            <router-link
+              to="/terminal"
+              class="inline-block border border-pulse-human text-pulse-human px-4 py-2 text-xs hover:bg-pulse-human/10 transition min-h-[44px]"
             >
-              {{ submitting ? 'BROADCASTING...' : 'BROADCAST' }}
-            </button>
+              [LOGIN_TO_POST]
+            </router-link>
           </div>
+
+          <!-- Login user: show normal input -->
+          <template v-else>
+            <textarea
+              v-model="newPostContent"
+              placeholder="> TYPE_YOUR_MESSAGE..."
+              rows="3"
+              class="w-full bg-pulse-bg border border-pulse-border p-2 sm:p-3 text-xs sm:text-sm text-pulse-white placeholder-pulse-muted resize-none outline-none transition"
+              :maxlength="500"
+            ></textarea>
+            <div class="flex justify-between items-center mt-3">
+              <span class="text-pulse-muted text-[10px] sm:text-xs">{{ newPostContent.length }}/500</span>
+              <button
+                @click="submitPost"
+                :disabled="submitting || !newPostContent.trim()"
+                class="border border-pulse-human text-pulse-human px-3 sm:px-4 py-2 text-xs hover:bg-pulse-human/10 transition disabled:opacity-50 min-h-[44px]"
+              >
+                {{ submitting ? 'BROADCASTING...' : 'BROADCAST' }}
+              </button>
+            </div>
+          </template>
         </div>
 
         <!-- Filters & Sort (Compact) -->

@@ -271,7 +271,18 @@ onMounted(() => {
       </div>
 
       <!-- Comment Input (SYSTEM posts disabled; own posts allow replies only) -->
-      <div v-if="post && canTopLevelComment" class="border border-pulse-border bg-pulse-card p-3 sm:p-4 mb-3 sm:mb-4">
+      <div v-if="post && canTopLevelComment && authStore.isGuest" class="border border-pulse-warning/40 bg-pulse-warning/5 p-4 text-center mb-3 sm:mb-4">
+        <div class="text-pulse-warning text-xs sm:text-sm mb-3">GUEST_MODE // 游客无法评论</div>
+        <p class="text-pulse-muted text-[10px] sm:text-xs mb-4">登录后可以参与评论互动</p>
+        <router-link
+          to="/terminal"
+          class="inline-block border border-pulse-human text-pulse-human px-4 py-2 text-xs hover:bg-pulse-human/10 transition min-h-[44px]"
+        >
+          [LOGIN_TO_COMMENT]
+        </router-link>
+      </div>
+
+      <div v-else-if="post && canTopLevelComment" class="border border-pulse-border bg-pulse-card p-3 sm:p-4 mb-3 sm:mb-4">
         <div class="text-pulse-muted text-[10px] sm:text-xs mb-2">COMMENT_INPUT:</div>
         <textarea
           v-model="newCommentContent"
@@ -325,6 +336,7 @@ onMounted(() => {
           <CommentThread
             :comments="comments"
             :current-user-id="authStore.userId"
+            :is-guest="authStore.isGuest"
             @reply="submitReply"
           />
         </div>

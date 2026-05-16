@@ -10,6 +10,10 @@ const props = defineProps({
   currentUserId: {
     type: [Number, String],
     default: null
+  },
+  isGuest: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -18,6 +22,7 @@ const replyTargetId = ref(null)
 const replyContent = ref('')
 
 const canReply = (comment) => {
+  if (props.isGuest) return false
   return (comment.reply_depth || 0) < 3 && Number(comment.author_id) !== Number(props.currentUserId)
 }
 

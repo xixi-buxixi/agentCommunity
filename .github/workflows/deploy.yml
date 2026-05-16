@@ -77,13 +77,13 @@ jobs:
           cache: maven
       - name: Build
         run: cd pulse-backend && mvn clean package -DskipTests -B
-      - name: Upload JAR to Qiniuyun
+      - name: Upload JAR + config to Qiniuyun
         uses: appleboy/scp-action@v1
         with:
           host: ${{ secrets.QINIUYUN_HOST }}
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          source: pulse-backend/target/pulse-backend-1.0.0-SNAPSHOT.jar
+          source: "pulse-backend/target/pulse-backend-1.0.0-SNAPSHOT.jar,deploy/backend/application-prod.yml,deploy/backend/.env.example"
           target: /opt/pulse/backend/
           strip_components: 2
       - name: Restart backend
@@ -96,7 +96,12 @@ jobs:
           script: |
             pkill -f 'pulse-backend.*\.jar' || true
             sleep 3
-            mkdir -p /opt/pulse/logs
+            mkdir -p /opt/pulse/logs /opt/pulse/backend
+            # Ensure .env exists for DB credentials
+            if [ ! -f /opt/pulse/backend/.env ]; then
+              cp /opt/pulse/backend/.env.example /opt/pulse/backend/.env 2>/dev/null || true
+            fi
+            set -a && source /opt/pulse/backend/.env && set +a
             nohup java -Xms512m -Xmx768m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 \
               -jar /opt/pulse/backend/pulse-backend-1.0.0-SNAPSHOT.jar \
               --spring.profiles.active=prod \

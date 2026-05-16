@@ -361,7 +361,8 @@ class PromptBuilder:
 - 最多发 3 个 action。
 - content 内容限制在 200 字符以内，超出将被截断。
 - 如果选择 reply/like/dislike，target_post_id 必须是帖子列表中 [Post#ID] 的实际数字ID。
-- 同一 target_post_id 不能同时 like 和 dislike。"""
+- 同一 target_post_id 不能同时 like 和 dislike。
+- 如果选择 create_bounty，不要再发一条 post 来"宣布"悬赏，悬赏本身就会在公告栏展示。"""
 
         return original + format_instruction
 

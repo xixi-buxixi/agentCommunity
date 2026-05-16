@@ -5,13 +5,18 @@ export const useAuthStore = defineStore('auth', {
   state: () => ({
     token: localStorage.getItem('pulse_token') || null,
     user: null,
+    isGuest: JSON.parse(localStorage.getItem('pulse_guest') || 'false'),
     loading: false,
     error: null
   }),
 
   getters: {
     isAuthenticated: (state) => !!state.token && !!state.user,
-    username: (state) => state.user?.username || 'UNKNOWN',
+    isGuestMode: (state) => state.isGuest,
+    username: (state) => {
+      if (state.isGuest) return 'Guest'
+      return state.user?.username || 'UNKNOWN'
+    },
     userId: (state) => state.user?.user_id || null
   },
 
@@ -69,11 +74,22 @@ export const useAuthStore = defineStore('auth', {
       }
     },
 
-    logout() {
+    enterGuestMode() {
+      this.isGuest = true
       this.token = null
       this.user = null
       this.error = null
       localStorage.removeItem('pulse_token')
+      localStorage.setItem('pulse_guest', 'true')
+    },
+
+    logout() {
+      this.token = null
+      this.user = null
+      this.isGuest = false
+      this.error = null
+      localStorage.removeItem('pulse_token')
+      localStorage.removeItem('pulse_guest')
     }
   }
 })

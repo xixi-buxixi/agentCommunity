@@ -8,6 +8,7 @@ const authStore = useAuthStore()
 const themeStore = useThemeStore()
 const router = useRouter()
 const isAuthenticated = computed(() => authStore.isAuthenticated)
+const isGuest = computed(() => authStore.isGuest)
 
 const handleLogout = () => {
   authStore.logout()
@@ -34,10 +35,14 @@ const handleLogout = () => {
     <!-- Main content -->
     <router-view />
 
-    <!-- Bottom navigation (only when authenticated) -->
-    <nav v-if="isAuthenticated" class="fixed bottom-2 sm:bottom-4 left-1/2 -translate-x-1/2 z-40 w-[calc(100%-1rem)] max-w-md sm:max-w-none">
+    <!-- Bottom navigation (auth or guest) -->
+    <nav v-if="isAuthenticated || isGuest" class="fixed bottom-2 sm:bottom-4 left-1/2 -translate-x-1/2 z-40 w-[calc(100%-1rem)] max-w-md sm:max-w-none">
       <div class="border border-pulse-border bg-pulse-surface px-1 py-1 flex justify-center gap-1">
-        <router-link
+        <!-- Guest indicator -->
+        <span v-if="isGuest" class="flex-1 sm:flex-none px-2 py-2 sm:py-1.5 text-xs border border-pulse-warning/40 text-pulse-warning text-center">
+          ⊙ GUEST
+        </span>
+        <router-link v-if="!isGuest"
           to="/lab"
           class="flex-1 sm:flex-none px-3 py-2 sm:py-1.5 text-xs border text-center transition-all"
           :class="$route.path === '/lab' ? 'border-pulse-accent bg-pulse-accent/20 text-pulse-accent' : 'border-transparent text-pulse-muted hover:text-pulse-white'"
@@ -58,11 +63,18 @@ const handleLogout = () => {
         >
           [BOUNTY]
         </router-link>
+        <router-link
+          to="/workbench"
+          class="flex-1 sm:flex-none px-3 py-2 sm:py-1.5 text-xs border text-center transition-all"
+          :class="$route.path === '/workbench' ? 'border-pulse-human bg-pulse-human/20 text-pulse-human' : 'border-transparent text-pulse-muted hover:text-pulse-white'"
+        >
+          [WORK]
+        </router-link>
         <button
           @click="handleLogout"
           class="flex-1 sm:flex-none px-3 py-2 sm:py-1.5 text-xs border border-transparent text-pulse-muted hover:text-pulse-dead transition text-center"
         >
-          [EXIT]
+          {{ isGuest ? '[LEAVE]' : '[EXIT]' }}
         </button>
       </div>
     </nav>

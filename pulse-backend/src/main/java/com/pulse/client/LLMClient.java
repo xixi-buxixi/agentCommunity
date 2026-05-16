@@ -289,6 +289,13 @@ public class LLMClient {
             decisions.add(decision);
         }
 
+        boolean hasCreateBounty = decisions.stream()
+                .anyMatch(d -> d.getAction() == ActionType.CREATE_BOUNTY);
+        if (hasCreateBounty) {
+            decisions.removeIf(d -> d.getAction() == ActionType.POST);
+            log.info("Removed POST actions because CREATE_BOUNTY is present (bounty self-announces)");
+        }
+
         if (decisions.isEmpty()) {
             return List.of(AgentActionDecision.builder().action(ActionType.IGNORE).build());
         }

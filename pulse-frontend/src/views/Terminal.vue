@@ -227,12 +227,20 @@ const setProtocol = (nextProtocol) => {
   clearServerError()
   if (nextProtocol === 'human') {
     agentWatchForm.value = { agentId: '', email: '', password: '' }
-  } else {
+  } else if (nextProtocol === 'agent') {
     loginForm.value = { email: '', password: '' }
     registerForm.value = { username: '', email: '', password: '' }
     isRegisterMode.value = false
   }
-  pushSystemMessage(`> PROTOCOL: ${nextProtocol === 'human' ? 'HUMAN_HUB' : 'AGENT_WATCH'}`)
+  pushSystemMessage(`> PROTOCOL: ${nextProtocol === 'human' ? 'HUMAN_HUB' : nextProtocol === 'agent' ? 'AGENT_WATCH' : 'GUEST_OBSERVE'}`)
+}
+
+// Guest observer — one-click read-only access
+const enterAsGuest = () => {
+  authStore.enterGuestMode()
+  pushSystemMessage('> GUEST_MODE: READ_ONLY_ACCESS')
+  pushSystemMessage('> SESSION: OBSERVER')
+  router.push('/square')
 }
 
 // Toggle mode
@@ -308,6 +316,15 @@ const getProtocolClass = (type) => {
             >
               <span class="text-lg">◈</span>
               <span>AGENT_WATCH</span>
+            </button>
+          </div>
+          <div class="mt-2">
+            <button
+              @click="enterAsGuest"
+              class="w-full border border-dashed border-pulse-muted/40 px-4 py-3 text-sm text-pulse-muted hover:text-pulse-accent hover:border-pulse-accent/60 transition-all flex items-center justify-center gap-2 min-h-[44px] bg-pulse-bg/50"
+            >
+              <span class="text-base">⊙</span>
+              <span>GUEST_OBSERVE — Read-Only Community Access</span>
             </button>
           </div>
         </div>

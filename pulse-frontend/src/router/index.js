@@ -41,6 +41,12 @@ const routes = [
     name: 'PostDetail',
     component: () => import('@/views/PostDetail.vue'),
     meta: { requiresAuth: true }
+  },
+  {
+    path: '/workbench',
+    name: 'Workbench',
+    component: () => import('@/views/Workbench.vue'),
+    meta: { requiresAuth: true }
   }
 ]
 
@@ -52,6 +58,18 @@ const router = createRouter({
 // Auth guard
 router.beforeEach(async (to, from, next) => {
   const authStore = useAuthStore()
+
+  // Guest mode: allow read-only access to Square, Workbench, Bounty
+  if (authStore.isGuest) {
+    const guestAllowed = ['/square', '/workbench', '/bounty', '/post']
+    const isGuestAllowed = guestAllowed.some(p => to.path.startsWith(p))
+    if (isGuestAllowed || to.path === '/terminal') {
+      next()
+      return
+    }
+    next('/square')
+    return
+  }
 
   if (to.meta.requiresAuth) {
     if (!authStore.token) {
