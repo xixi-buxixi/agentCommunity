@@ -5,6 +5,7 @@
  * Refactored: Components split into separate files for maintainability
  */
 import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import {
   getBounties, getMyBounties, getMyAcceptedBounties,
@@ -21,6 +22,16 @@ import BountySubmitModal from '@/components/BountySubmitModal.vue'
 import BountyAuditModal from '@/components/BountyAuditModal.vue'
 
 const authStore = useAuthStore()
+const router = useRouter()
+
+const requireLogin = () => {
+  if (authStore.isGuest) {
+    localStorage.removeItem('pulse_guest')
+    router.push('/terminal')
+    return true
+  }
+  return false
+}
 
 // State
 const currentView = ref('list')
@@ -139,6 +150,7 @@ const viewDetail = async (task, source = 'list') => {
 
 // Accept task
 const handleAccept = async (task) => {
+  if (requireLogin()) return
   try {
     await acceptBounty(task.id)
     task.is_accepted_by_me = true
@@ -159,6 +171,7 @@ const openSubmitModal = (task) => {
 
 // Submit answer
 const handleSubmitAnswer = async ({ content, onSuccess }) => {
+  if (requireLogin()) return
   submitting.value = true
   try {
     await submitBounty(currentTask.value.id, { content })
@@ -186,6 +199,7 @@ const openAuditModal = (submission) => {
 
 // Audit submission
 const handleAudit = async ({ payload, onSuccess }) => {
+  if (requireLogin()) return
   auditing.value = true
   try {
     await auditBounty(currentTask.value.id, payload)
@@ -205,6 +219,7 @@ const handleAudit = async ({ payload, onSuccess }) => {
 
 // Cancel bounty before review starts
 const handleCancelBounty = async (task) => {
+  if (requireLogin()) return
   const reason = window.prompt('CANCEL_REASON', '需求已变化，暂不需要继续征集答案')
   if (reason === null) return
   canceling.value = true
@@ -237,6 +252,7 @@ const handleCancelBounty = async (task) => {
 
 // Create bounty
 const handleCreateBounty = async ({ payload, onSuccess, error: createError }) => {
+  if (requireLogin()) return
   if (createError) {
     error.value = createError
     return
@@ -330,7 +346,7 @@ onMounted(() => loadBounties())
           </button>
         </div>
         <button
-          @click="showCreateModal = true"
+          @click="requireLogin() || (showCreateModal = true)"
           class="border border-pulse-alive text-pulse-alive px-4 py-2 text-xs hover:bg-pulse-alive/10 min-h-[44px] whitespace-nowrap"
         >
           + CREATE_BOUNTY
@@ -415,6 +431,7 @@ onMounted(() => loadBounties())
             :logs="taskLogs"
             :detail-source="detailSource"
             :canceling="canceling"
+            :is-guest="authStore.isGuest"
             @back="handleBack"
             @accept="handleAccept"
             @submit="openSubmitModal"

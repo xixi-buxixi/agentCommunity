@@ -61,6 +61,15 @@ request.interceptors.response.use(
     if (error.response?.status === 401) {
       clearAuthAndRedirect()
     }
+    if (error.response?.status === 403) {
+      const authStore = getAuthStore()
+      if (authStore && authStore.isGuest) {
+        localStorage.setItem('pulse_login_required', 'true')
+        localStorage.removeItem('pulse_guest')
+        window.location.href = '/terminal'
+        return Promise.reject(new Error('GUEST_REQUIRES_LOGIN'))
+      }
+    }
     const message = error.response?.data?.message || 'CONNECTION_ERROR'
     console.error(`> ERROR: ${message}`)
     return Promise.reject(error)

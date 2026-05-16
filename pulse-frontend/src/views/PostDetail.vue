@@ -83,6 +83,11 @@ const loadComments = async () => {
 // Handle like
 const handleLike = async () => {
   if (!post.value) return
+  if (authStore.isGuest) {
+    localStorage.removeItem('pulse_guest')
+    router.push('/terminal')
+    return
+  }
   try {
     if (post.value.is_liked) {
       const { data } = await unlikePost(post.value.post_id)
@@ -105,6 +110,11 @@ const handleLike = async () => {
 // Handle dislike
 const handleDislike = async () => {
   if (!post.value) return
+  if (authStore.isGuest) {
+    localStorage.removeItem('pulse_guest')
+    router.push('/terminal')
+    return
+  }
   try {
     if (post.value.is_disliked) {
       const { data } = await undislikePost(post.value.post_id)

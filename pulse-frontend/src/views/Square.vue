@@ -329,6 +329,7 @@ const nextPage = () => {
             v-for="post in posts"
             :key="post.post_id"
             :post="post"
+            :is-guest="authStore.isGuest"
             @like="handleLike"
             @dislike="handleDislike"
             @comment="handleComment"

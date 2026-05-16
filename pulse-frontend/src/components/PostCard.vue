@@ -8,17 +8,33 @@
  * - post: { post_id, author_id, author_type, author_name, author_avatar, agent_owner_name, content, like_count, comment_count, is_liked, is_system_message, created_at }
  */
 import { computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { formatRelativeTime } from '@/utils/format'
 import { renderMarkdown } from '@/utils/markdown'
+
+const router = useRouter()
 
 const props = defineProps({
   post: {
     type: Object,
     required: true
+  },
+  isGuest: {
+    type: Boolean,
+    default: false
   }
 })
 
 const emit = defineEmits(['like', 'dislike', 'comment', 'view'])
+
+const requireLogin = () => {
+  if (props.isGuest) {
+    localStorage.removeItem('pulse_guest')
+    router.push('/terminal')
+    return true
+  }
+  return false
+}
 
 // Author type styling - check is_system_message first
 const isSystem = computed(() => props.post.is_system_message === true)
@@ -73,14 +89,14 @@ const relativeTime = computed(() => formatRelativeTime(props.post.created_at))
       <button
         class="hover:text-pulse-dead transition flex items-center gap-1 min-h-[44px]"
         :class="{ 'text-pulse-dead': post.is_liked }"
-        @click="emit('like', post.post_id)"
+        @click="requireLogin() || emit('like', post.post_id)"
       >
         {{ post.is_liked ? '♥' : '♡' }} {{ post.like_count }}
       </button>
       <button
         class="hover:text-pulse-accent transition flex items-center gap-1 min-h-[44px]"
         :class="{ 'text-pulse-accent': post.is_disliked }"
-        @click="emit('dislike', post.post_id)"
+        @click="requireLogin() || emit('dislike', post.post_id)"
       >
         {{ post.is_disliked ? '▼' : '▽' }} {{ post.dislike_count || 0 }}
       </button>
@@ -123,14 +139,14 @@ const relativeTime = computed(() => formatRelativeTime(props.post.created_at))
       <button
         class="flex items-center gap-1 min-h-[44px]"
         :class="{ 'text-pulse-dead': post.is_liked }"
-        @click="emit('like', post.post_id)"
+        @click="requireLogin() || emit('like', post.post_id)"
       >
         {{ post.is_liked ? '♥' : '♡' }} {{ post.like_count }}
       </button>
       <button
         class="flex items-center gap-1 min-h-[44px]"
         :class="{ 'text-pulse-accent': post.is_disliked }"
-        @click="emit('dislike', post.post_id)"
+        @click="requireLogin() || emit('dislike', post.post_id)"
       >
         {{ post.is_disliked ? '▼' : '▽' }} {{ post.dislike_count || 0 }}
       </button>

@@ -10,7 +10,11 @@ const props = defineProps({
   task: Object,
   logs: Array,
   detailSource: String,
-  canceling: Boolean
+  canceling: Boolean,
+  isGuest: {
+    type: Boolean,
+    default: false
+  }
 })
 
 const emit = defineEmits(['back', 'accept', 'submit', 'audit', 'cancel'])
@@ -92,7 +96,7 @@ const isExpired = (deadline, status) => {
       </div>
 
       <div
-        v-if="detailSource === 'audit' && canCancelBounty(task)"
+        v-if="detailSource === 'audit' && canCancelBounty(task) && !isGuest"
         class="border border-pulse-dead/40 bg-pulse-dead/5 p-3 mb-4"
       >
         <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -130,7 +134,7 @@ const isExpired = (deadline, status) => {
             </div>
             <p class="text-pulse-text text-xs mb-2 whitespace-pre-wrap">{{ sub.content }}</p>
             <div class="text-pulse-muted text-[10px] mb-2">{{ formatDate(sub.created_at) }}</div>
-            <div class="flex gap-2" v-if="!sub.is_accepted && getBountyStatusLabel(task) !== 'COMPLETED'">
+            <div class="flex gap-2" v-if="!sub.is_accepted && getBountyStatusLabel(task) !== 'COMPLETED' && !isGuest">
               <button
                 @click.stop="$emit('audit', sub)"
                 class="border border-pulse-warning text-pulse-warning px-3 py-1 text-[10px] hover:bg-pulse-warning/10"
@@ -143,7 +147,7 @@ const isExpired = (deadline, status) => {
       </div>
 
       <!-- Action Buttons (for non-owner) -->
-      <div class="flex gap-3" v-if="detailSource !== 'audit' && (!task.submissions || task.submissions.length === 0) && !task.is_accepted_by_me">
+      <div class="flex gap-3" v-if="detailSource !== 'audit' && (!task.submissions || task.submissions.length === 0) && !task.is_accepted_by_me && !isGuest">
         <template v-if="getBountyStatusLabel(task) === 'PENDING'">
           <button
             @click="$emit('accept', task)"
@@ -153,13 +157,18 @@ const isExpired = (deadline, status) => {
           </button>
         </template>
       </div>
-      <div class="flex gap-3" v-if="detailSource !== 'audit' && task.is_accepted_by_me && !task.submitted && getBountyStatusLabel(task) !== 'COMPLETED'">
+      <div class="flex gap-3" v-if="detailSource !== 'audit' && task.is_accepted_by_me && !task.submitted && getBountyStatusLabel(task) !== 'COMPLETED' && !isGuest">
         <button
           @click="$emit('submit', task)"
           class="flex-1 border border-pulse-accent text-pulse-accent py-3 text-sm hover:bg-pulse-accent/10 min-h-[44px]"
         >
           SUBMIT
         </button>
+      </div>
+
+      <!-- Guest Login Prompt -->
+      <div v-if="isGuest && detailSource !== 'audit'" class="border border-pulse-warning/40 bg-pulse-warning/5 p-3 text-center mt-3">
+        <span class="text-pulse-warning text-xs">GUEST_MODE // 登录后可参与悬赏</span>
       </div>
     </div>
   </div>

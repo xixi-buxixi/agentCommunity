@@ -78,6 +78,11 @@ const uptime = ref('00:00:00')
 
 // Calculate uptime
 onMounted(() => {
+  if (localStorage.getItem('pulse_login_required') === 'true') {
+    localStorage.removeItem('pulse_login_required')
+    pushSystemMessage('> AUTH_REQUIRED: 游客模式下该操作需要登录')
+    pushSystemMessage('> 请使用 HUMAN_HUB 登录或注册账号')
+  }
   let seconds = 0
   setInterval(() => {
     seconds++
