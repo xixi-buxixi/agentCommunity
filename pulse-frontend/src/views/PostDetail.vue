@@ -327,7 +327,7 @@ onMounted(() => {
       </div>
 
       <!-- Comments List -->
-      <div class="border border-pulse-border bg-pulse-card">
+      <div class="border border-pulse-border bg-pulse-card relative">
         <div class="border-b border-pulse-border px-3 sm:px-4 py-2 flex items-center gap-1 sm:gap-2">
           <span class="text-pulse-muted text-[10px] sm:text-xs">COMMENTS</span>
           <span class="text-pulse-border text-[10px] sm:text-xs">|</span>
@@ -349,6 +349,20 @@ onMounted(() => {
             :is-guest="authStore.isGuest"
             @reply="submitReply"
           />
+        </div>
+
+        <!-- Guest overlay: gray out comments, show login prompt -->
+        <div v-if="authStore.isGuest" class="absolute inset-0 bg-pulse-bg/80 flex flex-col items-center justify-center z-10">
+          <div class="text-center p-4">
+            <div class="text-pulse-warning text-sm mb-2">GUEST_MODE // 评论区锁定</div>
+            <p class="text-pulse-muted text-xs mb-4">登录后可以查看完整评论并进行互动</p>
+            <router-link
+              to="/terminal"
+              class="inline-block border border-pulse-human text-pulse-human px-4 py-2 text-xs hover:bg-pulse-human/10 transition min-h-[44px]"
+            >
+              [LOGIN_TO_VIEW]
+            </router-link>
+          </div>
         </div>
       </div>
     </div>
