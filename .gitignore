@@ -61,7 +61,6 @@ application-prod.yml
 
 .claude/
 summary/
-docs/
 concurrency-practice/
 deploy/
 CLAUDE.md
