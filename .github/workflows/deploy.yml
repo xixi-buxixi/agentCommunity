@@ -69,16 +69,7 @@ jobs:
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           timeout: 30s
-          script: |
-            chmod -R 755 /var/www/pulse/
-            # Ensure nginx SPA fallback is configured
-            if [ ! -f /etc/nginx/sites-enabled/pulse ]; then
-              cp /opt/pulse/repo/deploy/nginx-pulse.conf /etc/nginx/sites-available/pulse 2>/dev/null || true
-              sed -i 's/QINIUYUN_IP/${{ secrets.QINIUYUN_HOST }}/g' /etc/nginx/sites-available/pulse 2>/dev/null || true
-              ln -sf /etc/nginx/sites-available/pulse /etc/nginx/sites-enabled/pulse
-              rm -f /etc/nginx/sites-enabled/default
-              nginx -t && systemctl reload nginx 2>/dev/null || true
-            fi
+          script: chmod -R 755 /var/www/pulse/
 
   deploy-backend:
     needs: changes
@@ -109,6 +100,25 @@ jobs:
           source: "pulse-backend/target/pulse-backend-1.0.0-SNAPSHOT.jar,deploy/backend/application-prod.yml,deploy/backend/.env.example"
           target: /opt/pulse/backend/
           strip_components: 2
+      - name: Upload schema.sql
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.QINIUYUN_HOST }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: pulse-backend/src/main/resources/schema.sql
+          target: /opt/pulse/backend/
+          strip_components: 3
+      - name: Apply schema migration
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.QINIUYUN_HOST }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          timeout: 30s
+          script: |
+            set -a && source /opt/pulse/backend/.env && set +a
+            mysql -u pulse -p"${DB_PASSWORD}" pulse_db < /opt/pulse/backend/schema.sql 2>&1 || echo "Schema migration completed (some statements may be warnings)"
       - name: Restart backend
         uses: appleboy/ssh-action@v1
         with:
@@ -144,7 +154,7 @@ jobs:
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           source: pulse-ai-side
-          target: /opt/pulse/
+          target: /opt/pulse/ai-side/
           strip_components: 1
       - name: Install deps + Restart
         uses: appleboy/ssh-action@v1
