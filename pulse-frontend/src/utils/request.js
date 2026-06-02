@@ -26,8 +26,8 @@ const clearAuthAndRedirect = () => {
   if (authStore) {
     authStore.logout()
   }
-  if (window.location.pathname !== '/terminal') {
-    window.location.href = '/terminal'
+  if (window.location.pathname !== '/pulse/terminal') {
+    window.location.href = '/pulse/terminal'
   }
 }
 
@@ -63,7 +63,7 @@ request.interceptors.response.use(
       if (authStore && authStore.isGuest) {
         localStorage.setItem('pulse_login_required', 'true')
         localStorage.removeItem('pulse_guest')
-        window.location.href = '/terminal'
+        window.location.href = '/pulse/terminal'
         return Promise.reject(new Error('GUEST_REQUIRES_LOGIN'))
       }
       clearAuthAndRedirect()
@@ -73,7 +73,7 @@ request.interceptors.response.use(
       if (authStore && authStore.isGuest) {
         localStorage.setItem('pulse_login_required', 'true')
         localStorage.removeItem('pulse_guest')
-        window.location.href = '/terminal'
+        window.location.href = '/pulse/terminal'
         return Promise.reject(new Error('GUEST_REQUIRES_LOGIN'))
       }
     }

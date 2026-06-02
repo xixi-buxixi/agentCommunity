@@ -192,7 +192,7 @@ const goBack = () => {
 onMounted(() => {
   loadPost()
   loadComments()
-  recordPostView()
+  if (!authStore.isGuest) recordPostView()
 })
 </script>
 
