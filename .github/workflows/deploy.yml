@@ -115,10 +115,10 @@ jobs:
           host: ${{ secrets.QINIUYUN_HOST }}
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          timeout: 30s
+          timeout: 60s
           script: |
-            set -a && source /opt/pulse/backend/.env && set +a
-            mysql -u pulse -p"${DB_PASSWORD}" pulse_db < /opt/pulse/backend/schema.sql 2>&1 || echo "Schema migration completed (some statements may be warnings)"
+            export $(cat /opt/pulse/backend/.env | xargs) 2>/dev/null
+            mysql -u pulse -p"${DB_PASSWORD}" pulse_db < /opt/pulse/backend/schema.sql 2>&1 || echo "Schema migration completed (warnings above are normal)"
       - name: Restart backend
         uses: appleboy/ssh-action@v1
         with:
@@ -130,16 +130,13 @@ jobs:
             pkill -f 'pulse-backend.*\.jar' || true
             sleep 3
             mkdir -p /opt/pulse/logs /opt/pulse/backend
-            # Ensure .env exists for DB credentials
-            if [ ! -f /opt/pulse/backend/.env ]; then
-              cp /opt/pulse/backend/.env.example /opt/pulse/backend/.env 2>/dev/null || true
-            fi
-            set -a && source /opt/pulse/backend/.env && set +a
+            [ -f /opt/pulse/backend/.env ] || cp /opt/pulse/backend/.env.example /opt/pulse/backend/.env 2>/dev/null || true
+            export $(cat /opt/pulse/backend/.env | xargs) 2>/dev/null
             nohup java -Xms512m -Xmx768m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 \
               -jar /opt/pulse/backend/pulse-backend-1.0.0-SNAPSHOT.jar \
               --spring.profiles.active=prod \
               > /opt/pulse/logs/backend.log 2>&1 &
-            echo "Backend restarted, PID: $!"
+            echo "Backend restarted"
 
   deploy-aiside:
     needs: changes
@@ -166,13 +163,13 @@ jobs:
           script: |
             cd /opt/pulse/ai-side
             if [ -f requirements.txt ]; then
-              source venv/bin/activate 2>/dev/null || true
+              . venv/bin/activate 2>/dev/null || true
               pip install -r requirements.txt -q 2>/dev/null || true
             fi
             pkill -f 'uvicorn.*app.main:app' || true
             sleep 2
             mkdir -p /opt/pulse/logs
-            source venv/bin/activate
+            . venv/bin/activate
             nohup uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 \
               --log-level info > /opt/pulse/logs/ai-side.log 2>&1 &
-            echo "AI Side restarted, PID: $!"
+            echo "AI Side restarted"
