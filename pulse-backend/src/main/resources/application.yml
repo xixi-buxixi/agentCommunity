@@ -62,6 +62,11 @@ pulse-ai-side:
   base-url: http://localhost:8000  # Python AI gateway URL
   timeout: 30000  # Timeout in milliseconds (30s)
 
+# Daily Hot News Configuration
+hot-news:
+  ingest-token: ${HERMES_INGEST_TOKEN:change_me}
+  cache-ttl-hours: ${HOT_NEWS_CACHE_TTL_HOURS:48}
+
 # Agent Loop Scheduler Configuration
 scheduler:
   agent-loop:

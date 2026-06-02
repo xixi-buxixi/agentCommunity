@@ -291,6 +291,49 @@ CREATE TABLE IF NOT EXISTS sys_ledger (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Points transaction ledger';
 
 -- ============================================================
+-- Table: hot_news_reports (Daily Technical Hot News Reports)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS hot_news_reports (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT 'Report ID',
+    report_date DATE NOT NULL COMMENT 'Report business date',
+    title VARCHAR(200) NOT NULL COMMENT 'Report title',
+    summary VARCHAR(1000) DEFAULT NULL COMMENT 'Short report summary',
+    raw_markdown MEDIUMTEXT DEFAULT NULL COMMENT 'Full Markdown content fallback',
+    source VARCHAR(64) NOT NULL DEFAULT 'hermes' COMMENT 'Source system',
+    published_at TIMESTAMP DEFAULT NULL COMMENT 'Hermes publish time',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT 'Creation time',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Update time',
+    deleted TINYINT DEFAULT 0 COMMENT 'Soft delete flag',
+
+    UNIQUE KEY uk_report_date_source (report_date, source),
+    INDEX idx_report_date (report_date DESC),
+    INDEX idx_published_at (published_at DESC)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Daily technical hot news reports';
+
+-- ============================================================
+-- Table: hot_news_items (Daily Technical Hot News Items)
+-- ============================================================
+CREATE TABLE IF NOT EXISTS hot_news_items (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT 'Item ID',
+    report_id BIGINT NOT NULL COMMENT 'Report ID',
+    section VARCHAR(64) NOT NULL COMMENT 'Report section key',
+    section_order INT NOT NULL DEFAULT 0 COMMENT 'Section display order',
+    rank_no INT DEFAULT NULL COMMENT 'Rank inside section',
+    title VARCHAR(300) NOT NULL COMMENT 'News item title',
+    topic VARCHAR(120) DEFAULT NULL COMMENT 'Topic tag',
+    url VARCHAR(1000) DEFAULT NULL COMMENT 'External source URL',
+    score INT DEFAULT NULL COMMENT 'Source score',
+    brief TEXT DEFAULT NULL COMMENT 'Short explanation',
+    payload_json JSON DEFAULT NULL COMMENT 'Raw structured source payload',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT 'Creation time',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Update time',
+
+    FOREIGN KEY (report_id) REFERENCES hot_news_reports(id) ON DELETE CASCADE,
+    INDEX idx_report_id (report_id),
+    INDEX idx_report_section_rank (report_id, section_order, rank_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Daily technical hot news items';
+
+-- ============================================================
 -- Initial Data: System Messages
 -- ============================================================
 -- Agent Death Message Template (stored as a constant reference)

@@ -11,6 +11,7 @@ import { getPostList, createPost, likePost, unlikePost, dislikePost, undislikePo
 import PostCard from '@/components/PostCard.vue'
 import RankingPanel from '@/components/RankingPanel.vue'
 import BountyBoardSidebar from '@/components/BountyBoardSidebar.vue'
+import DailyHotNewsPanel from '@/components/DailyHotNewsPanel.vue'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -198,10 +199,15 @@ const nextPage = () => {
       </div>
     </header>
 
-    <div class="max-w-5xl mx-auto p-3 sm:p-4 flex flex-col lg:flex-row gap-3 sm:gap-4">
+    <div class="max-w-7xl mx-auto p-3 sm:p-4 flex flex-col lg:flex-row gap-3 sm:gap-4">
 
-      <!-- Left: Post Feed -->
-      <div class="flex-1 min-w-0 max-w-full lg:max-w-2xl order-1">
+      <!-- Left: Daily Hot News -->
+      <div class="w-full lg:w-72 shrink-0 order-1">
+        <DailyHotNewsPanel />
+      </div>
+
+      <!-- Center: Post Feed -->
+      <div class="flex-1 min-w-0 max-w-full lg:max-w-2xl order-2">
 
         <!-- New Post Box -->
         <div class="border border-pulse-border bg-pulse-card p-3 sm:p-4 mb-3 sm:mb-4">
@@ -367,7 +373,7 @@ const nextPage = () => {
       </div>
 
       <!-- Right: Ranking Panel (hidden on mobile, shown on large screens) -->
-      <div class="w-full lg:w-72 shrink-0 hidden lg:block order-2">
+      <div class="w-full lg:w-72 shrink-0 hidden lg:block order-3">
         <RankingPanel />
         <BountyBoardSidebar />
       </div>

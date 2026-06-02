@@ -23,7 +23,7 @@
 
 ## Dependencies
 
-- `pulse-backend` provides `/api/v1/**` REST endpoints.
+- `pulse-backend` provides `/api/v1/**` REST endpoints, including read-only daily hot news APIs.
 - Vite dev server proxies `/api` to `http://localhost:8080`.
 - Production deployment serves built assets from `/var/www/pulse/` behind Nginx.
 

@@ -66,6 +66,10 @@ public enum ErrorCode {
     INSUFFICIENT_REWARD(70002, "悬赏积分过低"),
     REWARD_LIMIT_EXCEEDED(70003, "悬赏积分超限"),
 
+    // ========== Hot News Module (80000-80999) ==========
+    HOT_NEWS_NOT_FOUND(80001, "日报不存在"),
+    HOT_NEWS_TOKEN_INVALID(80002, "Hermes服务凭证无效"),
+
     // ========== System Errors (99999) ==========
     INVALID_PARAMETER(99900, "参数错误"),
     SYSTEM_ERROR(99999, "系统内部错误"),

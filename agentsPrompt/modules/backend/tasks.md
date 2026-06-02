@@ -1,19 +1,22 @@
 # Task State: backend
 
 ## Current
-- Task ID: backend-2026-06-01-workbench-langgraph-requirements
-- Goal: 记录工作台 LangGraph 多智能体协作与 LLM WIKI 需求草案对后端模块的影响。
-- Scope: `/agentsPrompt/modules/backend/tasks.md`；需求文档位于 `/docs/requirements/workbench-langgraph-llm-wiki.md`
+- Task ID: backend-2026-06-01-daily-hot-news
+- Goal: 增加 Hermes 每日技术日报入站、持久化、Redis 缓存和公开查询 API。
+- Scope: `/pulse-backend/**`、`/agentsPrompt/modules/backend/tasks.md`
 - Status: done
 - Owner: Codex
 - Last Updated: 2026-06-01
 
 ## Done Summary
-- 已确认后端当前通过 `AgentLoopScheduler` 执行单 Agent 社区调度，并通过 `LLMClient` 调用 AI Side `/v1/llm/decision`。
-- 新需求草案建议后端作为工作台项目、运行记录、权限、来源关联、产物和 LLM WIKI 记忆的事实源。
-- 本次未修改后端业务代码、数据库 schema 或 REST 契约。
+- 已读取后端模块入口文档、任务状态和 `/pulse-backend/agent.md`。
+- 已确认后端采用 Spring Boot 3.2、MyBatis Plus、MySQL、Redis、统一 `ApiResponse` 和 Spring Security 白名单。
+- 已确认本次会新增 `/api/v1/hot-news/ingest`、`/api/v1/hot-news/latest`、`/api/v1/hot-news/{reportId}`，并更新 `schema.sql` 和 `application.yml`。
+- 已新增 Daily Hot News entity、mapper、DTO、service、controller、schema、配置和服务层测试。
+- 已补充生产配置模板中的 `HERMES_INGEST_TOKEN` 和 `HOT_NEWS_CACHE_TTL_HOURS`。
 
 ## Previous Done Summary
+- 已记录工作台 LangGraph 多智能体协作与 LLM WIKI 需求草案对后端模块的影响。
 - 已将 `pulse-backend` 确认为 Java 21 + Spring Boot 3.2 后端模块。
 
 ## In Progress
@@ -25,21 +28,21 @@
 - Since: 2026-06-01
 
 ## Decisions
-- 2026-06-01: 工作台编排应作为显式触发能力接入，不直接替换现有 `AgentLoopScheduler`。
-- 2026-06-01: 后端仍负责权限校验、密钥解密、运行记录、产物持久化和稳定 REST API。
+- 2026-06-01: 入站鉴权使用 `X-Hermes-Token` 与配置项 `hot-news.ingest-token`。
+- 2026-06-01: `report_date + source` 建唯一键，重复推送覆盖主表和条目表。
+- 2026-06-01: Redis key 使用 `pulse:hot-news:latest` 和 `pulse:hot-news:detail:{id}`，失败降级为 MySQL。
 - 后端模块拥有 REST API、认证、Agent 调度、账本、悬赏、排行、数据库 schema 和 LLM 客户端。
-- 修改 AI Side 调用请求或响应结构时，必须同步 `ai-side` 模块任务和契约文档。
 
 ## Verification
-- Command: `rtk powershell -NoProfile -Command '$paths=@("docs/requirements/workbench-langgraph-llm-wiki.md","agentsPrompt/overview_agent/tasks.md","agentsPrompt/modules/frontend/tasks.md","agentsPrompt/modules/backend/tasks.md","agentsPrompt/modules/ai-side/tasks.md"); $missing=$paths | Where-Object { -not (Test-Path $_) }; if ($missing) { "MISSING:"; $missing; exit 1 } else { "All workbench requirements files exist." }'`
+- Command: `rtk powershell -NoProfile -Command "cd pulse-backend; mvn -Dtest=HotNewsServiceImplTest test"`
 - Result: pass
-- Notes: 需求文档和任务状态文件均存在；本次未运行 `mvn test`，因为未修改后端代码。
+- Notes: 先前红灯为缺少新 HotNews 类型导致编译失败；实现后 3 tests run, 0 failures, 0 errors。
+- Command: `rtk powershell -NoProfile -Command "cd pulse-backend; mvn test"`
+- Result: pass
+- Notes: 13 tests run, 0 failures, 0 errors；输出包含 Mockito/Java 动态 agent 警告，不影响退出码。
 - Command: `rtk proxy git diff --check`
 - Result: pass
-- Notes: 退出码为 0；输出仅包含 `.gitignore` 的 LF/CRLF 提示。
-- Command: not_run
-- Result: not_run
-- Notes: 本次仅初始化协议文档，模块运行验证由具体后端任务触发。
+- Notes: 退出码为 0；输出仅包含 Git 的 LF/CRLF 提示。
 
 ## Next
-- 需求评审通过后，先设计工作台 API、schema、运行日志和后端到 AI Side 编排契约，再进入实现。
+- 在 qiniuyun 后端 `.env` 设置 `HERMES_INGEST_TOKEN` 后，Hermes 即可推送结构化 JSON。

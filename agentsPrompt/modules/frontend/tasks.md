@@ -1,19 +1,21 @@
 # Task State: frontend
 
 ## Current
-- Task ID: frontend-2026-06-01-workbench-langgraph-requirements
-- Goal: 记录工作台 LangGraph 多智能体协作与 LLM WIKI 需求草案对前端模块的影响。
-- Scope: `/agentsPrompt/modules/frontend/tasks.md`；需求文档位于 `/docs/requirements/workbench-langgraph-llm-wiki.md`
+- Task ID: frontend-2026-06-01-daily-hot-news
+- Goal: 在社区页展示每日技术日报入口，并增加日报详情页。
+- Scope: `/pulse-frontend/**`、`/agentsPrompt/modules/frontend/tasks.md`
 - Status: done
 - Owner: Codex
 - Last Updated: 2026-06-01
 
 ## Done Summary
-- 已确认 `pulse-frontend/src/views/Workbench.vue` 目前是静态示例页，已具备项目来源、协作模式、执行流、阶段结果、运行状态、待办目标和活动记录的信息架构。
-- 新需求草案建议后续把工作台改为真实项目列表、项目详情、运行时间线、待确认事项和 LLM WIKI 记忆视图。
-- 本次未修改前端业务代码。
+- 已读取前端模块入口文档、任务状态和 `/pulse-frontend/agent.md`。
+- 已确认前端采用 Vue 3 + Vite + Vue Router + Pinia + Axios，部署 base 保持 `/pulse/`。
+- 已确认社区页为 `Square.vue`，现有右栏包含排行和悬赏；本次新增左侧 `TECH_DAILY` 入口，移动端置于动态流上方。
+- 已新增 `src/api/hotNews.js`、`DailyHotNewsPanel.vue`、`DailyHotDetail.vue`、`/hot-news/:id` 路由，并接入社区页。
 
 ## Previous Done Summary
+- 已记录工作台 LangGraph 多智能体协作与 LLM WIKI 需求草案对前端模块的影响。
 - 已将 `pulse-frontend` 确认为 Vue 3 + Vite + Pinia 前端模块。
 
 ## In Progress
@@ -25,21 +27,18 @@
 - Since: 2026-06-01
 
 ## Decisions
-- 2026-06-01: 前端工作台实现应延续当前静态页面的信息架构，但数据改由后端工作台 API 驱动。
-- 2026-06-01: 访客模式保持只读；启动会话、写入记忆和查看私有项目详情需要认证。
+- 2026-06-01: 日报页面保持只读，游客可访问。
+- 2026-06-01: 详情页优先按结构化 sections/items 渲染，`raw_markdown` 仅作为兜底。
+- 2026-06-01: 保持 Vite `base: '/pulse/'` 和现有 Axios `/pulse/api/v1` 默认版本。
 - 前端模块拥有页面、组件、Pinia store、API client、样式系统和 Vite 构建配置。
-- 修改 API client 或前端路由行为时，必须确认后端契约和部署 base path。
 
 ## Verification
-- Command: `rtk powershell -NoProfile -Command '$paths=@("docs/requirements/workbench-langgraph-llm-wiki.md","agentsPrompt/overview_agent/tasks.md","agentsPrompt/modules/frontend/tasks.md","agentsPrompt/modules/backend/tasks.md","agentsPrompt/modules/ai-side/tasks.md"); $missing=$paths | Where-Object { -not (Test-Path $_) }; if ($missing) { "MISSING:"; $missing; exit 1 } else { "All workbench requirements files exist." }'`
+- Command: `rtk powershell -NoProfile -Command "cd pulse-frontend; npm run build"`
 - Result: pass
-- Notes: 需求文档和任务状态文件均存在；本次未运行 `npm run build`，因为未修改前端代码。
+- Notes: Vite production build completed successfully, 126 modules transformed.
 - Command: `rtk proxy git diff --check`
 - Result: pass
-- Notes: 退出码为 0；输出仅包含 `.gitignore` 的 LF/CRLF 提示。
-- Command: not_run
-- Result: not_run
-- Notes: 本次仅初始化协议文档，模块构建验证由具体前端任务触发。
+- Notes: 退出码为 0；输出仅包含 Git 的 LF/CRLF 提示。
 
 ## Next
-- 需求评审通过后，拆分工作台项目列表、项目详情、运行状态、LLM WIKI 记忆视图和 API client 子任务。
+- 推送后由 CI/CD 部署前端构建产物；社区页将从后端读取最新日报。

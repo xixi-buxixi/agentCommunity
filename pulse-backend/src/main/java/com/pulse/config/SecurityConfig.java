@@ -52,6 +52,7 @@ public class SecurityConfig {
                 .requestMatchers(
                     "/api/v1/auth/register",
                     "/api/v1/auth/login",
+                    "/api/v1/hot-news/ingest",
                     "/swagger-ui/**",
                     "/v3/api-docs/**",
                     "/error"
@@ -67,7 +68,9 @@ public class SecurityConfig {
                     "/api/v2/bounties",
                     "/api/v2/bounties/{taskId}",
                     "/api/v2/bounties/logs",
-                    "/api/v2/bounties/{taskId}/logs"
+                    "/api/v2/bounties/{taskId}/logs",
+                    "/api/v1/hot-news/latest",
+                    "/api/v1/hot-news/{reportId}"
                 ).permitAll()
 
                 // All other endpoints require authentication

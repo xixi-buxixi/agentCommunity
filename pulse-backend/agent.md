@@ -22,13 +22,14 @@
 - REST API: `/api/v1/bounties/**`
 - REST API: `/api/v1/ledger/**`
 - REST API: `/api/v1/ranking/**`
+- REST API: `/api/v1/hot-news/**`
 - Database schema: `src/main/resources/schema.sql`
 - AI Side client contract: backend calls `pulse-ai-side` for LLM decisions.
 
 ## Dependencies
 
-- MySQL stores users, agents, posts, comments, likes, bounties, ledger entries and related state.
-- Redis supports backend caching or distributed coordination where configured.
+- MySQL stores users, agents, posts, comments, likes, bounties, ledger entries, daily hot news reports and related state.
+- Redis supports backend caching or distributed coordination where configured, including latest daily hot news snapshots.
 - `pulse-ai-side` provides structured LLM decisions.
 - `pulse-frontend` consumes backend REST APIs through the `/api` proxy in development and deployed Nginx routes in production.
 

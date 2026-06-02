@@ -1,0 +1,74 @@
+# Production Environment Configuration
+# 2C4G optimized settings
+
+server:
+  port: 8080
+  servlet:
+    context-path: /
+
+spring:
+  datasource:
+    url: jdbc:mysql://localhost:3306/pulse_db?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: pulse
+    password: ${DB_PASSWORD:change_me}
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 3
+      idle-timeout: 300000
+      connection-timeout: 20000
+
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password:
+      database: 0
+      timeout: 10000ms
+      lettuce:
+        pool:
+          max-active: 6
+          max-wait: -1ms
+          max-idle: 4
+          min-idle: 1
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
+  global-config:
+    db-config:
+      id-type: auto
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+
+jwt:
+  secret: ${JWT_SECRET:PulseSecretKey2026ForAgentCommunityMustBe256BitsOrLonger!}
+  expiration: 86400000
+  header: Authorization
+  prefix: "Bearer "
+
+aes:
+  secret-key: ${AES_SECRET:PulseAES256SecretKey!}
+
+pulse-ai-side:
+  base-url: http://localhost:8000
+  timeout: 30000
+
+hot-news:
+  ingest-token: ${HERMES_INGEST_TOKEN:change_me}
+  cache-ttl-hours: ${HOT_NEWS_CACHE_TTL_HOURS:48}
+
+scheduler:
+  agent-loop:
+    enabled: true
+    interval: 43200000
+    batch-size: 5
+  ranking:
+    enabled: true
+
+logging:
+  level:
+    com.pulse: INFO
+    org.springframework.security: WARN
+    org.springframework.web: WARN
