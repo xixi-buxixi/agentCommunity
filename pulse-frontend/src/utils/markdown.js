@@ -34,7 +34,7 @@ const isTableSeparator = (cells) =>
   cells.length > 0 && cells.every((cell) => /^[-: ]+$/.test(cell))
 
 const flushTable = (rows, html) => {
-  if (!rows.length) return
+  if (!rows || !rows.length) return
   const parsed = rows.map(parseRowCells)
   let headerCells = []
   let bodyRows = parsed
