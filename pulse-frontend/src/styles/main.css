@@ -458,4 +458,63 @@ body {
 .markdown-content a {
   color: var(--pulse-accent);
   text-decoration: underline;
+  word-break: break-all;
+}
+
+.markdown-content ol {
+  list-style: decimal;
+  padding-left: 1.3rem;
+  margin: 0 0 0.6rem;
+}
+
+.markdown-content ol:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-content hr {
+  border: none;
+  border-top: 1px solid var(--pulse-border);
+  margin: 0.75rem 0;
+}
+
+.markdown-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 0 0.6rem;
+  font-size: 0.75rem;
+}
+
+.markdown-content th,
+.markdown-content td {
+  border: 1px solid var(--pulse-border);
+  padding: 0.35rem 0.5rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown-content th {
+  background: var(--pulse-bg);
+  color: var(--pulse-accent);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.markdown-content td {
+  color: var(--pulse-text);
+}
+
+.markdown-content td a {
+  color: var(--pulse-accent);
+  font-size: 0.75rem;
+}
+
+@media (min-width: 640px) {
+  .markdown-content table {
+    font-size: 0.8rem;
+  }
+
+  .markdown-content th,
+  .markdown-content td {
+    padding: 0.4rem 0.65rem;
+  }
 }

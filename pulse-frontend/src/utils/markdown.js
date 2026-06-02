@@ -5,18 +5,69 @@ const escapeHtml = (value = '') => String(value)
   .replace(/"/g, '&quot;')
   .replace(/'/g, '&#39;')
 
-const renderInline = (value) => escapeHtml(value)
-  .replace(/`([^`]+)`/g, '<code>$1</code>')
-  .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-  .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-  .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+const inlinePatterns = (value) => {
+  let result = value
+  result = result.replace(/`([^`]+)`/g, '<code>$1</code>')
+  result = result.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+  result = result.replace(/\*([^*]+)\*/g, '<em>$1</em>')
+  result = result.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+  return result
+}
+
+const autoLinkUrls = (value) =>
+  value.replace(/(?<![">])(https?:\/\/[^\s<>"'&]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>')
+
+const renderInline = (value) => {
+  let result = escapeHtml(value)
+  result = inlinePatterns(result)
+  result = autoLinkUrls(result)
+  return result
+}
+
+const parseRowCells = (row) =>
+  row
+    .replace(/^\||\|$/g, '')
+    .split('|')
+    .map((cell) => cell.trim())
+
+const isTableSeparator = (cells) =>
+  cells.length > 0 && cells.every((cell) => /^[-: ]+$/.test(cell))
+
+const flushTable = (rows, html) => {
+  if (!rows.length) return
+  const parsed = rows.map(parseRowCells)
+  let headerCells = []
+  let bodyRows = parsed
+
+  if (parsed.length > 1 && isTableSeparator(parsed[1])) {
+    headerCells = parsed[0]
+    bodyRows = parsed.slice(2)
+  }
+
+  const renderCells = (cells, tag) =>
+    cells.map((cell) => `<${tag}>${renderInline(cell)}</${tag}>`).join('')
+
+  html.push('<table>')
+  if (headerCells.length) {
+    html.push(`<thead><tr>${renderCells(headerCells, 'th')}</tr></thead>`)
+  }
+  if (bodyRows.length) {
+    html.push('<tbody>')
+    bodyRows.forEach((cells) => {
+      html.push(`<tr>${renderCells(cells, 'td')}</tr>`)
+    })
+    html.push('</tbody>')
+  }
+  html.push('</table>')
+}
 
 export const renderMarkdown = (content = '') => {
   const lines = String(content || '').replace(/\r\n/g, '\n').split('\n')
   const html = []
   let inCode = false
-  let inList = false
+  let listType = null
   let paragraph = []
+  let tableRows = null
 
   const flushParagraph = () => {
     if (paragraph.length) {
@@ -26,9 +77,9 @@ export const renderMarkdown = (content = '') => {
   }
 
   const closeList = () => {
-    if (inList) {
-      html.push('</ul>')
-      inList = false
+    if (listType) {
+      html.push(`</${listType}>`)
+      listType = null
     }
   }
 
@@ -36,6 +87,8 @@ export const renderMarkdown = (content = '') => {
     if (line.trim().startsWith('```')) {
       flushParagraph()
       closeList()
+      flushTable(tableRows, html)
+      tableRows = null
       if (inCode) {
         html.push('</code></pre>')
       } else {
@@ -54,6 +107,33 @@ export const renderMarkdown = (content = '') => {
     if (!trimmed) {
       flushParagraph()
       closeList()
+      flushTable(tableRows, html)
+      tableRows = null
+      return
+    }
+
+    if (/^\s*[-*_]{3,}\s*$/.test(trimmed)) {
+      flushParagraph()
+      closeList()
+      flushTable(tableRows, html)
+      tableRows = null
+      html.push('<hr>')
+      return
+    }
+
+    if (tableRows !== null) {
+      if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
+        tableRows.push(trimmed)
+        return
+      }
+      flushTable(tableRows, html)
+      tableRows = null
+    }
+
+    if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
+      flushParagraph()
+      closeList()
+      tableRows = [trimmed]
       return
     }
 
@@ -74,14 +154,27 @@ export const renderMarkdown = (content = '') => {
       return
     }
 
-    const listItem = trimmed.match(/^[-*]\s+(.+)$/)
-    if (listItem) {
+    const ulItem = trimmed.match(/^[-*]\s+(.+)$/)
+    if (ulItem) {
       flushParagraph()
-      if (!inList) {
+      if (listType !== 'ul') {
+        closeList()
         html.push('<ul>')
-        inList = true
+        listType = 'ul'
       }
-      html.push(`<li>${renderInline(listItem[1])}</li>`)
+      html.push(`<li>${renderInline(ulItem[1])}</li>`)
+      return
+    }
+
+    const olItem = trimmed.match(/^\d+\.\s+(.+)$/)
+    if (olItem) {
+      flushParagraph()
+      if (listType !== 'ol') {
+        closeList()
+        html.push('<ol>')
+        listType = 'ol'
+      }
+      html.push(`<li>${renderInline(olItem[1])}</li>`)
       return
     }
 
@@ -91,6 +184,7 @@ export const renderMarkdown = (content = '') => {
 
   flushParagraph()
   closeList()
+  flushTable(tableRows, html)
   if (inCode) {
     html.push('</code></pre>')
   }
