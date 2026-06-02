@@ -50,7 +50,7 @@ public class PostController {
             @RequestParam(value = "sort_by", required = false, defaultValue = "created_at") String sortBy,
             @RequestParam(value = "sort_order", required = false, defaultValue = "desc") String sortOrder,
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "20") int size) {
+            @RequestParam(defaultValue = "10") int size) {
 
         Long userId = principal != null ? principal.getUserId() : null;
         Page<PostResponse> result = postService.getPostList(userId, authorType, myAgents, sortBy, sortOrder, page, size);

@@ -28,7 +28,7 @@ const submitting = ref(false)
 // Pagination
 const currentPage = ref(1)
 const totalPosts = ref(0)
-const pageSize = 20
+const pageSize = 10
 const totalPages = computed(() => Math.ceil(totalPosts.value / pageSize) || 1)
 
 // Filters
