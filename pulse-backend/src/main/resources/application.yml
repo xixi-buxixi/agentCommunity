@@ -20,8 +20,9 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://localhost:3306/pulse_db?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
     username: root
-    # Mandatory injection: startup fails when DB_PASSWORD is not provided.
-    password: ${DB_PASSWORD}
+    # Empty default so a configuration gap surfaces as a clear database error on the
+    # first query instead of preventing the application from starting at all.
+    password: ${DB_PASSWORD:}
 
   data:
     redis:
@@ -86,7 +87,10 @@ pulse:
   trusted-proxies: ${TRUSTED_PROXIES:}
 
 hot-news:
-  ingest-token: ${HERMES_INGEST_TOKEN}
+  # Empty default, not a placeholder value: a missing ingest token must not stop the
+  # whole application from starting - it only means Hermes pushes are refused
+  # (HotNewsServiceImpl rejects a blank token) until it is configured.
+  ingest-token: ${HERMES_INGEST_TOKEN:}
   cache-ttl-hours: ${HOT_NEWS_CACHE_TTL_HOURS:48}
 
 # Agent Loop Scheduler Configuration

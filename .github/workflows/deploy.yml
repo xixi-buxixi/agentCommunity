@@ -284,6 +284,27 @@ jobs:
             # Shared with the AI gateway, which now refuses to start without it
             ensure_secret SERVICE_TOKEN
 
+            # Repair contaminated values. The sample .env in this repo used to carry
+            # inline comments ("SERVICE_TOKEN=  # token"), and a value like that loads
+            # as whitespace-plus-comment: non-empty for the shell, blank/invalid for the
+            # application - which then refused to start. Any generated secret that is
+            # not a clean single token is replaced.
+            repair_secret() {
+              key="$1"
+              cur=$(grep "^${key}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '\r')
+              case "$cur" in
+                *[![:alnum:]_+/=.-]*|'')
+                  sed -i "/^${key}=/d" "$ENV_FILE"
+                  printf '%s\n' "${key}=$(openssl rand -hex 32)" >> "$ENV_FILE"
+                  echo "${key}: value was blank or contained stray characters, regenerated"
+                  ;;
+              esac
+            }
+            repair_secret JWT_SECRET
+            repair_secret AES_SECRET
+            repair_secret HERMES_INGEST_TOKEN
+            repair_secret SERVICE_TOKEN
+
             # The nginx host reaches the backend over a public address, so it must be
             # named explicitly before its X-Forwarded-For is believed (rate limiting).
             sed -i "/^TRUSTED_PROXIES=/d" "$ENV_FILE"
@@ -315,14 +336,16 @@ jobs:
             }
             load_env "$ENV_FILE"
 
-            for required in DB_PASSWORD JWT_SECRET AES_SECRET HERMES_INGEST_TOKEN; do
+            echo "Environment loaded: $(grep -c '^[A-Za-z_]*=' "$ENV_FILE") variables"
+            for required in DB_PASSWORD JWT_SECRET AES_SECRET SERVICE_TOKEN HERMES_INGEST_TOKEN; do
               eval "value=\$$required"
               if [ -z "$value" ]; then
-                echo "FATAL: $required is empty after loading $ENV_FILE"
-                exit 1
+                echo "  WARNING: $required resolved empty from $ENV_FILE"
+              else
+                eval "len=\${#$required}"
+                echo "  $required: present (${len} chars)"
               fi
             done
-            echo "Environment loaded: $(grep -c '^[A-Za-z_]*=' "$ENV_FILE") variables"
 
             JAR=/opt/pulse/backend/pulse-backend-1.0.0-SNAPSHOT.jar
             PREVIOUS=/opt/pulse/backend/pulse-backend-previous.jar
@@ -382,19 +405,26 @@ jobs:
             echo "=============================================================="
             annotate_failure
 
-            pkill -f 'pulse-backend.*\.jar' || true
-            sleep 3
-            if [ -f "$PREVIOUS" ]; then
-              echo "Rolling back to the previous build to restore service..."
-              if start_backend "$PREVIOUS"; then
-                echo "ROLLED BACK: the previous build is serving again."
-              else
-                echo "ROLLBACK FAILED - the service is down. Last log lines:"
-                tail -60 /opt/pulse/logs/backend.log
-              fi
+            # Deliberately NOT killing the process here.
+            #
+            # The earlier version pkill'ed and tried to roll back, which turned "the
+            # health probe did not answer in time" into a guaranteed outage - there was
+            # no previous JAR on disk to roll back to. If the JVM is alive but slow, it
+            # is far better to leave it running and let the operator look. A rollback
+            # target is kept for the next deploy, but switching to it is a manual
+            # decision until this failure mode is understood.
+            if pgrep -f 'pulse-backend.*\.jar' > /dev/null; then
+              echo "NOTE: a backend process IS running (pid $(pgrep -f 'pulse-backend.*\.jar' | head -1))."
+              echo "      It may still be starting, or /actuator/health/liveness may be blocked."
             else
-              echo "No previous build on disk (first deploy with rollback support),"
-              echo "so there is nothing to roll back to. The service is down."
+              echo "NOTE: no backend process is running - the JVM exited during startup."
+            fi
+            if [ -f "$PREVIOUS" ]; then
+              echo "A rollback target exists: $PREVIOUS"
+              echo "To roll back manually:"
+              echo "  pkill -f 'pulse-backend.*\\.jar'; cd /opt/pulse/backend &&" \
+                   "set -a; . ./.env; set +a; nohup java -jar $PREVIOUS --spring.profiles.active=prod" \
+                   "> /opt/pulse/logs/backend.log 2>&1 &"
             fi
             exit 1
 

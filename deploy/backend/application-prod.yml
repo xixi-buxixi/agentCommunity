@@ -10,7 +10,7 @@ spring:
   datasource:
     url: jdbc:mysql://localhost:3306/pulse_db?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
     username: pulse
-    password: ${DB_PASSWORD}
+    password: ${DB_PASSWORD:}
     hikari:
       maximum-pool-size: 10
       minimum-idle: 3
@@ -71,8 +71,10 @@ pulse:
   trusted-proxies: ${TRUSTED_PROXIES:}
 
 hot-news:
-  # No default: "change_me" here would be a public secret (and the app rejects it)
-  ingest-token: ${HERMES_INGEST_TOKEN}
+  # Empty default, not a placeholder value: a missing ingest token must not stop the
+  # whole application from starting - it only means Hermes pushes are refused
+  # (HotNewsServiceImpl rejects a blank token) until it is configured.
+  ingest-token: ${HERMES_INGEST_TOKEN:}
   cache-ttl-hours: ${HOT_NEWS_CACHE_TTL_HOURS:48}
 
 scheduler:

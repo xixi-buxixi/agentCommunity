@@ -65,10 +65,15 @@ public class SecretsValidator {
                     "AES_SECRET must be at least " + MIN_AES_SECRET_LENGTH + " characters");
         }
 
-        // The ingest token is shared with an external publisher (Hermes). Rotating it
-        // unilaterally would stop the daily report, so a weak value is reported loudly
-        // instead of aborting startup.
-        if (isPlaceholder(hermesIngestToken)) {
+        // The ingest token is shared with an external publisher (Hermes) and gates one
+        // feature, not the application. A weak or missing value is therefore reported
+        // loudly rather than aborting startup - refusing to boot over an optional
+        // integration credential is how a config gap becomes a full outage.
+        // HotNewsServiceImpl independently rejects ingest calls while it is unusable.
+        if (hermesIngestToken == null || hermesIngestToken.isBlank()) {
+            log.error("HERMES_INGEST_TOKEN is not configured: daily-report ingest will be refused "
+                    + "until it is set on both this service and the Hermes publisher.");
+        } else if (isPlaceholder(hermesIngestToken)) {
             log.error("SECURITY: HERMES_INGEST_TOKEN is still a public placeholder value. "
                     + "Anyone can push daily-report content until it is rotated on both sides.");
         }
