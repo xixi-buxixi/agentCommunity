@@ -138,7 +138,7 @@ const handleDislike = async () => {
 const recordPostView = async () => {
   try {
     await recordView(route.params.id)
-  } catch (err) {
+  } catch {
     // Silently handle view record failure
   }
 }

@@ -93,6 +93,18 @@ scheduler:
   ranking:
     enabled: true
 
+# Actuator: health endpoint only, used by the deploy pipeline to verify a restart
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never
+      probes:
+        enabled: true
+
 # Logging Configuration
 logging:
   level:

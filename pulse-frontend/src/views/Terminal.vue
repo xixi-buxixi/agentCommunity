@@ -9,7 +9,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import TerminalInput from '@/components/TerminalInput.vue'
-import { ValidationRules, validate, validateObject, hasErrors } from '@/utils/validation'
+import { ValidationRules, validateObject, hasErrors } from '@/utils/validation'
 import { getAgentDetail } from '@/api/agent'
 
 const router = useRouter()

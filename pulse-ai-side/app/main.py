@@ -10,7 +10,6 @@ Enhanced features:
 - Improved error handling with proper HTTP status codes
 """
 
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -19,8 +18,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config.settings import settings
 from app.exceptions.handlers import register_exception_handlers
+from app.middleware.auth import AuthMiddleware, RateLimitConfig, RateLimiter
 from app.routers.llm import router as llm_router
-from app.middleware.auth import AuthMiddleware, RateLimiter, RateLimitConfig
 
 # Configure logging
 logging.basicConfig(
@@ -42,16 +41,13 @@ async def lifespan(app: FastAPI):
     logger.info(f"Rate limits: {settings.RATE_LIMIT_REQUESTS_PER_MINUTE}/min, "
                 f"{settings.RATE_LIMIT_REQUESTS_PER_HOUR}/hour")
 
-    # Startup: validate configuration
-    if not settings.validate():
-        logger.warning("Configuration validation failed - some defaults will be used")
-
-    # Security warning for production
-    if not settings.DEBUG and not settings.SERVICE_TOKEN:
-        logger.warning(
-            "SECURITY WARNING: SERVICE_TOKEN not configured. "
-            "Production deployment requires authentication!"
-        )
+    # Settings validate themselves during construction and refuse to build without
+    # a SERVICE_TOKEN outside DEBUG, so reaching this point means auth is armed.
+    logger.info(
+        "Service auth: %s | upstream budget: %.1fs (must stay under the caller timeout)",
+        "enabled" if not settings.DEBUG else "DISABLED (DEBUG)",
+        settings.total_request_budget_seconds,
+    )
 
     yield
 
@@ -113,7 +109,8 @@ async def health_check():
             "per_minute": settings.RATE_LIMIT_REQUESTS_PER_MINUTE,
             "per_hour": settings.RATE_LIMIT_REQUESTS_PER_HOUR,
         },
-        "auth_enabled": bool(settings.SERVICE_TOKEN) or settings.DEBUG,
+        # Reflects the actual middleware behaviour: DEBUG is the only way auth is off
+        "auth_enabled": not settings.DEBUG,
     }
 
 

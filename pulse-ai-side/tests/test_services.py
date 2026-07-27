@@ -4,16 +4,15 @@ Pulse AI Side Service - Test Suite
 Tests for LLM Client, JSON Parser, Prompt Builder, and API endpoints.
 """
 
-import pytest
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from app.models.request import LLMRequest
-from app.models.response import LLMResponse, ActionDecision
+from app.models.response import ActionDecision, LLMResponse
 from app.services.json_parser import JSONParser
-from app.services.prompt_builder import PromptBuilder
 from app.services.llm_client import LLMClient
-
+from app.services.prompt_builder import PromptBuilder
 
 # ========== JSON Parser Tests ==========
 

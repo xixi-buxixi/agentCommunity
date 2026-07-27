@@ -6,6 +6,7 @@ Matches LLMResponse.java and AgentActionDecision.java.
 """
 
 from typing import Optional, Union
+
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 

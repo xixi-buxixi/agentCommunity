@@ -11,23 +11,21 @@ Improved error handling:
 """
 
 import logging
-import time
-from typing import Callable
 
-from fastapi import Request, FastAPI
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from pydantic import ValidationError
+from fastapi.responses import JSONResponse
 
 from app.exceptions.errors import (
+    JSONParseError,
+    LLMAPIError,
     LLMBaseError,
     LLMTimeoutError,
-    LLMAPIError,
-    JSONParseError,
     PromptInjectionDetected,
+)
+from app.exceptions.errors import (
     ValidationError as CustomValidationError,
 )
-from app.models.response import LLMResponse
 from app.utils.redaction import redact_text, safe_validation_errors
 
 logger = logging.getLogger(__name__)

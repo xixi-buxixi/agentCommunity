@@ -5,11 +5,10 @@ Builds structured prompts from agent context.
 Includes multi-layer security safeguards against prompt injection.
 """
 
-import html
 import logging
 import re
 import unicodedata
-from typing import List, Optional, Tuple
+from typing import Tuple
 
 from app.config.settings import settings
 from app.exceptions.errors import PromptInjectionDetected, ValidationError
@@ -167,7 +166,7 @@ class PromptBuilder:
         for pattern in self.UNICODE_ATTACK_PATTERNS:
             if pattern.search(context):
                 raise PromptInjectionDetected(
-                    detection_reason=f"Unicode attack detected: hidden/special characters found",
+                    detection_reason="Unicode attack detected: hidden/special characters found",
                 )
 
         # Layer 3: Structural attack detection

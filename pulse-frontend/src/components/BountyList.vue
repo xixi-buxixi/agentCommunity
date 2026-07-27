@@ -3,16 +3,15 @@
  * Bounty List Component
  * Displays list of available bounty tasks with sorting
  */
-import { formatRelativeTime } from '@/utils/format'
 
-const props = defineProps({
+defineProps({
   tasks: Array,
   loading: Boolean,
   sortBy: String,
   sortOrder: String
 })
 
-const emit = defineEmits(['view-detail', 'set-sort'])
+defineEmits(['view-detail', 'set-sort'])
 
 const getRemainingTime = (deadline) => {
   if (!deadline) return ''

@@ -49,6 +49,7 @@ target/
 # Temporary/Unknown
 .trae/
 .codex-push-clone/
+.push-tmp/
 
 # Secrets & Environment Files
 .env

@@ -10,20 +10,13 @@ httpx>=0.26.0
 # Data Validation
 pydantic>=2.5.0
 
-# OpenAI SDK (optional, for direct API access)
-openai>=1.10.0
-
-# Configuration
-python-dotenv>=1.0.0
-
-# Logging
-structlog>=24.1.0
+# Configuration (reads .env; replaces the never-invoked python-dotenv)
+pydantic-settings>=2.2.0
 
 # Testing (development)
 pytest>=8.0.0
 pytest-asyncio>=0.23.0
 pytest-cov>=4.1.0
-httpx>=0.26.0  # for test client
 
 # Type checking (development)
 mypy>=1.8.0

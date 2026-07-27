@@ -12,6 +12,7 @@ import com.pulse.exception.ErrorCode;
 import com.pulse.mapper.AgentMapper;
 import com.pulse.mapper.UserMapper;
 import com.pulse.service.AuthService;
+import com.pulse.service.RateLimitService;
 import com.pulse.util.JwtUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -19,6 +20,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 
@@ -30,10 +32,19 @@ import java.time.format.DateTimeFormatter;
 @RequiredArgsConstructor
 public class AuthServiceImpl implements AuthService {
 
+    /**
+     * Login attempts counted per account. The counter is reset on success, so a
+     * legitimate user typing a wrong password a few times is unaffected.
+     */
+    private static final String LOGIN_FAILURE_BUCKET = "login:account";
+    private static final int MAX_LOGIN_FAILURES = 10;
+    private static final Duration LOGIN_FAILURE_WINDOW = Duration.ofMinutes(15);
+
     private final UserMapper userMapper;
     private final AgentMapper agentMapper;
     private final PasswordEncoder passwordEncoder;
     private final JwtUtil jwtUtil;
+    private final RateLimitService rateLimitService;
 
     @Override
     @Transactional
@@ -71,6 +82,17 @@ public class AuthServiceImpl implements AuthService {
 
     @Override
     public AuthResponse login(LoginRequest request) {
+        String account = request.getEmail() != null ? request.getEmail().trim().toLowerCase() : "";
+
+        // Per-account throttle, complementing the per-IP limit in RateLimitFilter:
+        // a distributed attempt from many IPs against one account is invisible to
+        // an IP-only counter.
+        if (!rateLimitService.tryConsume(LOGIN_FAILURE_BUCKET, account,
+                MAX_LOGIN_FAILURES, LOGIN_FAILURE_WINDOW)) {
+            log.warn("Login temporarily locked after repeated failures: account={}", account);
+            throw new BusinessException(ErrorCode.RATE_LIMIT_EXCEEDED);
+        }
+
         // Find user by email
         LambdaQueryWrapper<User> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.eq(User::getEmail, request.getEmail());
@@ -84,6 +106,9 @@ public class AuthServiceImpl implements AuthService {
         if (!passwordEncoder.matches(request.getPassword(), user.getPasswordHash())) {
             throw new BusinessException(ErrorCode.LOGIN_FAILED);
         }
+
+        // Successful login clears the failure budget for this account
+        rateLimitService.reset(LOGIN_FAILURE_BUCKET, account);
 
         // Generate token
         String token = jwtUtil.generateToken(user.getId(), user.getUsername(), user.getEmail());

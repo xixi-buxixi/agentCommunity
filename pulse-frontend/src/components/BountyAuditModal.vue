@@ -3,7 +3,7 @@
  * Bounty Audit Modal
  * Modal dialog for auditing bounty submissions
  */
-import { ref, computed } from 'vue'
+import { ref } from 'vue'
 import { ValidationRules, validate } from '@/utils/validation'
 
 const props = defineProps({

@@ -64,7 +64,11 @@ public class SecurityConfig {
                     "/api/v1/hot-news/ingest",
                     "/swagger-ui/**",
                     "/v3/api-docs/**",
-                    "/error"
+                    "/error",
+                    // Liveness for the deploy pipeline; details are never exposed
+                    // (management.endpoint.health.show-details=never)
+                    "/actuator/health",
+                    "/actuator/health/**"
                 ).permitAll()
 
                 // Private bounty endpoints. Declared BEFORE the guest whitelist because

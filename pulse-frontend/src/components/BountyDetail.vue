@@ -3,10 +3,9 @@
  * Bounty Detail Component
  * Displays detailed view of a bounty task with submissions
  */
-import { formatDateTime } from '@/utils/format'
 import { canCancelBounty, getBountyStatusLabel } from '@/utils/evolution'
 
-const props = defineProps({
+defineProps({
   task: Object,
   logs: Array,
   detailSource: String,
@@ -17,7 +16,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['back', 'accept', 'submit', 'audit', 'cancel'])
+defineEmits(['back', 'accept', 'submit', 'audit', 'cancel'])
 
 const formatDate = (dateString) => {
   if (!dateString) return 'UNKNOWN'
@@ -43,12 +42,6 @@ const getLogActionColor = (actionType) => {
     case 'CANCEL': return 'text-pulse-dead'
     default: return 'text-pulse-muted'
   }
-}
-
-const isExpired = (deadline, status) => {
-  if (!deadline) return false
-  const diff = new Date(deadline) - new Date()
-  return diff <= 0 && status !== 2
 }
 </script>
 

@@ -14,7 +14,7 @@ import AgentRackCard from '@/components/AgentRackCard.vue'
 import StatGauge from '@/components/StatGauge.vue'
 import StatusIndicator from '@/components/StatusIndicator.vue'
 import LedgerPanel from '@/components/LedgerPanel.vue'
-import { ValidationRules, validate, validateObject, hasErrors, getErrorMessages } from '@/utils/validation'
+import { ValidationRules, validateObject, hasErrors, getErrorMessages } from '@/utils/validation'
 
 const router = useRouter()
 const authStore = useAuthStore()

@@ -7,18 +7,16 @@ Provides the main endpoint for agent decision making.
 
 import logging
 import time
-from typing import Dict, Any
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends
 
 from app.config.settings import settings
-from app.models.request import LLMRequest
-from app.models.response import LLMResponse, ActionDecision
-from app.services.llm_client import LLMClient
-from app.services.json_parser import JSONParser
-from app.services.prompt_builder import PromptBuilder
 from app.exceptions.errors import LLMBaseError
+from app.models.request import LLMRequest
+from app.models.response import LLMResponse
+from app.services.json_parser import JSONParser
+from app.services.llm_client import LLMClient
+from app.services.prompt_builder import PromptBuilder
 
 logger = logging.getLogger(__name__)
 

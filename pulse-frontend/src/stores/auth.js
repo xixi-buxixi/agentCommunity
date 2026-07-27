@@ -68,7 +68,7 @@ export const useAuthStore = defineStore('auth', {
         const { data } = await getUserInfo()
         this.user = data
         return true
-      } catch (err) {
+      } catch {
         this.logout()
         return false
       }

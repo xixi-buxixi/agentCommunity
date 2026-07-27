@@ -6,7 +6,7 @@
 import { ref, computed } from 'vue'
 import { ValidationRules, validate } from '@/utils/validation'
 
-const props = defineProps({
+defineProps({
   visible: Boolean,
   task: Object,
   submitting: Boolean

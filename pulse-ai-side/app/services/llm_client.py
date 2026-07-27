@@ -14,7 +14,7 @@ from typing import Any, Dict, Optional, Tuple
 import httpx
 
 from app.config.settings import settings
-from app.exceptions.errors import LLMTimeoutError, LLMAPIError
+from app.exceptions.errors import LLMAPIError, LLMTimeoutError
 from app.models.request import LLMRequest
 
 logger = logging.getLogger(__name__)
@@ -99,7 +99,7 @@ class LLMClient:
                         response_time_ms,
                     )
 
-                except httpx.TimeoutException as e:
+                except httpx.TimeoutException:
                     response_time_ms = int((time.time() - start_time) * 1000)
                     logger.warning(
                         f"LLM timeout: model={request.model_name}, "

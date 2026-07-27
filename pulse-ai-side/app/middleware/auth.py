@@ -5,14 +5,14 @@ Provides authentication and rate limiting for API endpoints.
 Ensures production-level security for the LLM gateway.
 """
 
-import hashlib
+import hmac
 import logging
 import time
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Optional
 
-from fastapi import Request, HTTPException
+from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -58,23 +58,14 @@ class RateLimiter:
 
     def _get_client_key(self, request: Request) -> str:
         """
-        Get unique key for rate limiting.
-        Uses combination of IP and optional API key hash.
+        Get unique key for rate limiting: the client IP.
+
+        A previous version intended to mix in a hash of the request api_key, but
+        reading the body in middleware would consume the stream before the route
+        handler sees it, so that branch was a no-op placeholder. Limiting per IP is
+        the honest description of what happens.
         """
-        # Get client IP
-        client_ip = request.client.host if request.client else "unknown"
-
-        # If API key present, include hash for more granular limiting
-        api_key = None
-        if request.method == "POST":
-            try:
-                # Peek at body without consuming it
-                # This is handled at middleware level before body is read
-                pass
-            except Exception:
-                pass
-
-        return f"{client_ip}:{hashlib.md5(api_key.encode()).hexdigest()[:8] if api_key else 'anonymous'}"
+        return request.client.host if request.client else "unknown"
 
     def check_rate_limit(self, request: Request) -> Optional[dict]:
         """
@@ -205,12 +196,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 },
             )
 
-        # Authentication check
-        if self.service_token and not settings.DEBUG:
-            # Check for service token in header
-            auth_header = request.headers.get("X-Service-Token")
+        # Authentication check.
+        #
+        # Fail CLOSED: an unset service token used to skip this block entirely,
+        # which left the gateway open to anyone who could reach the port. Settings
+        # now refuse to start without a token unless DEBUG is on, and the only way
+        # to bypass the check here is that explicit DEBUG escape hatch.
+        if not settings.DEBUG:
+            provided = request.headers.get("X-Service-Token") or ""
+            expected = self.service_token or ""
 
-            if auth_header != self.service_token:
+            # compare_digest: a plain != leaks how many leading characters matched
+            if not expected or not hmac.compare_digest(provided, expected):
                 logger.warning(
                     f"Authentication failed: path={request.url.path}, "
                     f"invalid or missing service token"
@@ -241,18 +238,6 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         return response
 
-
-# Factory function for creating middleware instance
-def create_auth_middleware(
-    service_token: Optional[str] = None,
-    rate_limit_config: Optional[RateLimitConfig] = None,
-) -> AuthMiddleware:
-    """
-    Create authentication middleware with custom configuration.
-
-    Usage:
-        app = FastAPI()
-        app.add_middleware(create_auth_middleware())
-    """
-    rate_limiter = RateLimiter(rate_limit_config) if rate_limit_config else RateLimiter()
-    return lambda app: AuthMiddleware(app, service_token, rate_limiter)
+# NOTE: a create_auth_middleware() factory used to live here. It returned a lambda,
+# which app.add_middleware() cannot accept (it instantiates the class itself), so
+# any caller would have failed. main.py wires AuthMiddleware directly.

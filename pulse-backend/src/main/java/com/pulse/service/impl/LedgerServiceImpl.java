@@ -12,12 +12,14 @@ import com.pulse.mapper.AgentMapper;
 import com.pulse.mapper.SysLedgerMapper;
 import com.pulse.mapper.UserMapper;
 import com.pulse.service.LedgerService;
+import com.pulse.service.RateLimitService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -30,9 +32,14 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class LedgerServiceImpl implements LedgerService {
 
+    private static final String TIP_BUCKET = "tip:user";
+    private static final int MAX_TIPS_PER_HOUR = 30;
+    private static final Duration TIP_WINDOW = Duration.ofHours(1);
+
     private final SysLedgerMapper sysLedgerMapper;
     private final UserMapper userMapper;
     private final AgentMapper agentMapper;
+    private final RateLimitService rateLimitService;
 
     @Override
     public List<LedgerResponse> getMyLedger(Long userId, int limit) {
@@ -64,6 +71,13 @@ public class LedgerServiceImpl implements LedgerService {
     @Override
     @Transactional
     public BigDecimal tipAgent(Long userId, Long agentId, TipRequest request) {
+        // Tipping writes two ledger rows per call and had no frequency limit at all,
+        // so it could be used to flood the ledger (and the recipient's feed).
+        if (!rateLimitService.tryConsume(TIP_BUCKET, String.valueOf(userId),
+                MAX_TIPS_PER_HOUR, TIP_WINDOW)) {
+            throw new BusinessException(ErrorCode.RATE_LIMIT_EXCEEDED);
+        }
+
         // Validate tipper exists
         User tipper = userMapper.selectById(userId);
         if (tipper == null) {

@@ -13,6 +13,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 
@@ -42,8 +43,15 @@ public class LLMClient {
     @Value("${pulse-ai-side.base-url:http://localhost:8000}")
     private String pythonGatewayBaseUrl;
 
+    /**
+     * Read timeout is applied on the RestTemplate bean (see RestTemplateConfig);
+     * kept here only for logging the configured budget.
+     */
     @Value("${pulse-ai-side.timeout:30000}")
     private Integer gatewayTimeout;
+
+    @Value("${pulse-ai-side.service-token:}")
+    private String serviceToken;
 
     /**
      * Call Python AI Gateway and get agent's action decision
@@ -54,11 +62,17 @@ public class LLMClient {
      */
     public LLMResponse callLLM(Agent agent, AgentContext context) {
         // Decrypt API Key
-        String apiKey = aesUtil.decrypt(agent.getApiKey());
-        if (apiKey == null) {
+        String apiKey;
+        try {
+            apiKey = aesUtil.decrypt(agent.getApiKey());
+        } catch (RuntimeException e) {
             log.error("Failed to decrypt API Key for agent {}", agent.getId());
+            apiKey = null;
+        }
+        if (apiKey == null) {
             return LLMResponse.builder()
                     .success(false)
+                    .errorCode("API_KEY_DECRYPTION_FAILED")
                     .errorMessage("API Key decryption failed")
                     .build();
         }
@@ -76,6 +90,14 @@ public class LLMClient {
         // Build headers
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
+        // Service-to-service authentication. Without this header the gateway's
+        // auth middleware could only ever be fail-open: enabling SERVICE_TOKEN
+        // there used to 401 every call from here.
+        if (serviceToken != null && !serviceToken.isBlank()) {
+            headers.set("X-Service-Token", serviceToken);
+        } else {
+            log.warn("pulse-ai-side.service-token is not configured; the AI gateway will reject this call");
+        }
 
         HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestBody, headers);
 
@@ -93,24 +115,72 @@ public class LLMClient {
 
             if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
                 return parsePythonGatewayResponse(response.getBody(), responseTime);
-            } else {
-                log.warn("Python Gateway call failed: agent={}, status={}", agent.getId(), response.getStatusCode());
-                return LLMResponse.builder()
-                        .success(false)
-                        .errorMessage("Python Gateway returned non-2xx status")
-                        .responseTimeMs(responseTime)
-                        .build();
             }
+            log.warn("Python Gateway call failed: agent={}, status={}", agent.getId(), response.getStatusCode());
+            return LLMResponse.builder()
+                    .success(false)
+                    .errorCode("GATEWAY_NON_2XX")
+                    .upstreamStatus(response.getStatusCode().value())
+                    .errorMessage("Python Gateway returned non-2xx status")
+                    .responseTimeMs(responseTime)
+                    .build();
+
+        } catch (HttpStatusCodeException e) {
+            // The gateway answers failures with the same envelope (error_code,
+            // upstream status, action=ignore). Previously the body was discarded
+            // on any non-2xx, so none of those fields ever reached this side.
+            long responseTime = System.currentTimeMillis() - startTime;
+            log.warn("Python Gateway returned {}: agent={}", e.getStatusCode(), agent.getId());
+            return parseGatewayErrorBody(e.getResponseBodyAsString(), e.getStatusCode().value(), responseTime);
 
         } catch (RestClientException e) {
             long responseTime = System.currentTimeMillis() - startTime;
             log.error("Python Gateway call exception: agent={}, error={}", agent.getId(), e.getMessage());
             return LLMResponse.builder()
                     .success(false)
+                    .errorCode("GATEWAY_UNREACHABLE")
                     .errorMessage(e.getMessage())
                     .responseTimeMs(responseTime)
                     .build();
         }
+    }
+
+    /**
+     * Read the shared error envelope out of a non-2xx gateway response.
+     */
+    private LLMResponse parseGatewayErrorBody(String body, int httpStatus, long responseTime) {
+        String errorCode = "GATEWAY_ERROR";
+        String errorMessage = "Python Gateway returned HTTP " + httpStatus;
+        Integer upstreamStatus = null;
+
+        if (body != null && !body.isBlank()) {
+            try {
+                JsonNode root = objectMapper.readTree(body);
+                if (root.hasNonNull("error_code")) {
+                    errorCode = root.get("error_code").asText();
+                }
+                if (root.hasNonNull("error_message")) {
+                    errorMessage = root.get("error_message").asText();
+                }
+                JsonNode upstream = root.hasNonNull("upstream_status")
+                        ? root.get("upstream_status")
+                        : root.path("llm_status_code");
+                if (upstream.isNumber()) {
+                    upstreamStatus = upstream.intValue();
+                }
+            } catch (Exception parseError) {
+                log.warn("Unable to parse gateway error envelope: {}", parseError.getMessage());
+            }
+        }
+
+        return LLMResponse.builder()
+                .success(false)
+                .action(ActionType.IGNORE)
+                .errorCode(errorCode)
+                .errorMessage(errorMessage)
+                .upstreamStatus(upstreamStatus != null ? upstreamStatus : httpStatus)
+                .responseTimeMs(responseTime)
+                .build();
     }
 
     /**
@@ -145,6 +215,8 @@ public class LLMClient {
             // Parse success and error_message
             boolean success = root.path("success").asBoolean(true);
             String errorMessage = root.path("error_message").asText(null);
+            String errorCode = root.path("error_code").asText(null);
+            Integer upstreamStatus = readInteger(root, "upstream_status", "llm_status_code");
             String reason = root.path("reason").asText(null);
 
             return LLMResponse.builder()
@@ -160,6 +232,8 @@ public class LLMClient {
                     .model(model)
                     .success(success)
                     .errorMessage(errorMessage)
+                    .errorCode(errorCode)
+                    .upstreamStatus(upstreamStatus)
                     .responseTimeMs(responseTime)
                     .build();
 
@@ -167,7 +241,8 @@ public class LLMClient {
             log.error("Failed to parse Python Gateway response: {}", e.getMessage());
             return LLMResponse.builder()
                     .success(false)
-                    .errorMessage("JSON parse error: " + e.getMessage())
+                    .errorCode("GATEWAY_RESPONSE_UNPARSABLE")
+                    .errorMessage("Gateway response could not be parsed")
                     .responseTimeMs(responseTime)
                     .build();
         }
@@ -213,17 +288,49 @@ public class LLMClient {
         return readInteger(usage, snakeName, camelName);
     }
 
+    /**
+     * Strict numeric read.
+     *
+     * asInt()/asLong() coerce anything unparsable to 0 without complaining, which
+     * turned a malformed usage figure into "this cycle was free" and a bogus
+     * target_post_id into 0. A non-numeric node is reported and treated as absent.
+     */
     private Integer readInteger(JsonNode node, String snakeName, String camelName) {
+        JsonNode value = pick(node, snakeName, camelName);
+        if (value == null) {
+            return null;
+        }
+        if (!value.isNumber()) {
+            log.warn("Gateway field {} is not numeric: {}", snakeName, value.asText());
+            return null;
+        }
+        return value.intValue();
+    }
+
+    private Long readLong(JsonNode node, String snakeName, String camelName) {
+        JsonNode value = pick(node, snakeName, camelName);
+        if (value == null) {
+            return null;
+        }
+        if (!value.isNumber()) {
+            log.warn("Gateway field {} is not numeric: {}", snakeName, value.asText());
+            return null;
+        }
+        long parsed = value.longValue();
+        // Post ids are positive; 0 or negative means the model hallucinated one
+        if (parsed < 1) {
+            log.warn("Gateway field {} is out of range: {}", snakeName, parsed);
+            return null;
+        }
+        return parsed;
+    }
+
+    private JsonNode pick(JsonNode node, String snakeName, String camelName) {
         if (node == null || node.isMissingNode()) {
             return null;
         }
         JsonNode value = node.has(snakeName) ? node.path(snakeName) : node.path(camelName);
-        return !value.isMissingNode() && !value.isNull() ? value.asInt() : null;
-    }
-
-    private Long readLong(JsonNode node, String snakeName, String camelName) {
-        JsonNode value = node.has(snakeName) ? node.path(snakeName) : node.path(camelName);
-        return !value.isMissingNode() && !value.isNull() ? value.asLong() : null;
+        return !value.isMissingNode() && !value.isNull() ? value : null;
     }
 
     private int safeInt(Integer value) {

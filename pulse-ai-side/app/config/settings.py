@@ -1,38 +1,53 @@
 """
 Application Settings
 
-Configuration loaded from environment variables.
-All settings have sensible defaults for development.
+Configuration loaded from environment variables and (optionally) a .env file.
 
-Enhanced with security settings for production:
-- Service token for authentication
-- Rate limiting configuration
+Uses pydantic-settings rather than a hand-rolled dataclass so that
+- the .env file is actually read (python-dotenv was declared but never called, so a
+  bare-metal deployment silently fell back to every default),
+- a malformed numeric value produces a clear validation error instead of a
+  ValueError during module import,
+- security-critical settings can be validated in one place.
 """
 
-import os
-from dataclasses import dataclass, field
+import logging
 from typing import Optional
 
+from pydantic import Field, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
-@dataclass(frozen=True)
-class Settings:
-    """
-    Application settings from environment variables.
-    Frozen for immutability.
-    """
+logger = logging.getLogger(__name__)
+
+
+class Settings(BaseSettings):
+    """Application settings from environment variables / .env."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        frozen=True,
+    )
 
     # Service settings
-    DEBUG: bool = field(default_factory=lambda: os.getenv("DEBUG", "false").lower() == "true")
-    SERVICE_PORT: int = field(default_factory=lambda: int(os.getenv("SERVICE_PORT", "8000")))
-    SERVICE_HOST: str = field(default_factory=lambda: os.getenv("SERVICE_HOST", "0.0.0.0"))
+    DEBUG: bool = False
+    SERVICE_PORT: int = 8000
+    # Bind to loopback by default: the gateway handles decrypted API keys and has
+    # no business being reachable from the internet. Override explicitly when the
+    # backend runs on another host (and firewall the port).
+    SERVICE_HOST: str = "127.0.0.1"
 
-    # Timeout settings (critical for LLM calls)
-    REQUEST_TIMEOUT_SECONDS: int = field(default_factory=lambda: int(os.getenv("REQUEST_TIMEOUT_SECONDS", "30")))
-    CONNECT_TIMEOUT_SECONDS: int = field(default_factory=lambda: int(os.getenv("CONNECT_TIMEOUT_SECONDS", "5")))
+    # Timeout settings (critical for LLM calls), per attempt.
+    # Keep attempts x timeout + backoff BELOW the caller's read timeout
+    # (pulse-ai-side.timeout on the Java side) so the caller observes this
+    # service's structured fallback instead of aborting the connection itself.
+    REQUEST_TIMEOUT_SECONDS: int = 20
+    CONNECT_TIMEOUT_SECONDS: int = 5
 
     # LLM defaults (used when client doesn't specify)
-    DEFAULT_MAX_TOKENS: int = field(default_factory=lambda: int(os.getenv("DEFAULT_MAX_TOKENS", "200")))
-    DEFAULT_TEMPERATURE: float = field(default_factory=lambda: float(os.getenv("DEFAULT_TEMPERATURE", "0.7")))
+    DEFAULT_MAX_TOKENS: int = 200
+    DEFAULT_TEMPERATURE: float = 0.7
 
     # Prompt protection
     CONTEXT_MARKER: str = "<!-- CONTEXT_ONLY -->"
@@ -42,55 +57,82 @@ class Settings:
     RESPONSE_FORMAT_TYPE: str = "json_object"
 
     # Retry settings
-    MAX_RETRIES: int = field(default_factory=lambda: int(os.getenv("MAX_RETRIES", "2")))
-    RETRY_DELAY_SECONDS: float = field(default_factory=lambda: float(os.getenv("RETRY_DELAY_SECONDS", "1.0")))
+    MAX_RETRIES: int = 1
+    RETRY_DELAY_SECONDS: float = 1.0
+    # Cap for exponential backoff between retries
+    RETRY_MAX_DELAY_SECONDS: float = 4.0
 
     # Logging
-    LOG_LEVEL: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO"))
+    LOG_LEVEL: str = "INFO"
 
-    # Security settings (NEW)
-    # Service token for authentication between Java backend and Python service
-    # In production, set this via environment variable
-    SERVICE_TOKEN: Optional[str] = field(
-        default_factory=lambda: os.getenv("SERVICE_TOKEN", None)
-    )
+    # Security: shared secret required from the Java backend (X-Service-Token).
+    # Mandatory unless DEBUG - see the validator below.
+    SERVICE_TOKEN: Optional[str] = None
+
+    # SSRF protection for the caller-supplied base_url.
+    # Allow plain http only when explicitly enabled (loopback development).
+    ALLOW_INSECURE_LLM_HTTP: bool = False
+    # Reject private / loopback / link-local / cloud-metadata destinations
+    BLOCK_PRIVATE_LLM_TARGETS: bool = True
+    # Optional comma-separated host allowlist, e.g. "api.openai.com,api.deepseek.com"
+    LLM_HOST_ALLOWLIST: str = ""
 
     # Rate limiting configuration
-    RATE_LIMIT_REQUESTS_PER_MINUTE: int = field(
-        default_factory=lambda: int(os.getenv("RATE_LIMIT_REQUESTS_PER_MINUTE", "60"))
-    )
-    RATE_LIMIT_REQUESTS_PER_HOUR: int = field(
-        default_factory=lambda: int(os.getenv("RATE_LIMIT_REQUESTS_PER_HOUR", "1000"))
-    )
-    RATE_LIMIT_BURST: int = field(
-        default_factory=lambda: int(os.getenv("RATE_LIMIT_BURST", "10"))
-    )
+    RATE_LIMIT_REQUESTS_PER_MINUTE: int = 60
+    RATE_LIMIT_REQUESTS_PER_HOUR: int = 1000
+    RATE_LIMIT_BURST: int = Field(default=10)
+
+    @model_validator(mode="after")
+    def _validate(self) -> "Settings":
+        if self.REQUEST_TIMEOUT_SECONDS <= 0:
+            raise ValueError("REQUEST_TIMEOUT_SECONDS must be > 0")
+        if self.CONNECT_TIMEOUT_SECONDS <= 0:
+            raise ValueError("CONNECT_TIMEOUT_SECONDS must be > 0")
+        if self.DEFAULT_MAX_TOKENS <= 0:
+            raise ValueError("DEFAULT_MAX_TOKENS must be > 0")
+        if not 0 <= self.DEFAULT_TEMPERATURE <= 2:
+            raise ValueError("DEFAULT_TEMPERATURE must be within [0, 2]")
+
+        # Fail closed. Previously a missing SERVICE_TOKEN skipped the whole auth
+        # block, turning this service into an open LLM proxy that anyone able to
+        # reach the port could use to spend credits or probe internal hosts.
+        if not self.DEBUG and not (self.SERVICE_TOKEN or "").strip():
+            raise ValueError(
+                "SERVICE_TOKEN is required when DEBUG is false. "
+                "Generate one with `openssl rand -hex 32` and configure the same "
+                "value for the backend (SERVICE_TOKEN in /opt/pulse/backend/.env)."
+            )
+        if self.DEBUG and not (self.SERVICE_TOKEN or "").strip():
+            logger.warning(
+                "DEBUG mode with no SERVICE_TOKEN: service-to-service "
+                "authentication is disabled. Never do this outside development."
+            )
+        return self
+
+    @property
+    def host_allowlist(self) -> list:
+        """Parsed LLM_HOST_ALLOWLIST (empty list means 'no allowlist')."""
+        return [h.strip().lower() for h in self.LLM_HOST_ALLOWLIST.split(",") if h.strip()]
+
+    @property
+    def total_request_budget_seconds(self) -> float:
+        """
+        Worst-case wall clock for one upstream call: every attempt timing out plus
+        the backoff between them. Used to sanity-check against the caller budget.
+        """
+        attempts = self.MAX_RETRIES + 1
+        backoff = sum(
+            min(self.RETRY_DELAY_SECONDS * (2 ** i), self.RETRY_MAX_DELAY_SECONDS)
+            for i in range(self.MAX_RETRIES)
+        )
+        return attempts * self.REQUEST_TIMEOUT_SECONDS + backoff
 
     def validate(self) -> bool:
         """
-        Validate settings.
-        Returns True if all critical settings are valid.
+        Kept for callers that probe configuration. Validation now happens during
+        construction, so reaching this method means the settings are valid.
         """
-        valid = True
-
-        if self.REQUEST_TIMEOUT_SECONDS <= 0:
-            valid = False
-        if self.CONNECT_TIMEOUT_SECONDS <= 0:
-            valid = False
-        if self.DEFAULT_MAX_TOKENS <= 0:
-            valid = False
-        if self.DEFAULT_TEMPERATURE < 0 or self.DEFAULT_TEMPERATURE > 2:
-            valid = False
-
-        # Warn if no service token in production mode
-        if not self.DEBUG and not self.SERVICE_TOKEN:
-            import logging
-            logging.getLogger(__name__).warning(
-                "SERVICE_TOKEN not set in production mode - "
-                "authentication will be disabled!"
-            )
-
-        return valid
+        return True
 
     @property
     def timeout_config(self) -> dict:

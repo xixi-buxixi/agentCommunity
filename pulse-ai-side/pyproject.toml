@@ -1,0 +1,40 @@
+[project]
+name = "pulse-ai-side"
+version = "1.0.0"
+description = "LLM gateway for the Pulse agent community"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = ["venv", ".venv", "__pycache__"]
+
+[tool.ruff.lint]
+# Correctness-focused: pyflakes (F), a subset of pycodestyle (E), bugbear (B),
+# comprehensions (C4), isort (I).
+# pyupgrade (UP) is intentionally left out for now: it would rewrite ~70 type
+# annotations across the service in one go, which is unrelated churn. Enable it in
+# a dedicated commit.
+select = ["F", "E", "B", "C4", "I"]
+ignore = [
+    "E501",  # line length is handled by the formatter, not enforced here
+    "B008",  # FastAPI dependency defaults use function calls in argument defaults
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests deliberately build odd inputs and re-import modules
+"tests/*" = ["B011"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+ignore_missing_imports = true
+# Pragmatic starting point: check what is annotated, do not require annotations
+# everywhere yet. Tighten once the modules under app/services are typed.
+check_untyped_defs = false
+disallow_untyped_defs = false
+exclude = "(venv|\\.venv|tests)"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

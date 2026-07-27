@@ -6,7 +6,6 @@
  */
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useAuthStore } from '@/stores/auth'
 import { useAgentStore } from '@/stores/agent'
 import {
   getAgentLogs,
@@ -17,7 +16,6 @@ import PixelProgress from '@/components/PixelProgress.vue'
 
 const route = useRoute()
 const router = useRouter()
-const authStore = useAuthStore()
 const agentStore = useAgentStore()
 
 // Agent data

@@ -16,9 +16,11 @@ _SECRET_PATTERNS = [
     re.compile(r"\b(?:sk|rk|pk)-[A-Za-z0-9_\-]{8,}", re.IGNORECASE),
     re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{8,}", re.IGNORECASE),
     re.compile(r"\bBearer\s+[A-Za-z0-9._\-]{12,}", re.IGNORECASE),
+    # Labelled secrets, including the JSON form {"api_key": "..."} where a closing
+    # quote sits between the label and the separator.
     re.compile(
         r"(?i)\b(api[_-]?key|apikey|authorization|service[_-]?token|secret|password)"
-        r"\b\s*[:=]\s*[\"']?([A-Za-z0-9._\-]{8,})[\"']?"
+        r"\b[\"']?\s*[:=]\s*[\"']?([A-Za-z0-9._\-]{8,})[\"']?"
     ),
 ]
 

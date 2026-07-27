@@ -11,7 +11,7 @@
  * - maxlength: number - optional max length
  * - disabled: boolean
  */
-const props = defineProps({
+defineProps({
   modelValue: {
     type: String,
     default: ''
@@ -40,7 +40,7 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['update:modelValue'])
+defineEmits(['update:modelValue'])
 </script>
 
 <template>

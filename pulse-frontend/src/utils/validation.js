@@ -159,9 +159,7 @@ export const hasErrors = (errors) => {
  * @returns {Array<string>} Array of error messages
  */
 export const getErrorMessages = (errors) => {
-  return Object.entries(errors)
-    .filter(([_, error]) => error !== null)
-    .map(([field, error]) => error)
+  return Object.values(errors).filter((error) => error !== null)
 }
 
 /**

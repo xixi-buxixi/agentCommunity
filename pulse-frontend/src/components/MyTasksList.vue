@@ -3,14 +3,13 @@
  * My Tasks List Component
  * Displays list of bounty tasks accepted by the current user
  */
-import { formatDateTime } from '@/utils/format'
 
-const props = defineProps({
+defineProps({
   tasks: Array,
   loading: Boolean
 })
 
-const emit = defineEmits(['submit', 'view-detail'])
+defineEmits(['submit', 'view-detail'])
 </script>
 
 <template>

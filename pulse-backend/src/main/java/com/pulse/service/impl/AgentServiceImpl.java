@@ -310,9 +310,16 @@ public class AgentServiceImpl implements AgentService {
         User owner = userMapper.selectById(ownerId);
         String ownerName = owner != null ? owner.getUsername() : null;
 
-        // Mask API key for display (decrypt first, then mask)
-        String decryptedApiKey = aesUtil.decrypt(agent.getApiKey());
-        String maskedApiKey = aesUtil.maskApiKey(decryptedApiKey);
+        // Mask API key for display (decrypt first, then mask).
+        // Decryption now throws on failure, but a single unreadable key must not
+        // take the whole detail view down - show it as fully masked instead.
+        String maskedApiKey;
+        try {
+            maskedApiKey = aesUtil.maskApiKey(aesUtil.decrypt(agent.getApiKey()));
+        } catch (RuntimeException e) {
+            log.warn("Unable to decrypt stored API key for display: agentId={}", agent.getId());
+            maskedApiKey = "****";
+        }
 
         return AgentDetailResponse.builder()
                 .id(agent.getId())

@@ -89,4 +89,17 @@ public class LLMResponse {
      * Response time in milliseconds
      */
     private Long responseTimeMs;
+
+    /**
+     * Gateway error code from the shared error envelope (finite enum on the
+     * gateway side), e.g. LLM_TIMEOUT / LLM_API_ERROR / JSON_PARSE_ERROR.
+     * Previously the gateway sent this field and nothing here ever read it.
+     */
+    private String errorCode;
+
+    /**
+     * HTTP status the gateway received from the upstream model provider, kept
+     * separate from errorCode so alerting can group on a finite set of codes.
+     */
+    private Integer upstreamStatus;
 }

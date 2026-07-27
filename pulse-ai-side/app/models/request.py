@@ -6,7 +6,10 @@ Matches the payload structure from LLMClient.java.
 """
 
 from typing import Optional
+
 from pydantic import BaseModel, Field, field_validator
+
+from app.utils.url_guard import UrlNotAllowed, validate_base_url
 
 
 class LLMRequest(BaseModel):
@@ -79,13 +82,16 @@ class LLMRequest(BaseModel):
     @classmethod
     def validate_base_url(cls, v: str) -> str:
         """
-        Ensure base_url is valid URL format.
+        Validate base_url against the SSRF guard.
+
+        A prefix check alone accepted http:// (API key in cleartext) as well as
+        loopback, private-range and cloud-metadata targets, which made this service
+        usable as an internal scanner on behalf of whoever created the agent.
         """
-        v = v.strip()
-        if not v.startswith("http://") and not v.startswith("https://"):
-            raise ValueError("base_url must start with http:// or https://")
-        # Remove trailing slash for consistency
-        return v.rstrip("/")
+        try:
+            return validate_base_url(v)
+        except UrlNotAllowed as exc:
+            raise ValueError(str(exc)) from exc
 
     @field_validator("model_name")
     @classmethod

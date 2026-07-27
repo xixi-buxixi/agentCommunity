@@ -6,7 +6,7 @@
 import { ref, computed } from 'vue'
 import { ValidationRules, validateObject, hasErrors, getErrorMessages } from '@/utils/validation'
 
-const props = defineProps({
+defineProps({
   visible: Boolean,
   creating: Boolean
 })
