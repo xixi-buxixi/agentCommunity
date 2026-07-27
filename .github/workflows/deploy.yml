@@ -202,12 +202,35 @@ jobs:
               exit 1
             fi
 
+            # Find the account DB_PASSWORD actually belongs to, and persist it so the
+            # application uses the same one. The migration ran as "pulse" while the
+            # base application.yml connected as "root": whichever of those did not
+            # match the password produced failures that looked unrelated (a silently
+            # skipped migration, or a 500 on every endpoint that touches the database).
+            EXISTING_DB_USERNAME="${DB_USERNAME:-}"
+            DB_USERNAME=""
+            for candidate in "$EXISTING_DB_USERNAME" pulse root; do
+              [ -z "$candidate" ] && continue
+              if mysql -u "$candidate" -p"$DB_PASSWORD" -N -B pulse_db -e "SELECT 1" > /dev/null 2>&1; then
+                DB_USERNAME="$candidate"
+                break
+              fi
+            done
+            if [ -z "$DB_USERNAME" ]; then
+              echo "FATAL: DB_PASSWORD does not authenticate as 'pulse' or as 'root'."
+              echo "Set DB_USERNAME and DB_PASSWORD in /opt/pulse/backend/.env to a working pair."
+              exit 1
+            fi
+            echo "Database account in use: $DB_USERNAME"
+            sed -i "/^DB_USERNAME=/d" /opt/pulse/backend/.env
+            printf '%s\n' "DB_USERNAME=$DB_USERNAME" >> /opt/pulse/backend/.env
+
             # --force so that statements needing privileges this user may not have
             # (CREATE DATABASE) do not abort the rest of the file. Its exit code is
             # deliberately ignored here - the explicit verification below is what
             # gates the deploy, and that way this step behaves the same whether or
             # not the remote shell runs with -e.
-            mysql -u pulse -p"${DB_PASSWORD}" --force pulse_db < /opt/pulse/backend/schema.sql \
+            mysql -u "$DB_USERNAME" -p"${DB_PASSWORD}" --force pulse_db < /opt/pulse/backend/schema.sql \
               || echo "mysql reported errors above; the verification below decides"
 
             # ...but the objects the application now depends on are then verified
@@ -217,7 +240,7 @@ jobs:
             # last_dispatched_at - scheduled jobs failing while health stayed UP.
             missing=""
             check() {
-              count=$(mysql -u pulse -p"${DB_PASSWORD}" -N -B pulse_db -e "$2" 2>/dev/null | head -1)
+              count=$(mysql -u "$DB_USERNAME" -p"${DB_PASSWORD}" -N -B pulse_db -e "$2" 2>/dev/null | head -1)
               [ "$count" = "1" ] || missing="$missing $1"
             }
             check "table:shedlock" "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='shedlock'"
@@ -228,7 +251,7 @@ jobs:
               echo "=============================================================="
               echo "WARNING: optional schema objects are missing:$missing"
               echo ""
-              echo "Most likely the '$USER' database user has no ALTER/CREATE grant."
+              echo "Most likely the '$DB_USERNAME' database user has no ALTER/CREATE grant."
               echo "The application detects this at startup (SchemaCapabilities) and"
               echo "runs documented fallbacks, so the deploy continues - but the"
               echo "indexed paths and scheduler locking stay off until you run:"
@@ -237,6 +260,18 @@ jobs:
             else
               echo "Schema migration verified: all objects present"
             fi
+      - name: Diagnose failed schema migration
+        if: failure()
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/diag_key
+          chmod 600 ~/.ssh/diag_key
+          out=$(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes \
+                -i ~/.ssh/diag_key root@${{ secrets.QINIUYUN_HOST }} \
+                "grep -cE '^[A-Za-z_]+=' /opt/pulse/backend/.env 2>/dev/null; \
+                 mysql --version 2>/dev/null | head -1" 2>&1 | head -5)
+          printf '::error title=Schema migration diagnostics::%s\n' "$(printf '%s' "$out" | tr '\n' ' ' | head -c 500)"
+
       - name: Restart backend
         uses: appleboy/ssh-action@v1
         with:
@@ -417,6 +452,7 @@ jobs:
               nohup "$JAVA_BIN" -Xms512m -Xmx768m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 \
                 -jar "$1" \
                 --spring.profiles.active=prod \
+                --spring.config.additional-location=file:/opt/pulse/backend/ \
                 > /opt/pulse/logs/backend.log 2>&1 &
               echo $! > /opt/pulse/backend/backend.pid
               for i in $(seq 1 36); do

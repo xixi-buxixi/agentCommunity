@@ -19,7 +19,9 @@ spring:
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://localhost:3306/pulse_db?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
-    username: root
+    # Configurable so the deploy can point at whichever account actually works
+    # (the schema step and the application must use the SAME one).
+    username: ${DB_USERNAME:root}
     # Empty default so a configuration gap surfaces as a clear database error on the
     # first query instead of preventing the application from starting at all.
     password: ${DB_PASSWORD:}

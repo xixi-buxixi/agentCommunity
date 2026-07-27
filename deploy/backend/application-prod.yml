@@ -9,7 +9,7 @@ server:
 spring:
   datasource:
     url: jdbc:mysql://localhost:3306/pulse_db?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
-    username: pulse
+    username: ${DB_USERNAME:pulse}
     password: ${DB_PASSWORD:}
     hikari:
       maximum-pool-size: 10
