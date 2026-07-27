@@ -20,10 +20,14 @@ jobs:
           filters: |
             frontend:
               - 'pulse-frontend/**'
+              - '.github/workflows/deploy.yml'
             backend:
               - 'pulse-backend/**'
+              - 'deploy/backend/**'
+              - '.github/workflows/deploy.yml'
             aiside:
               - 'pulse-ai-side/**'
+              - '.github/workflows/deploy.yml'
 
   # Test gate. Deploys used to run straight from `mvn package -DskipTests`, so no
   # test ever ran in CI; a broken money path or security rule could reach

@@ -48,6 +48,9 @@ public class SecretsValidator {
     @Value("${hot-news.ingest-token}")
     private String hermesIngestToken;
 
+    @Value("${pulse.trusted-proxies:}")
+    private String trustedProxies;
+
     @PostConstruct
     public void validate() {
         requireStrongSecret("JWT_SECRET (jwt.secret)", jwtSecret);
@@ -70,7 +73,18 @@ public class SecretsValidator {
                     + "Anyone can push daily-report content until it is rotated on both sides.");
         }
 
-        log.info("Secret validation passed");
+        // Redacted resolution summary.
+        //
+        // The production outage during this rollout was a deployment script that
+        // silently exported no environment variables at all: the JVM then died on
+        // "Could not resolve placeholder", with nothing in the log about what had
+        // been resolved. Printing lengths (never values) makes that failure mode
+        // obvious at a glance next time.
+        log.info("Secret validation passed (jwt={} bytes, aes={} chars, ingest-token={}, trusted-proxies={})",
+                jwtSecret.getBytes(StandardCharsets.UTF_8).length,
+                aesSecretKey.length(),
+                isPlaceholder(hermesIngestToken) ? "PLACEHOLDER" : "configured",
+                trustedProxies == null || trustedProxies.isBlank() ? "none (loopback/private only)" : "configured");
     }
 
     private void requireStrongSecret(String name, String value) {
