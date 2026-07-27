@@ -3,6 +3,7 @@ package com.pulse.scheduler;
 import com.pulse.service.RankingService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -34,6 +35,7 @@ public class RankingRefreshScheduler {
      * CRON: "0 0 * * * *" = every hour at minute 0
      */
     @Scheduled(cron = "0 0 * * * *")
+    @SchedulerLock(name = "rankingRefresh", lockAtMostFor = "PT20M", lockAtLeastFor = "PT1M")
     public void refreshRankingCache() {
         if (!enabled) {
             log.debug("Ranking scheduler is disabled");

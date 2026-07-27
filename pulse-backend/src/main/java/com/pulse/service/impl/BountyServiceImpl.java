@@ -468,14 +468,25 @@ public class BountyServiceImpl implements BountyService {
             .decision(request.getDecision());
 
         if ("ACCEPT".equalsIgnoreCase(request.getDecision())) {
+            // Claim the task with a compare-and-set BEFORE any money moves.
+            // Without this, a second audit of an already COMPLETED task (or two
+            // concurrent accepts) would settle the reward twice, and because
+            // settleFrozenPointsAtomic only checks the user's total frozen amount,
+            // the second payment would silently consume another task's freeze.
+            int claimed = bountyTaskMapper.updateStatusIfIn(
+                    taskId,
+                    BountyStatus.COMPLETED.getCode(),
+                    List.of(BountyStatus.PENDING.getCode(),
+                            BountyStatus.ACCEPTED.getCode(),
+                            BountyStatus.REVIEWING.getCode()));
+            if (claimed == 0) {
+                throw new BusinessException(ErrorCode.BOUNTY_STATUS_INVALID);
+            }
+
             // Accept submission
             submission.setIsAccepted(true);
             submission.setReviewedAt(LocalDateTime.now());
             bountySubmissionMapper.updateById(submission);
-
-            // Update task status
-            task.setStatus(BountyStatus.COMPLETED.getCode());
-            bountyTaskMapper.updateById(task);
 
             // Update acceptance status
             bountyAcceptanceMapper.updateStatus(taskId, submission.getHunterId(), AcceptanceStatus.SELECTED.getCode());
@@ -541,13 +552,18 @@ public class BountyServiceImpl implements BountyService {
             throw new BusinessException(ErrorCode.BOUNTY_OWNER_REQUIRED);
         }
 
-        BountyStatus status = BountyStatus.fromCode(task.getStatus());
-        if (status != BountyStatus.PENDING && status != BountyStatus.ACCEPTED) {
+        // Compare-and-set: only the caller that actually performs the transition
+        // may release the frozen reward. Two concurrent cancels, or a cancel racing
+        // the expiry scheduler, would otherwise both pass a plain status check and
+        // unfreeze the same points twice.
+        int cancelled = bountyTaskMapper.updateStatusIfIn(
+                taskId,
+                BountyStatus.CANCELLED.getCode(),
+                List.of(BountyStatus.PENDING.getCode(), BountyStatus.ACCEPTED.getCode()));
+        if (cancelled == 0) {
             throw new BusinessException(ErrorCode.BOUNTY_STATUS_INVALID);
         }
-
         task.setStatus(BountyStatus.CANCELLED.getCode());
-        bountyTaskMapper.updateById(task);
 
         String normalizedReason = reason != null && !reason.isBlank() ? reason.trim() : "发布者主动取消";
         pointsService.refundPoints(task.getOwnerId(), task.getRewardPoints(), task.getId(),
@@ -565,15 +581,40 @@ public class BountyServiceImpl implements BountyService {
     }
 
     @Override
-    public List<BountyLogResponse> getRecentLogs(int limit) {
+    public List<BountyLogResponse> getRecentLogs(int limit, Long viewerId) {
         List<BountyLog> logs = bountyLogMapper.findRecentLogs(limit);
-        return logs.stream().map(this::buildLogResponse).collect(Collectors.toList());
+        // The global feed spans many tasks, so nobody is "the owner" here:
+        // only the actor themselves sees their own private review feedback.
+        return logs.stream()
+                .map(logEntry -> buildLogResponse(logEntry, isParticipant(logEntry, viewerId, null)))
+                .collect(Collectors.toList());
     }
 
     @Override
-    public List<BountyLogResponse> getLogsByTaskId(Long taskId) {
+    public List<BountyLogResponse> getLogsByTaskId(Long taskId, Long viewerId) {
+        BountyTask task = bountyTaskMapper.selectById(taskId);
+        if (task == null) {
+            throw new BusinessException(ErrorCode.BOUNTY_NOT_FOUND);
+        }
         List<BountyLog> logs = bountyLogMapper.findByTaskId(taskId);
-        return logs.stream().map(this::buildLogResponse).collect(Collectors.toList());
+        return logs.stream()
+                .map(logEntry -> buildLogResponse(logEntry, isParticipant(logEntry, viewerId, task.getOwnerId())))
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * A viewer is a participant of a log entry when they published the bounty
+     * or when they are the hunter the entry is about. Only participants may see
+     * private detail such as the publisher's rejection feedback.
+     */
+    private boolean isParticipant(BountyLog logEntry, Long viewerId, Long taskOwnerId) {
+        if (viewerId == null) {
+            return false;
+        }
+        if (taskOwnerId != null && viewerId.equals(taskOwnerId)) {
+            return true;
+        }
+        return viewerId.equals(logEntry.getHunterId());
     }
 
     @Override
@@ -659,9 +700,14 @@ public class BountyServiceImpl implements BountyService {
     }
 
     /**
-     * Build log response
+     * Build log response.
+     *
+     * @param includePrivateDetail when false, the publisher's rejection feedback is
+     *                             replaced by a neutral text. The bounty timeline is
+     *                             a public activity feed, but review feedback is
+     *                             private between publisher and hunter.
      */
-    private BountyLogResponse buildLogResponse(BountyLog log) {
+    private BountyLogResponse buildLogResponse(BountyLog log, boolean includePrivateDetail) {
         String actionTypeText;
         switch (log.getActionType()) {
             case "ACCEPT": actionTypeText = "接取悬赏"; break;
@@ -672,6 +718,11 @@ public class BountyServiceImpl implements BountyService {
             default: actionTypeText = log.getActionType();
         }
 
+        String actionDetail = log.getActionDetail();
+        if (!includePrivateDetail && "REJECT".equals(log.getActionType())) {
+            actionDetail = "答案未被采纳";
+        }
+
         return BountyLogResponse.builder()
             .id(log.getId())
             .taskId(log.getTaskId())
@@ -680,7 +731,7 @@ public class BountyServiceImpl implements BountyService {
             .hunterName(log.getHunterName())
             .actionType(log.getActionType())
             .actionTypeText(actionTypeText)
-            .actionDetail(log.getActionDetail())
+            .actionDetail(actionDetail)
             .rewardPoints(log.getRewardPoints())
             .createdAt(log.getCreatedAt())
             .build();

@@ -28,6 +28,7 @@ from app.exceptions.errors import (
     ValidationError as CustomValidationError,
 )
 from app.models.response import LLMResponse
+from app.utils.redaction import redact_text, safe_validation_errors
 
 logger = logging.getLogger(__name__)
 
@@ -100,10 +101,11 @@ def register_exception_handlers(app: FastAPI) -> None:
             content={
                 "action": "ignore",
                 "success": False,
-                "error_message": exc.message[:200],  # Limit message length
+                # Redacted: upstream error bodies frequently quote the API key back
+                "error_message": redact_text(exc.message)[:200],
                 "error_code": exc.error_code,
                 "error_type": error_type,
-                "provider": exc.provider,
+                # "provider" is the caller-supplied base_url; it stays in the log only
                 "llm_status_code": exc.status_code,
                 "total_tokens": 0,
                 "response_time_ms": exc.response_time_ms,
@@ -126,11 +128,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         if exc.raw_content:
             logger.error(
                 f"RAW LLM OUTPUT (parse failed):\n"
-                f"---BEGIN---\n{exc.raw_content}\n---END---"
-            )
-            # Also log truncated version for quick scanning
-            logger.error(
-                f"Raw content preview (500 chars): {exc.raw_content[:500]}"
+                f"---BEGIN---\n{redact_text(exc.raw_content)}\n---END---"
             )
 
         return JSONResponse(
@@ -138,10 +136,10 @@ def register_exception_handlers(app: FastAPI) -> None:
             content={
                 "action": "ignore",
                 "success": False,
-                "error_message": exc.message,
+                "error_message": redact_text(exc.message),
                 "error_code": exc.error_code,
-                "raw_content_preview": exc.raw_content[:300] if exc.raw_content else None,
-                "parse_error": exc.message,
+                # raw model output stays in the log: it is attacker-influenced text
+                # and may contain anything, including echoed credentials
                 "total_tokens": 0,
                 "response_time_ms": exc.response_time_ms,
             },
@@ -219,9 +217,13 @@ def register_exception_handlers(app: FastAPI) -> None:
         Handle request validation errors from FastAPI - return 400.
         Return structured error response.
         """
-        errors = exc.errors()
-        error_messages = [f"{e.get('loc', [])}: {e.get('msg', '')}" for e in errors]
-        combined_message = "; ".join(error_messages)
+        # exc.errors() carries the rejected value in "input". The first field of a
+        # decision request is api_key, so returning (or logging) the raw error list
+        # published the credential whenever it failed validation.
+        errors = safe_validation_errors(exc.errors())
+        combined_message = "; ".join(
+            f"{'.'.join(e['loc'])}: {e['msg']}" for e in errors
+        )
 
         logger.warning(
             f"Request validation failed: {combined_message}, "
@@ -257,7 +259,7 @@ def register_exception_handlers(app: FastAPI) -> None:
                 "success": False,
                 "error_message": "Internal service error",
                 "error_code": "INTERNAL_ERROR",
-                "exception_type": type(exc).__name__,
+                # exception_type named internal classes to the caller; log only
                 "total_tokens": 0,
             },
         )

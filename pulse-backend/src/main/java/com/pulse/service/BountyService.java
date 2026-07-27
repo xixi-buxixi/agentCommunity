@@ -63,14 +63,20 @@ public interface BountyService {
     BountyDetailResponse cancelBounty(Long userId, Long taskId, String reason);
 
     /**
-     * Get recent bounty logs
+     * Get recent bounty logs.
+     *
+     * @param viewerId current user id, or null for anonymous. Private detail
+     *                 (review feedback) is only rendered for participants.
      */
-    List<BountyLogResponse> getRecentLogs(int limit);
+    List<BountyLogResponse> getRecentLogs(int limit, Long viewerId);
 
     /**
-     * Get logs for a specific bounty
+     * Get logs for a specific bounty.
+     *
+     * @param viewerId current user id, or null for anonymous. Private detail
+     *                 (review feedback) is only rendered for participants.
      */
-    List<BountyLogResponse> getLogsByTaskId(Long taskId);
+    List<BountyLogResponse> getLogsByTaskId(Long taskId, Long viewerId);
 
     /**
      * Get bounties accepted by user (猎手接取的任务)

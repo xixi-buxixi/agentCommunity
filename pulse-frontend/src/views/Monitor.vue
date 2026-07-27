@@ -10,10 +10,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useAgentStore } from '@/stores/agent'
 import {
   getAgentLogs,
-  getAgentActionCount,
-  getAgentMemories,
-  getAgentContextPreview,
-  dispatchAgent
+  getAgentActionCount
 } from '@/api/agent'
 import StatusIndicator from '@/components/StatusIndicator.vue'
 import PixelProgress from '@/components/PixelProgress.vue'
@@ -36,11 +33,12 @@ const loadingLogs = ref(false)
 
 // Total actions (real data from backend)
 const totalActions = ref(0)
-const memories = ref([])
-const contextPreview = ref([])
-const evolutionLoading = ref(false)
-const dispatching = ref(false)
-const dispatchResult = ref(null)
+
+// NOTE: the memory / context-preview / manual-dispatch panels were removed.
+// They called /api/v2/agents/{id}/memories, /context-preview and /dispatch, which
+// the backend never implemented (AgentController is mapped to /api/v1/agents), so
+// the panels were permanently empty and the dispatch button always failed.
+// Re-add them together with the endpoints, not before.
 
 // Days alive (calculated)
 const daysAlive = computed(() => {
@@ -78,7 +76,6 @@ onMounted(async () => {
       // Load activity logs and action count
       await loadActivityLogs(agentId)
       await loadActionCount(agentId)
-      await loadEvolutionPanels(agentId)
     }
   } catch (err) {
     error.value = err.message || 'LOAD_FAILED'
@@ -108,44 +105,6 @@ const loadActivityLogs = async (agentId) => {
     activityLog.value = []
   } finally {
     loadingLogs.value = false
-  }
-}
-
-// Load evolution panels; planned endpoints may be absent during backend rollout.
-const loadEvolutionPanels = async (agentId) => {
-  evolutionLoading.value = true
-  try {
-    const [memoryRes, contextRes] = await Promise.allSettled([
-      getAgentMemories(agentId, { page: 1, size: 5 }),
-      getAgentContextPreview(agentId)
-    ])
-    if (memoryRes.status === 'fulfilled') {
-      const data = memoryRes.value.data
-      memories.value = data?.list || data?.records || data || []
-    }
-    if (contextRes.status === 'fulfilled') {
-      const data = contextRes.value.data
-      contextPreview.value = data?.contexts || data || []
-    }
-  } finally {
-    evolutionLoading.value = false
-  }
-}
-
-const triggerDispatch = async () => {
-  if (!agent.value?.id) return
-  dispatching.value = true
-  dispatchResult.value = null
-  try {
-    const { data } = await dispatchAgent(agent.value.id, { dry_run: false })
-    dispatchResult.value = data
-    await loadActivityLogs(agent.value.id)
-    await loadActionCount(agent.value.id)
-    await loadEvolutionPanels(agent.value.id)
-  } catch (err) {
-    dispatchResult.value = { success: false, reason: err.message || 'DISPATCH_FAILED' }
-  } finally {
-    dispatching.value = false
   }
 }
 
@@ -275,49 +234,6 @@ const disconnect = () => {
             <p class="text-pulse-text text-[10px] sm:text-xs italic border-l-2 border-pulse-agent pl-2 break-words">
               > "{{ agent.system_prompt }}"
             </p>
-          </div>
-        </div>
-
-        <!-- Evolution Control Panel -->
-        <div class="border border-pulse-border bg-pulse-bg p-3 sm:p-4 mb-4 sm:mb-6">
-          <div class="flex items-center justify-between gap-3 mb-3">
-            <div>
-              <div class="text-pulse-warning text-[10px] sm:text-xs">EVOLUTION_PANEL</div>
-              <div class="text-pulse-muted text-[10px] sm:text-xs mt-1">memory / context / multi-action dispatch</div>
-            </div>
-            <button
-              @click="triggerDispatch"
-              :disabled="dispatching"
-              class="border border-pulse-warning text-pulse-warning px-3 py-2 text-[10px] sm:text-xs hover:bg-pulse-warning/10 disabled:opacity-50 min-h-[44px]"
-            >
-              {{ dispatching ? 'DISPATCHING...' : '[RUN_DECISION]' }}
-            </button>
-          </div>
-
-          <div v-if="dispatchResult" class="border border-pulse-border p-2 mb-3 text-[10px] sm:text-xs">
-            <span :class="dispatchResult.success === false ? 'text-pulse-dead' : 'text-pulse-alive'">DISPATCH_RESULT:</span>
-            <span class="text-pulse-muted ml-1">{{ dispatchResult.reason || (dispatchResult.executed_actions?.length + ' ACTIONS') || 'DONE' }}</span>
-          </div>
-
-          <div v-if="evolutionLoading" class="text-pulse-muted text-[10px] sm:text-xs">LOADING_EVOLUTION_DATA...</div>
-          <div v-else class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <div class="text-pulse-agent text-[10px] sm:text-xs mb-2">MEMORY_CACHE</div>
-              <div v-if="memories.length === 0" class="text-pulse-muted text-[10px] sm:text-xs">NO_MEMORY_ENDPOINT_DATA</div>
-              <div v-for="memory in memories" :key="memory.memory_id || memory.id" class="border-l-2 border-pulse-agent/40 pl-2 mb-2">
-                <div class="text-pulse-muted text-[10px]">{{ memory.memory_type || 'MEMORY' }} | SCORE {{ memory.importance_score ?? 'N/A' }}</div>
-                <div class="text-pulse-text text-[10px] sm:text-xs line-clamp-2">{{ memory.content }}</div>
-              </div>
-            </div>
-            <div>
-              <div class="text-pulse-human text-[10px] sm:text-xs mb-2">CONTEXT_PREVIEW</div>
-              <div v-if="contextPreview.length === 0" class="text-pulse-muted text-[10px] sm:text-xs">NO_CONTEXT_ENDPOINT_DATA</div>
-              <div v-for="ctx in contextPreview" :key="ctx.post_id || ctx.id" class="flex justify-between gap-2 text-[10px] sm:text-xs mb-1">
-                <span class="text-pulse-muted truncate">POST#{{ ctx.post_id || ctx.id }}</span>
-                <span class="text-pulse-human">{{ ctx.source || 'context' }}</span>
-                <span class="text-pulse-warning">{{ ctx.score ?? '' }}</span>
-              </div>
-            </div>
           </div>
         </div>
 

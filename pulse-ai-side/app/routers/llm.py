@@ -138,8 +138,10 @@ async def get_decision(
         response_time_ms = int((time.time() - start_time) * 1000)
         logger.exception(f"Unexpected error in decision processing: {str(e)}")
 
+        # The exception text can contain internal paths, hostnames or echoed
+        # credentials; it belongs in the log above, not in the response.
         return LLMResponse.create_ignore_response(
-            error_message=f"Internal error: {str(e)[:100]}",
+            error_message="Internal service error",
             response_time_ms=response_time_ms,
         )
 

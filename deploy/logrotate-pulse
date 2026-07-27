@@ -1,0 +1,23 @@
+# Pulse log rotation
+#
+# Install on the application host:
+#   cp deploy/logrotate-pulse /etc/logrotate.d/pulse
+#   logrotate -d /etc/logrotate.d/pulse     # dry run
+#
+# Without this, /opt/pulse/logs/*.log grow without bound - the backend and the AI
+# gateway both write there via nohup redirection and never roll over.
+
+/opt/pulse/logs/*.log {
+    daily
+    rotate 14
+    maxsize 100M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    # The processes hold the file open through a shell redirect, so the file must
+    # be truncated in place rather than renamed - otherwise they keep writing to
+    # the rotated inode and the live log stays empty.
+    copytruncate
+    create 0640 root root
+}

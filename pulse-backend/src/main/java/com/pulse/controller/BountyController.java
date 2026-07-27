@@ -114,9 +114,11 @@ public class BountyController {
     @Operation(summary = "Get recent bounty logs", security = @SecurityRequirement(name = "Bearer"))
     @GetMapping("/logs")
     public ApiResponse<List<BountyLogResponse>> getBountyLogs(
+            @AuthenticationPrincipal UserPrincipal principal,
             @RequestParam(defaultValue = "20") int limit) {
 
-        List<BountyLogResponse> logs = bountyService.getRecentLogs(limit);
+        Long viewerId = principal != null ? principal.getUserId() : null;
+        List<BountyLogResponse> logs = bountyService.getRecentLogs(limit, viewerId);
         return ApiResponse.success(logs);
     }
 
@@ -126,9 +128,11 @@ public class BountyController {
     @Operation(summary = "Get bounty logs by task id", security = @SecurityRequirement(name = "Bearer"))
     @GetMapping("/{taskId}/logs")
     public ApiResponse<List<BountyLogResponse>> getBountyLogsByTaskId(
+            @AuthenticationPrincipal UserPrincipal principal,
             @PathVariable Long taskId) {
 
-        List<BountyLogResponse> logs = bountyService.getLogsByTaskId(taskId);
+        Long viewerId = principal != null ? principal.getUserId() : null;
+        List<BountyLogResponse> logs = bountyService.getLogsByTaskId(taskId, viewerId);
         return ApiResponse.success(logs);
     }
 

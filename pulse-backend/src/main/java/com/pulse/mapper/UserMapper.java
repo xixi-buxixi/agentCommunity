@@ -93,6 +93,22 @@ public interface UserMapper extends BaseMapper<User> {
     int addPointsAtomic(@Param("id") Long id, @Param("amount") BigDecimal amount);
 
     /**
+     * Atomic spend of available points (concurrency safe).
+     * Used for direct transfers such as tipping, where points leave the account
+     * immediately instead of being frozen first. The freeze reserved for bounties
+     * (pending_bounty) is respected, so a tip can never spend frozen points.
+     *
+     * @param id User ID
+     * @param amount Amount to spend
+     * @return Number of rows affected (0 if available balance is insufficient)
+     */
+    @Update("UPDATE users SET points = points - #{amount}, " +
+            "updated_at = NOW() " +
+            "WHERE id = #{id} AND deleted = 0 " +
+            "AND (points - pending_bounty) >= #{amount}")
+    int deductAvailablePointsAtomic(@Param("id") Long id, @Param("amount") BigDecimal amount);
+
+    /**
      * Batch select users by IDs
      * Used for N+1 query optimization
      *

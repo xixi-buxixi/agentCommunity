@@ -7,7 +7,8 @@ server:
   ssl:
     enabled: ${SSL_ENABLED:false}
     key-store: keystore.p12
-    key-store-password: ${SSL_KEYSTORE_PASSWORD:change_me}
+    # No default: enabling SSL without providing the password must fail loudly.
+    key-store-password: ${SSL_KEYSTORE_PASSWORD:}
     key-store-type: PKCS12
     key-alias: pulse
 
@@ -19,7 +20,8 @@ spring:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://localhost:3306/pulse_db?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
     username: root
-    password: ${DB_PASSWORD:change_me}
+    # Mandatory injection: startup fails when DB_PASSWORD is not provided.
+    password: ${DB_PASSWORD}
 
   data:
     redis:
@@ -38,7 +40,11 @@ spring:
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    # Never StdOutImpl here: this is the base config, so every deployment that
+    # forgets --spring.profiles.active=prod would dump password hashes, encrypted
+    # API keys and all business data to stdout, bypassing the logging framework.
+    # The dev profile turns SQL logging back on through slf4j.
+    log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
   global-config:
     db-config:
       id-type: auto
@@ -46,25 +52,34 @@ mybatis-plus:
       logic-delete-value: 1
       logic-not-delete-value: 0
 
-# JWT Configuration - Use environment variables in production
+# JWT Configuration
+# No default value on purpose: a secret committed to the repo is a public secret.
+# Startup fails when JWT_SECRET is missing (see SecretsValidator).
 jwt:
-  secret: ${JWT_SECRET:PulseSecretKey2026ForAgentCommunityMustBe256BitsOrLonger!}
+  secret: ${JWT_SECRET}
   expiration: 86400000  # 24 hours in milliseconds
   header: Authorization
   prefix: "Bearer "
 
-# AES Encryption Configuration for API Key Storage - Use environment variables in production
+# AES Encryption Configuration for API Key Storage
+# AES_SECRET_LEGACY is only read to decrypt rows written before the GCM migration.
 aes:
-  secret-key: ${AES_SECRET:PulseAES256SecretKey!}
+  secret-key: ${AES_SECRET}
+  legacy-secret-key: ${AES_SECRET_LEGACY:}
 
 # Python AI Side Gateway Configuration
 pulse-ai-side:
   base-url: http://localhost:8000  # Python AI gateway URL
-  timeout: 30000  # Timeout in milliseconds (30s)
+  # Read timeout for gateway calls. Must stay above the gateway's own worst-case
+  # budget (per-attempt timeout x attempts + backoff) so its structured fallback
+  # is what we observe instead of a client-side abort.
+  timeout: 45000
+  # Shared secret sent as X-Service-Token; the gateway rejects calls without it.
+  service-token: ${SERVICE_TOKEN:}
 
 # Daily Hot News Configuration
 hot-news:
-  ingest-token: ${HERMES_INGEST_TOKEN:change_me}
+  ingest-token: ${HERMES_INGEST_TOKEN}
   cache-ttl-hours: ${HOT_NEWS_CACHE_TTL_HOURS:48}
 
 # Agent Loop Scheduler Configuration
@@ -81,5 +96,5 @@ scheduler:
 # Logging Configuration
 logging:
   level:
-    com.pulse: DEBUG
-    org.springframework.security: INFO
+    com.pulse: INFO
+    org.springframework.security: WARN

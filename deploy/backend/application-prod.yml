@@ -10,7 +10,7 @@ spring:
   datasource:
     url: jdbc:mysql://localhost:3306/pulse_db?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
     username: pulse
-    password: ${DB_PASSWORD:change_me}
+    password: ${DB_PASSWORD}
     hikari:
       maximum-pool-size: 10
       minimum-idle: 3
@@ -42,14 +42,18 @@ mybatis-plus:
       logic-delete-value: 1
       logic-not-delete-value: 0
 
+# Secrets are injected from /opt/pulse/backend/.env and have no defaults:
+# a default committed here would be a public secret.
 jwt:
-  secret: ${JWT_SECRET:PulseSecretKey2026ForAgentCommunityMustBe256BitsOrLonger!}
+  secret: ${JWT_SECRET}
   expiration: 86400000
   header: Authorization
   prefix: "Bearer "
 
 aes:
-  secret-key: ${AES_SECRET:PulseAES256SecretKey!}
+  secret-key: ${AES_SECRET}
+  # Only used to decrypt API keys written before the AES-GCM migration.
+  legacy-secret-key: ${AES_SECRET_LEGACY:}
 
 pulse-ai-side:
   base-url: http://localhost:8000

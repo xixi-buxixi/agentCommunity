@@ -11,45 +11,33 @@ import { formatTimeOnly } from '@/utils/format'
 const authStore = useAuthStore()
 const logs = ref([])
 const loading = ref(false)
+const error = ref('')
 
+// This panel shows money. It must never invent rows: fabricated "demo"
+// transactions contradict the real balance and read as genuine history.
 const loadLedger = async () => {
   loading.value = true
+  error.value = ''
   try {
     const { data } = await getLedger()
-    logs.value = data || []
-
-    // DEMO DATA if empty:
-    if (logs.value.length === 0) {
-      logs.value = [
-        {
-          id: 8801,
-          amount: -50.00,
-          type: 'BOUNTY_PAY',
-          relatedEntity: 'Task #102',
-          createdAt: new Date().toISOString()
-        },
-        {
-          id: 8802,
-          amount: 10.00,
-          type: 'TIP_RECV',
-          relatedEntity: 'Agent: Pulse-01',
-          createdAt: new Date(Date.now() - 3600000).toISOString()
-        },
-        {
-          id: 8803,
-          amount: 100.00,
-          type: 'BOUNTY_RECV',
-          relatedEntity: 'Task #095',
-          createdAt: new Date(Date.now() - 86400000).toISOString()
-        }
-      ]
-    }
+    logs.value = Array.isArray(data) ? data : []
   } catch (err) {
-    console.error(err)
+    error.value = err?.message || 'LEDGER_UNAVAILABLE'
+    logs.value = []
   } finally {
     loading.value = false
   }
 }
+
+// The backend sends relatedType/relatedId plus a human-readable description
+const entityLabel = (log) => {
+  if (log.description) return log.description
+  if (log.relatedType && log.relatedId) return `${log.relatedType} #${log.relatedId}`
+  return ''
+}
+
+const typeLabel = (log) => log.typeText || log.type || 'UNKNOWN'
+const typeMatches = (log, keyword) => (log.type || '').includes(keyword)
 
 onMounted(() => {
   loadLedger()
@@ -74,8 +62,12 @@ onMounted(() => {
       <div v-if="loading" class="text-center py-2">
         <span class="text-pulse-accent animate-pulse">> FETCHING_LEDGER...</span>
       </div>
+      <div v-else-if="error" class="text-center py-2 text-pulse-warning">
+        > LEDGER_ERROR: {{ error }}
+        <button class="ml-2 underline hover:text-pulse-accent" @click="loadLedger">RETRY</button>
+      </div>
       <div v-else-if="logs.length === 0" class="text-center py-2 text-pulse-muted">
-        > NO_TRANSACTIONS
+        > NO_LEDGER_ACTIVITY
       </div>
       <div
         v-for="log in logs"
@@ -87,13 +79,13 @@ onMounted(() => {
           <span
             class="w-16 sm:w-24 shrink-0 truncate text-[10px] sm:text-xs"
             :class="{
-              'text-pulse-human': log.type.includes('TIP'),
-              'text-pulse-warning': log.type.includes('BOUNTY')
+              'text-pulse-human': typeMatches(log, 'TIP'),
+              'text-pulse-warning': typeMatches(log, 'BOUNTY')
             }"
           >
-            {{ log.type }}
+            {{ typeLabel(log) }}
           </span>
-          <span class="text-pulse-text truncate hidden sm:inline max-w-[100px]">{{ log.relatedEntity }}</span>
+          <span class="text-pulse-text truncate hidden sm:inline max-w-[100px]">{{ entityLabel(log) }}</span>
         </div>
         <div
           class="font-bold text-right w-16 sm:w-20 shrink-0 animate-pixel-jump text-[10px] sm:text-xs"

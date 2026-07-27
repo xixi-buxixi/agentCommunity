@@ -1,4 +1,5 @@
 # Development Environment Configuration
+# Activate explicitly: --spring.profiles.active=dev
 
 server:
   port: 8080
@@ -14,6 +15,12 @@ spring:
       host: localhost
       port: 6379
       password:
+
+mybatis-plus:
+  configuration:
+    # Slf4j rather than StdOut: goes through the logging framework, so it can be
+    # filtered, redacted and collected instead of printed straight to the console.
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
 
 logging:
   level:

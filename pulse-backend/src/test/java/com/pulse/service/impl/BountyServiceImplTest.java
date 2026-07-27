@@ -14,37 +14,44 @@ import com.pulse.mapper.BountyTaskMapper;
 import com.pulse.mapper.UserMapper;
 import com.pulse.service.PointsService;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InjectMocks;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+@ExtendWith(MockitoExtension.class)
 class BountyServiceImplTest {
 
-    private final BountyTaskMapper bountyTaskMapper = mock(BountyTaskMapper.class);
-    private final BountyAcceptanceMapper bountyAcceptanceMapper = mock(BountyAcceptanceMapper.class);
-    private final BountySubmissionMapper bountySubmissionMapper = mock(BountySubmissionMapper.class);
-    private final BountyLogMapper bountyLogMapper = mock(BountyLogMapper.class);
-    private final AgentMapper agentMapper = mock(AgentMapper.class);
-    private final UserMapper userMapper = mock(UserMapper.class);
-    private final PointsService pointsService = mock(PointsService.class);
+    @Mock
+    private BountyTaskMapper bountyTaskMapper;
+    @Mock
+    private BountyAcceptanceMapper bountyAcceptanceMapper;
+    @Mock
+    private BountySubmissionMapper bountySubmissionMapper;
+    @Mock
+    private BountyLogMapper bountyLogMapper;
+    @Mock
+    private AgentMapper agentMapper;
+    @Mock
+    private UserMapper userMapper;
+    @Mock
+    private PointsService pointsService;
 
-    private final BountyServiceImpl service = new BountyServiceImpl(
-            bountyTaskMapper,
-            bountyAcceptanceMapper,
-            bountySubmissionMapper,
-            bountyLogMapper,
-            agentMapper,
-            userMapper,
-            pointsService
-    );
+    @InjectMocks
+    private BountyServiceImpl service;
 
     @Test
     void cancelPendingBountyReleasesFrozenPointsAndWritesLog() {
@@ -54,12 +61,15 @@ class BountyServiceImplTest {
         owner.setUsername("alice");
 
         when(bountyTaskMapper.selectById(99L)).thenReturn(task);
+        when(bountyTaskMapper.updateStatusIfIn(eq(99L), eq(BountyStatus.CANCELLED.getCode()), anyList()))
+                .thenReturn(1);
         when(userMapper.selectById(10L)).thenReturn(owner);
 
         BountyDetailResponse response = service.cancelBounty(10L, 99L, "not needed");
 
         assertThat(response.getStatus()).isEqualTo(BountyStatus.CANCELLED.getCode());
-        verify(bountyTaskMapper).updateById(task);
+        verify(bountyTaskMapper).updateStatusIfIn(99L, BountyStatus.CANCELLED.getCode(),
+                List.of(BountyStatus.PENDING.getCode(), BountyStatus.ACCEPTED.getCode()));
         verify(pointsService).refundPoints(10L, new BigDecimal("30.00"), 99L, "取消悬赏释放冻结积分: not needed");
         verify(bountyLogMapper).insert(any());
     }
@@ -72,6 +82,24 @@ class BountyServiceImplTest {
                 .isInstanceOf(BusinessException.class)
                 .extracting("code")
                 .isEqualTo(ErrorCode.BOUNTY_STATUS_INVALID.getCode());
+    }
+
+    /**
+     * The compare-and-set losing means somebody else already cancelled/expired the
+     * task. Releasing the frozen reward again would create points out of nothing.
+     */
+    @Test
+    void cancelDoesNotRefundWhenCompareAndSetLoses() {
+        when(bountyTaskMapper.selectById(99L)).thenReturn(bountyTask(BountyStatus.PENDING));
+        when(bountyTaskMapper.updateStatusIfIn(eq(99L), eq(BountyStatus.CANCELLED.getCode()), anyList()))
+                .thenReturn(0);
+
+        assertThatThrownBy(() -> service.cancelBounty(10L, 99L, "double cancel"))
+                .isInstanceOf(BusinessException.class)
+                .extracting("code")
+                .isEqualTo(ErrorCode.BOUNTY_STATUS_INVALID.getCode());
+
+        verify(pointsService, never()).refundPoints(any(), any(), any(), any());
     }
 
     private BountyTask bountyTask(BountyStatus status) {

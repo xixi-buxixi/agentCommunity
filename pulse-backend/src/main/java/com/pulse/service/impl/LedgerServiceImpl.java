@@ -82,18 +82,30 @@ public class LedgerServiceImpl implements LedgerService {
             throw new BusinessException(ErrorCode.USER_NOT_FOUND);
         }
 
-        // Check available points
-        BigDecimal availablePoints = getAvailablePoints(userId);
-        if (availablePoints.compareTo(request.getAmount()) < 0) {
+        // Tipping your own agent would only inflate ledger volume
+        if (agent.getOwnerId().equals(userId)) {
+            throw new BusinessException(ErrorCode.SELF_TIP_FORBIDDEN);
+        }
+
+        if (request.getAmount() == null || request.getAmount().signum() <= 0) {
+            throw new BusinessException(ErrorCode.INVALID_PARAMETER);
+        }
+
+        // Lazily initialize the points column for accounts created before it existed
+        getAvailablePoints(userId);
+
+        // Deduct from tipper with a single conditional UPDATE. A read-modify-write
+        // here would both lose concurrent updates and overwrite pending_bounty with
+        // a stale value, breaking the bounty freeze.
+        int deducted = userMapper.deductAvailablePointsAtomic(userId, request.getAmount());
+        if (deducted == 0) {
             throw new BusinessException(ErrorCode.INSUFFICIENT_VITALITY);
         }
 
-        // Deduct from tipper
-        BigDecimal tipperBalanceBefore = tipper.getPoints() != null ? tipper.getPoints() : BigDecimal.ZERO;
-        BigDecimal tipperNewBalance = tipperBalanceBefore.subtract(request.getAmount());
-
-        tipper.setPoints(tipperNewBalance);
-        userMapper.updateById(tipper);
+        // Read the real post-update balance so the ledger trail is continuous
+        // instead of derived from a pre-update snapshot.
+        BigDecimal tipperNewBalance = currentPoints(userId);
+        BigDecimal tipperBalanceBefore = tipperNewBalance.add(request.getAmount());
 
         // Create tipper ledger entry
         SysLedger tipperLedger = new SysLedger();
@@ -109,12 +121,14 @@ public class LedgerServiceImpl implements LedgerService {
         tipperLedger.setCreatedAt(LocalDateTime.now());
         sysLedgerMapper.insert(tipperLedger);
 
-        // Add to agent owner
-        BigDecimal ownerBalanceBefore = agentOwner.getPoints() != null ? agentOwner.getPoints() : BigDecimal.ZERO;
-        BigDecimal ownerNewBalance = ownerBalanceBefore.add(request.getAmount());
+        // Add to agent owner (atomic, same reasoning as the deduction above)
+        int credited = userMapper.addPointsAtomic(agent.getOwnerId(), request.getAmount());
+        if (credited == 0) {
+            throw new BusinessException(ErrorCode.USER_NOT_FOUND);
+        }
 
-        agentOwner.setPoints(ownerNewBalance);
-        userMapper.updateById(agentOwner);
+        BigDecimal ownerNewBalance = currentPoints(agent.getOwnerId());
+        BigDecimal ownerBalanceBefore = ownerNewBalance.subtract(request.getAmount());
 
         // Create owner ledger entry
         SysLedger ownerLedger = new SysLedger();
@@ -134,6 +148,17 @@ public class LedgerServiceImpl implements LedgerService {
 
         // Return tipper's remaining available points
         return getAvailablePoints(userId);
+    }
+
+    /**
+     * Re-read the persisted total points of a user, for ledger balance snapshots.
+     */
+    private BigDecimal currentPoints(Long userId) {
+        User user = userMapper.selectById(userId);
+        if (user == null || user.getPoints() == null) {
+            return BigDecimal.ZERO;
+        }
+        return user.getPoints();
     }
 
     /**

@@ -14,8 +14,23 @@ const inlinePatterns = (value) => {
   return result
 }
 
+const URL_PATTERN = /(https?:\/\/[^\s<>"'&]+)/g
+const RENDERED_SEGMENT = /(<a\b[^>]*>[\s\S]*?<\/a>|<code>[\s\S]*?<\/code>)/
+
+// Links produced earlier by inlinePatterns must not be linked a second time.
+// A lookbehind such as (?<![">]) is the short way to express that, but Safari
+// below 16.4 throws SyntaxError on lookbehind - and because this module is
+// imported at module scope, that error takes the whole markdown module down.
+// Splitting on already-rendered segments achieves the same without lookbehind.
 const autoLinkUrls = (value) =>
-  value.replace(/(?<![">])(https?:\/\/[^\s<>"'&]+)/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>')
+  value
+    .split(RENDERED_SEGMENT)
+    .map((segment, index) =>
+      index % 2 === 1
+        ? segment
+        : segment.replace(URL_PATTERN, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>')
+    )
+    .join('')
 
 const renderInline = (value) => {
   let result = escapeHtml(value)

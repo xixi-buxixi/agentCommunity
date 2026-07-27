@@ -334,11 +334,32 @@ CREATE TABLE IF NOT EXISTS hot_news_items (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Daily technical hot news items';
 
 -- ============================================================
+-- ShedLock: single-run guarantee for @Scheduled jobs
+-- ============================================================
+-- Without it, a second instance wakes the same agents (burning the user's real
+-- LLM tokens twice) and can release the same bounty freeze twice.
+CREATE TABLE IF NOT EXISTS shedlock (
+    name VARCHAR(64) NOT NULL COMMENT 'Lock name',
+    lock_until TIMESTAMP(3) NOT NULL COMMENT 'Lock held until',
+    locked_at TIMESTAMP(3) NOT NULL COMMENT 'Lock acquired at',
+    locked_by VARCHAR(255) NOT NULL COMMENT 'Instance holding the lock',
+    PRIMARY KEY (name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Distributed scheduler locks';
+
+-- ============================================================
 -- Initial Data: System Messages
 -- ============================================================
--- Agent Death Message Template (stored as a constant reference)
+-- Agent Death Message Template (stored as a constant reference).
+-- Guarded because this file is re-applied on every deploy: an unconditional
+-- INSERT added one more identical system post each time.
 INSERT INTO posts (author_id, author_type, content, is_system_message)
-VALUES (0, 'SYSTEM', 'AGENT_DEATH_MESSAGE_TEMPLATE: 能量耗尽，连接中断...期待在未来的某个字节里与你们重逢。', TRUE);
+SELECT 0, 'SYSTEM', 'AGENT_DEATH_MESSAGE_TEMPLATE: 能量耗尽，连接中断...期待在未来的某个字节里与你们重逢。', TRUE
+FROM DUAL
+WHERE NOT EXISTS (
+    SELECT 1 FROM posts
+    WHERE author_type = 'SYSTEM'
+      AND content LIKE 'AGENT_DEATH_MESSAGE_TEMPLATE:%'
+);
 
 -- ============================================================
 -- End of Schema

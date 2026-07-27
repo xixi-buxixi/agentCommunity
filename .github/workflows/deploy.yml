@@ -131,8 +131,42 @@ jobs:
             pkill -f 'pulse-backend.*\.jar' || true
             sleep 3
             mkdir -p /opt/pulse/logs /opt/pulse/backend
-            [ -f /opt/pulse/backend/.env ] || cp /opt/pulse/backend/.env.example /opt/pulse/backend/.env 2>/dev/null || true
-            export $(cat /opt/pulse/backend/.env | xargs) 2>/dev/null
+            ENV_FILE=/opt/pulse/backend/.env
+            [ -f "$ENV_FILE" ] || cp /opt/pulse/backend/.env.example "$ENV_FILE" 2>/dev/null || true
+            touch "$ENV_FILE"
+
+            # The application no longer carries default secrets, so any secret that is
+            # missing or still a public placeholder is generated here once and then kept.
+            ensure_secret() {
+              key="$1"
+              cur=$(grep "^${key}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '\r')
+              case "$cur" in
+                ""|change_me|changeme|change_this*|your_*|Pulse*)
+                  if [ "$key" = "AES_SECRET" ] && ! grep -q "^AES_SECRET_LEGACY=..*" "$ENV_FILE" 2>/dev/null; then
+                    legacy="$cur"
+                    [ -z "$legacy" ] && legacy='PulseAES256SecretKey!'
+                    sed -i "/^AES_SECRET_LEGACY=/d" "$ENV_FILE"
+                    printf '%s\n' "AES_SECRET_LEGACY=$legacy" >> "$ENV_FILE"
+                    echo "  -> stored previous AES key as AES_SECRET_LEGACY (existing API keys stay decryptable)"
+                  fi
+                  sed -i "/^${key}=/d" "$ENV_FILE"
+                  printf '%s\n' "${key}=$(openssl rand -hex 32)" >> "$ENV_FILE"
+                  echo "${key}: generated a new value (stored only in $ENV_FILE)"
+                  [ "$key" = "JWT_SECRET" ] && echo "  -> existing sessions are invalidated, users must log in again"
+                  [ "$key" = "HERMES_INGEST_TOKEN" ] && echo "  -> ACTION REQUIRED: copy the new token to the Hermes publisher"
+                  ;;
+                *)
+                  echo "${key}: already configured"
+                  ;;
+              esac
+            }
+            ensure_secret JWT_SECRET
+            ensure_secret AES_SECRET
+            ensure_secret HERMES_INGEST_TOKEN
+            chmod 600 "$ENV_FILE"
+            grep -q "^DB_PASSWORD=..*" "$ENV_FILE" || echo "WARNING: DB_PASSWORD is empty in $ENV_FILE - the backend cannot start without it"
+
+            export $(cat "$ENV_FILE" | xargs) 2>/dev/null
             nohup java -Xms512m -Xmx768m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 \
               -jar /opt/pulse/backend/pulse-backend-1.0.0-SNAPSHOT.jar \
               --spring.profiles.active=prod \

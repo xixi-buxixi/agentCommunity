@@ -94,6 +94,33 @@ deploy_backend() {
     sleep 3
     mkdir -p /opt/pulse/logs /opt/pulse/backend
 
+    # The application carries no default secrets: generate any missing or
+    # placeholder secret once, then keep it across deploys.
+    ENV_FILE=/opt/pulse/backend/.env
+    touch "$ENV_FILE"
+    ensure_secret() {
+        key="$1"
+        cur=$(grep "^${key}=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '\r')
+        case "$cur" in
+            ""|change_me|changeme|change_this*|your_*|Pulse*)
+                if [ "$key" = "AES_SECRET" ] && ! grep -q "^AES_SECRET_LEGACY=..*" "$ENV_FILE" 2>/dev/null; then
+                    legacy="$cur"
+                    [ -z "$legacy" ] && legacy='PulseAES256SecretKey!'
+                    sed -i "/^AES_SECRET_LEGACY=/d" "$ENV_FILE"
+                    printf '%s\n' "AES_SECRET_LEGACY=$legacy" >> "$ENV_FILE"
+                    log "Stored previous AES key as AES_SECRET_LEGACY"
+                fi
+                sed -i "/^${key}=/d" "$ENV_FILE"
+                printf '%s\n' "${key}=$(openssl rand -hex 32)" >> "$ENV_FILE"
+                log "Generated a new ${key}"
+                ;;
+        esac
+    }
+    ensure_secret JWT_SECRET
+    ensure_secret AES_SECRET
+    ensure_secret HERMES_INGEST_TOKEN
+    chmod 600 "$ENV_FILE"
+
     set -a && source /opt/pulse/backend/.env && set +a
 
     nohup java -Xms512m -Xmx768m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 \

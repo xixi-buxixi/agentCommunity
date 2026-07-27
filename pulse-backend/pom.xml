@@ -22,6 +22,7 @@
         <mybatis-plus.version>3.5.5</mybatis-plus.version>
         <jwt.version>0.12.5</jwt.version>
         <hutool.version>5.8.26</hutool.version>
+        <shedlock.version>5.10.2</shedlock.version>
     </properties>
 
     <dependencies>
@@ -88,6 +89,24 @@
             <groupId>cn.hutool</groupId>
             <artifactId>hutool-crypto</artifactId>
             <version>${hutool.version}</version>
+        </dependency>
+
+        <!-- ShedLock: keeps @Scheduled jobs single-run across instances -->
+        <dependency>
+            <groupId>net.javacrumbs.shedlock</groupId>
+            <artifactId>shedlock-spring</artifactId>
+            <version>${shedlock.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>net.javacrumbs.shedlock</groupId>
+            <artifactId>shedlock-provider-jdbc-template</artifactId>
+            <version>${shedlock.version}</version>
+        </dependency>
+
+        <!-- Actuator: health endpoint for deploy verification -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
         <!-- Lombok -->

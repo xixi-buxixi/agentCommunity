@@ -31,6 +31,17 @@ const clearAuthAndRedirect = () => {
   }
 }
 
+const redirectGuestToLogin = () => {
+  localStorage.setItem('pulse_login_required', 'true')
+  localStorage.removeItem('pulse_guest')
+  window.location.href = '/pulse/terminal'
+  return new Error('GUEST_REQUIRES_LOGIN')
+}
+
+// Login/register answer 401 when credentials are wrong. That is an inline form
+// error, not an expired session, so it must not clear auth or redirect.
+const isCredentialCheck = (url = '') => /\/auth\/(login|register)$/.test(url)
+
 // Request interceptor - add auth token
 request.interceptors.request.use(
   (config) => {
@@ -58,28 +69,35 @@ request.interceptors.response.use(
     return Promise.reject(new Error(message))
   },
   (error) => {
-    if (error.response?.status === 401) {
+    const status = error.response?.status
+    const body = error.response?.data
+    // The backend answers every failure with the ApiResponse envelope
+    // ({ code, message }), including 401/403 raised by Spring Security.
+    const message = body?.message || 'CONNECTION_ERROR'
+    const businessCode = typeof body?.code === 'number' ? body.code : null
+
+    if (status === 401 && !isCredentialCheck(error.config?.url)) {
       const authStore = getAuthStore()
       if (authStore && authStore.isGuest) {
-        localStorage.setItem('pulse_login_required', 'true')
-        localStorage.removeItem('pulse_guest')
-        window.location.href = '/pulse/terminal'
-        return Promise.reject(new Error('GUEST_REQUIRES_LOGIN'))
+        return Promise.reject(redirectGuestToLogin())
       }
       clearAuthAndRedirect()
     }
-    if (error.response?.status === 403) {
+    if (status === 403) {
       const authStore = getAuthStore()
       if (authStore && authStore.isGuest) {
-        localStorage.setItem('pulse_login_required', 'true')
-        localStorage.removeItem('pulse_guest')
-        window.location.href = '/pulse/terminal'
-        return Promise.reject(new Error('GUEST_REQUIRES_LOGIN'))
+        return Promise.reject(redirectGuestToLogin())
       }
     }
-    const message = error.response?.data?.message || 'CONNECTION_ERROR'
+
     console.error(`> ERROR: ${message}`)
-    return Promise.reject(error)
+    // Reject with a normalized Error so callers can display error.message
+    // instead of axios' "Request failed with status code 4xx".
+    const normalized = new Error(message)
+    normalized.status = status
+    normalized.code = businessCode
+    normalized.cause = error
+    return Promise.reject(normalized)
   }
 )
 

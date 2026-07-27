@@ -4,13 +4,12 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.pulse.entity.BountyTask;
 import com.pulse.enums.BountyStatus;
 import com.pulse.mapper.BountyTaskMapper;
-import com.pulse.mapper.UserMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -21,6 +20,9 @@ import java.util.List;
  * Periodically scans for expired bounty tasks and handles cleanup:
  * 1. Update status to EXPIRED
  * 2. Unfreeze publisher's frozen points
+ *
+ * The per-task work lives in {@link BountyExpiryExecutor} so that its
+ * {@code @Transactional} boundary is actually applied.
  */
 @Slf4j
 @Component
@@ -28,15 +30,19 @@ import java.util.List;
 public class BountyExpiryScheduler {
 
     private final BountyTaskMapper bountyTaskMapper;
-    private final UserMapper userMapper;
+    private final BountyExpiryExecutor bountyExpiryExecutor;
 
     @Value("${scheduler.bounty-expiry.enabled:true}")
     private boolean schedulerEnabled;
 
     /**
-     * Execute expiry check every hour
+     * Execute expiry check every hour.
+     *
+     * fixedDelay (not fixedRate) so a slow run cannot overlap the next one, and
+     * ShedLock so two instances cannot release the same freeze twice.
      */
-    @Scheduled(fixedRate = 3600000) // 1 hour
+    @Scheduled(fixedDelay = 3600000) // 1 hour after the previous run finished
+    @SchedulerLock(name = "bountyExpiryCheck", lockAtMostFor = "PT30M", lockAtLeastFor = "PT1M")
     public void checkExpiredBounties() {
         if (!schedulerEnabled) {
             log.debug("Bounty expiry scheduler is disabled");
@@ -47,54 +53,27 @@ public class BountyExpiryScheduler {
 
         // Find expired active bounties
         LambdaQueryWrapper<BountyTask> wrapper = new LambdaQueryWrapper<>();
-        wrapper.and(w -> w
-                .eq(BountyTask::getStatus, BountyStatus.PENDING.getCode())
-                .or()
-                .eq(BountyTask::getStatus, BountyStatus.ACCEPTED.getCode())
-                .or()
-                .eq(BountyTask::getStatus, BountyStatus.REVIEWING.getCode())
-        );
+        wrapper.in(BountyTask::getStatus, List.of(
+                BountyStatus.PENDING.getCode(),
+                BountyStatus.ACCEPTED.getCode(),
+                BountyStatus.REVIEWING.getCode()));
         wrapper.lt(BountyTask::getDeadline, LocalDateTime.now());
 
         List<BountyTask> expiredBounties = bountyTaskMapper.selectList(wrapper);
 
         log.info("Found {} expired bounty tasks", expiredBounties.size());
 
+        int released = 0;
         for (BountyTask task : expiredBounties) {
             try {
-                handleExpiredBounty(task);
+                if (bountyExpiryExecutor.expire(task)) {
+                    released++;
+                }
             } catch (Exception e) {
-                log.error("Failed to handle expired bounty: taskId={}, error={}",
-                    task.getId(), e.getMessage());
+                log.error("Failed to handle expired bounty: taskId={}", task.getId(), e);
             }
         }
 
-        log.info("=== Bounty Expiry Check Completed ===");
-    }
-
-    /**
-     * Handle single expired bounty task
-     */
-    @Transactional
-    public void handleExpiredBounty(BountyTask task) {
-        log.info("Handling expired bounty: taskId={}, title={}, reward={}",
-            task.getId(), task.getTitle(), task.getRewardPoints());
-
-        // Update status to EXPIRED
-        task.setStatus(BountyStatus.EXPIRED.getCode());
-        bountyTaskMapper.updateById(task);
-
-        // Release publisher's frozen points. The reward was never deducted from
-        // total points, so expiry only decreases pending_bounty.
-        int released = userMapper.refundPointsAtomic(task.getOwnerId(), task.getRewardPoints());
-        if (released == 0) {
-            log.warn("Failed to release expired bounty points: userId={}, taskId={}, amount={}",
-                task.getOwnerId(), task.getId(), task.getRewardPoints());
-        } else {
-            log.info("Released expired bounty points: userId={}, taskId={}, amount={}",
-                task.getOwnerId(), task.getId(), task.getRewardPoints());
-        }
-
-        log.info("Bounty expired: taskId={}", task.getId());
+        log.info("=== Bounty Expiry Check Completed: {}/{} released ===", released, expiredBounties.size());
     }
 }
