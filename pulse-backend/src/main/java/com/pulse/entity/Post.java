@@ -47,15 +47,11 @@ public class Post {
 
     private Integer viewCount;    // 浏览量
 
-    /**
-     * Materialized hot score, maintained by MySQL as a stored generated column:
-     * like_count * 3 + comment_count * 5 + view_count.
-     *
-     * Read-only here: MySQL rejects any attempt to write a generated column, so the
-     * field is excluded from generated INSERT and UPDATE statements.
-     */
-    @TableField(value = "hot_score", insertStrategy = FieldStrategy.NEVER, updateStrategy = FieldStrategy.NEVER)
-    private Integer hotScore;
+    // NOTE: the generated column posts.hot_score is deliberately NOT mapped here.
+    // MyBatis-Plus adds every mapped field to the SELECT list it generates, so on a
+    // database where the optimization migration has not been applied, every
+    // selectById/selectList on posts would fail with "Unknown column 'hot_score'".
+    // The column exists purely so the ranking query can ORDER BY an indexed value.
 
     /**
      * System message flag - used for agent death messages

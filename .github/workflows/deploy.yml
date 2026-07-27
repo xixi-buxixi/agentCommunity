@@ -327,20 +327,45 @@ jobs:
             JAR=/opt/pulse/backend/pulse-backend-1.0.0-SNAPSHOT.jar
             PREVIOUS=/opt/pulse/backend/pulse-backend-previous.jar
 
+            # "Is the application serving?" - deliberately NOT "is every dependency
+            # healthy?". /actuator/health aggregates DB and Redis, so a Redis blip
+            # would report DOWN (503) for a perfectly functional API, and the deploy
+            # would then kill a working process. Liveness answers the question that
+            # actually matters here; any HTTP status from the port also proves the
+            # container is up.
             start_backend() {
               nohup java -Xms512m -Xmx768m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 \
                 -jar "$1" \
                 --spring.profiles.active=prod \
                 > /opt/pulse/logs/backend.log 2>&1 &
-              # Spring Boot on a 2C4G box needs well over the old zero-wait assumption
               for i in $(seq 1 36); do
-                if curl -fsS --max-time 3 http://127.0.0.1:8080/actuator/health > /dev/null 2>&1; then
-                  echo "  healthy after $((i * 5))s"
+                code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
+                  http://127.0.0.1:8080/actuator/health/liveness 2>/dev/null || echo 000)
+                if [ "$code" = "200" ]; then
+                  echo "  live after $((i * 5))s"
+                  detail=$(curl -s --max-time 3 http://127.0.0.1:8080/actuator/health 2>/dev/null | head -c 200)
+                  echo "  aggregate health: ${detail:-<unavailable>}"
                   return 0
                 fi
+                # Any HTTP answer at all means the servlet container is serving
+                case "$code" in
+                  [2-5][0-9][0-9])
+                    echo "  serving (HTTP $code from liveness) after $((i * 5))s"
+                    return 0
+                    ;;
+                esac
                 sleep 5
               done
               return 1
+            }
+
+            # Surface the reason as a GitHub annotation: workflow logs need
+            # authentication to read, annotations do not, and a failed production
+            # deploy has to be diagnosable from the run alone.
+            annotate_failure() {
+              reason=$(grep -aE "APPLICATION FAILED TO START|Caused by|^Error|Exception|Could not resolve placeholder|Description:|Action:" \
+                       /opt/pulse/logs/backend.log 2>/dev/null | tail -12 | tr '\n' '~' | sed 's/~/%0A/g')
+              [ -n "$reason" ] && echo "::error title=Backend startup failed::${reason}"
             }
 
             echo "Starting new build..."
@@ -352,9 +377,10 @@ jobs:
             fi
 
             echo "=============================================================="
-            echo "New build did not become healthy within 180s. Last log lines:"
+            echo "New build never started serving within 180s. Last log lines:"
             tail -60 /opt/pulse/logs/backend.log
             echo "=============================================================="
+            annotate_failure
 
             pkill -f 'pulse-backend.*\.jar' || true
             sleep 3
@@ -445,5 +471,8 @@ jobs:
             else
               echo "AI Side failed its health check - last log lines:"
               tail -30 /opt/pulse/logs/ai-side.log
+              reason=$(grep -aE "Error|error|Traceback|ValidationError|SERVICE_TOKEN|Address already in use" \
+                       /opt/pulse/logs/ai-side.log 2>/dev/null | tail -10 | tr '\n' '~' | sed 's/~/%0A/g')
+              [ -n "$reason" ] && echo "::error title=AI gateway startup failed::${reason}"
               exit 1
             fi

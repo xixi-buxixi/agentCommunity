@@ -74,13 +74,10 @@ public class Agent {
     @Version
     private Integer version;
 
-    /**
-     * Generated column: the agent name while it is active, NULL once soft-deleted.
-     * Backs the uk_owner_active_name unique key; MySQL rejects writes to it, so it is
-     * excluded from generated INSERT/UPDATE statements.
-     */
-    @TableField(value = "active_name", insertStrategy = FieldStrategy.NEVER, updateStrategy = FieldStrategy.NEVER)
-    private String activeName;
+    // NOTE: the generated column agents.active_name is deliberately NOT mapped, for
+    // the same reason as posts.hot_score: a mapped field would be added to every
+    // generated SELECT and break on databases without the migration. It exists only
+    // to back the uk_owner_active_name unique key.
 
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createdAt;
