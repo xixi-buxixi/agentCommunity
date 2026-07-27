@@ -174,8 +174,12 @@ jobs:
             export $(cat /opt/pulse/backend/.env | xargs) 2>/dev/null
 
             # --force so that statements needing privileges this user may not have
-            # (CREATE DATABASE) do not abort the rest of the file...
-            mysql -u pulse -p"${DB_PASSWORD}" --force pulse_db < /opt/pulse/backend/schema.sql
+            # (CREATE DATABASE) do not abort the rest of the file. Its exit code is
+            # deliberately ignored here - the explicit verification below is what
+            # gates the deploy, and that way this step behaves the same whether or
+            # not the remote shell runs with -e.
+            mysql -u pulse -p"${DB_PASSWORD}" --force pulse_db < /opt/pulse/backend/schema.sql \
+              || echo "mysql reported errors above; the verification below decides"
 
             # ...but the objects the application now depends on are then verified
             # explicitly. Previously this step was continue-on-error AND swallowed
@@ -295,12 +299,23 @@ jobs:
           timeout: 120s
           command_timeout: 8m
           script: |
-            set -e
-            cd /opt/pulse/ai-side
-            . venv/bin/activate
+            cd /opt/pulse/ai-side || exit 1
+
+            # Use the venv's interpreter directly instead of `. venv/bin/activate`:
+            # activate is a bash-ism-heavy script and its failure is easy to miss,
+            # which is how a broken environment previously slipped through.
+            if [ ! -x venv/bin/python ]; then
+              echo "venv missing, creating it"
+              python3 -m venv venv || { echo "cannot create venv"; exit 1; }
+            fi
+
             # No "|| true": a failed dependency install used to be swallowed and the
             # service then restarted against a stale or incomplete environment.
-            pip install -r requirements.txt -q
+            venv/bin/python -m pip install -q --upgrade pip || exit 1
+            venv/bin/python -m pip install -q -r requirements.txt || {
+              echo "dependency install failed; leaving the running service untouched"
+              exit 1
+            }
 
             # The gateway now fails closed on a missing SERVICE_TOKEN. It must match
             # the backend's value, which lives in the backend .env on this same host.
@@ -324,7 +339,7 @@ jobs:
             mkdir -p /opt/pulse/logs
             # Bind to loopback: the gateway receives decrypted API keys and has no
             # public route in front of it. Change only together with a firewall rule.
-            nohup uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 \
+            nohup venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1 \
               --log-level info > /opt/pulse/logs/ai-side.log 2>&1 &
             sleep 4
             # Startup now fails on invalid configuration, so verify instead of assuming

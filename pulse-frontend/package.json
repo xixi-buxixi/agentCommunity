@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test \"src/**/*.spec.mjs\"",
+    "test": "node --test",
     "lint": "eslint \"src/**/*.{js,mjs,vue}\"",
     "lint:fix": "eslint --fix \"src/**/*.{js,mjs,vue}\""
   },

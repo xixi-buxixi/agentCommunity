@@ -336,109 +336,124 @@ CREATE TABLE IF NOT EXISTS hot_news_items (
 -- ============================================================
 -- Idempotent migrations (M4)
 -- ============================================================
--- This file is re-applied on every deploy and `mysql < file` aborts on the first
--- error, so plain ALTER TABLE statements cannot be used here: the second deploy
--- would fail on "Duplicate key name" and silently skip everything after it. These
--- helpers check information_schema first, which makes re-running the file a no-op.
-
-DROP PROCEDURE IF EXISTS pulse_add_index;
-DROP PROCEDURE IF EXISTS pulse_add_column;
-DROP PROCEDURE IF EXISTS pulse_add_agent_name_unique;
-
-DELIMITER $$
-
-CREATE PROCEDURE pulse_add_index(IN p_table VARCHAR(64), IN p_index VARCHAR(64), IN p_cols VARCHAR(255))
-BEGIN
-    IF EXISTS (SELECT 1 FROM information_schema.TABLES
-               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = p_table)
-       AND NOT EXISTS (SELECT 1 FROM information_schema.STATISTICS
-                       WHERE TABLE_SCHEMA = DATABASE()
-                         AND TABLE_NAME = p_table
-                         AND INDEX_NAME = p_index) THEN
-        SET @ddl = CONCAT('ALTER TABLE `', p_table, '` ADD INDEX `', p_index, '` (', p_cols, ')');
-        PREPARE stmt FROM @ddl;
-        EXECUTE stmt;
-        DEALLOCATE PREPARE stmt;
-    END IF;
-END$$
-
-CREATE PROCEDURE pulse_add_column(IN p_table VARCHAR(64), IN p_column VARCHAR(64), IN p_definition VARCHAR(500))
-BEGIN
-    IF EXISTS (SELECT 1 FROM information_schema.TABLES
-               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = p_table)
-       AND NOT EXISTS (SELECT 1 FROM information_schema.COLUMNS
-                       WHERE TABLE_SCHEMA = DATABASE()
-                         AND TABLE_NAME = p_table
-                         AND COLUMN_NAME = p_column) THEN
-        SET @ddl = CONCAT('ALTER TABLE `', p_table, '` ADD COLUMN `', p_column, '` ', p_definition);
-        PREPARE stmt FROM @ddl;
-        EXECUTE stmt;
-        DEALLOCATE PREPARE stmt;
-    END IF;
-END$$
-
--- Agent names must be unique per owner: agentNameExists() only checks in
--- application code, so two concurrent creates could both succeed.
+-- This file is re-applied on every deploy, so every statement below has to be safe
+-- to run twice. Plain ALTER TABLE is not: the second deploy fails with
+-- "Duplicate key name" / "Duplicate column name".
 --
--- The key is built on a generated column that is NULL for soft-deleted rows.
--- A key over (owner_id, name, deleted) would break the ordinary lifecycle:
--- create "A", delete it, create "A" again, delete again -> the second delete
--- collides with the first deleted row. NULLs are never equal in a MySQL unique
--- index, so deleted rows simply drop out of the constraint.
+-- The pattern below builds the DDL as a string only when the object is missing and
+-- executes a harmless SELECT otherwise. It deliberately avoids stored procedures:
+-- CREATE PROCEDURE requires the CREATE ROUTINE privilege, which the application's
+-- database user typically does not have - the first attempt at this migration
+-- failed in CI for exactly that reason.
 --
--- Added only when existing data allows it; otherwise this step fails and the
--- operator has to deduplicate active agents first.
-CREATE PROCEDURE pulse_add_agent_name_unique()
-BEGIN
-    IF NOT EXISTS (SELECT 1 FROM information_schema.COLUMNS
-                   WHERE TABLE_SCHEMA = DATABASE()
-                     AND TABLE_NAME = 'agents'
-                     AND COLUMN_NAME = 'active_name') THEN
-        ALTER TABLE agents
-            ADD COLUMN active_name VARCHAR(100)
-            AS (IF(deleted = 0, name, NULL)) STORED;
-    END IF;
+-- Requires MySQL 5.7+ (generated columns).
 
-    IF NOT EXISTS (SELECT 1 FROM information_schema.STATISTICS
-                   WHERE TABLE_SCHEMA = DATABASE()
-                     AND TABLE_NAME = 'agents'
-                     AND INDEX_NAME = 'uk_owner_active_name')
-       AND NOT EXISTS (SELECT 1 FROM (
-                           SELECT owner_id, name FROM agents WHERE deleted = 0
-                           GROUP BY owner_id, name HAVING COUNT(*) > 1
-                       ) AS dupes) THEN
-        ALTER TABLE agents ADD UNIQUE KEY uk_owner_active_name (owner_id, active_name);
-    END IF;
-END$$
+-- ---------- posts: composite index for author timelines ----------
+SET @ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE posts ADD INDEX idx_author_created (author_type, author_id, created_at)',
+    'SELECT 1')
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'posts' AND INDEX_NAME = 'idx_author_created');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
-DELIMITER ;
+-- ---------- comments ----------
+SET @ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE comments ADD INDEX idx_post_author (post_id, author_type, author_id)',
+    'SELECT 1')
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'comments' AND INDEX_NAME = 'idx_post_author');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
--- Composite indexes for the access paths that had none
-CALL pulse_add_index('posts', 'idx_author_created', 'author_type, author_id, created_at');
-CALL pulse_add_index('comments', 'idx_post_author', 'post_id, author_type, author_id');
-CALL pulse_add_index('bounty_tasks', 'idx_agent_created', 'agent_id, created_at');
-CALL pulse_add_index('bounty_tasks', 'idx_status_deadline', 'status, deadline');
-CALL pulse_add_index('agent_logs', 'idx_agent_created', 'agent_id, created_at');
-CALL pulse_add_index('sys_ledger', 'idx_user_created', 'user_id, created_at');
+-- ---------- bounty_tasks ----------
+SET @ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE bounty_tasks ADD INDEX idx_agent_created (agent_id, created_at)',
+    'SELECT 1')
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bounty_tasks' AND INDEX_NAME = 'idx_agent_created');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
--- Materialized hot score. Sorting by the expression (like*3 + comment*5 + view)
--- forced a full scan plus filesort on every ranking refresh; a stored generated
--- column can be indexed and MySQL keeps it in sync automatically.
-CALL pulse_add_column('posts', 'hot_score',
-    'INT AS (COALESCE(like_count,0) * 3 + COALESCE(comment_count,0) * 5 + COALESCE(view_count,0)) STORED');
-CALL pulse_add_index('posts', 'idx_hot_score', 'hot_score, created_at');
+SET @ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE bounty_tasks ADD INDEX idx_status_deadline (status, deadline)',
+    'SELECT 1')
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'bounty_tasks' AND INDEX_NAME = 'idx_status_deadline');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
--- Round-robin agent dispatch. ORDER BY RAND() scans the whole table and builds a
--- temporary file on every scheduler tick; ordering by "least recently dispatched"
--- uses an index and is fairer than random selection.
-CALL pulse_add_column('agents', 'last_dispatched_at', 'DATETIME NULL');
-CALL pulse_add_index('agents', 'idx_dispatch_order', 'status, deleted, last_dispatched_at');
+-- ---------- agent_logs ----------
+SET @ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE agent_logs ADD INDEX idx_agent_created (agent_id, created_at)',
+    'SELECT 1')
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agent_logs' AND INDEX_NAME = 'idx_agent_created');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
-CALL pulse_add_agent_name_unique();
+-- ---------- sys_ledger ----------
+SET @ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE sys_ledger ADD INDEX idx_user_created (user_id, created_at)',
+    'SELECT 1')
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'sys_ledger' AND INDEX_NAME = 'idx_user_created');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
-DROP PROCEDURE IF EXISTS pulse_add_index;
-DROP PROCEDURE IF EXISTS pulse_add_column;
-DROP PROCEDURE IF EXISTS pulse_add_agent_name_unique;
+-- ---------- posts.hot_score: materialized ranking score ----------
+-- Sorting by the raw expression (like*3 + comment*5 + view) can never use an index,
+-- so every ranking refresh scanned all posts and filesorted them. A stored
+-- generated column is maintained by MySQL itself and can be indexed.
+SET @ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE posts ADD COLUMN hot_score INT AS (COALESCE(like_count,0) * 3 + COALESCE(comment_count,0) * 5 + COALESCE(view_count,0)) STORED',
+    'SELECT 1')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'posts' AND COLUMN_NAME = 'hot_score');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE posts ADD INDEX idx_hot_score (hot_score, created_at)',
+    'SELECT 1')
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'posts' AND INDEX_NAME = 'idx_hot_score');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- ---------- agents.last_dispatched_at: round-robin scheduling ----------
+-- Replaces ORDER BY RAND(), which scanned the whole table into a temporary table on
+-- every scheduler tick and could starve an agent indefinitely.
+SET @ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE agents ADD COLUMN last_dispatched_at DATETIME NULL',
+    'SELECT 1')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agents' AND COLUMN_NAME = 'last_dispatched_at');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE agents ADD INDEX idx_dispatch_order (status, deleted, last_dispatched_at)',
+    'SELECT 1')
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agents' AND INDEX_NAME = 'idx_dispatch_order');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- ---------- agents: one active name per owner ----------
+-- agentNameExists() only checks in application code, so two concurrent creates could
+-- both succeed. The key is built on a generated column that is NULL for soft-deleted
+-- rows: a key over (owner_id, name, deleted) would break the normal lifecycle
+-- (create A, delete, create A, delete again -> collision), while NULLs are never
+-- equal in a MySQL unique index.
+SET @ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE agents ADD COLUMN active_name VARCHAR(100) AS (IF(deleted = 0, name, NULL)) STORED',
+    'SELECT 1')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agents' AND COLUMN_NAME = 'active_name');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- Only add the constraint when existing data satisfies it; otherwise skip it so the
+-- deploy keeps working and the operator can deduplicate active agents first.
+SET @dupes = (SELECT COUNT(*) FROM (
+    SELECT owner_id, name FROM agents WHERE deleted = 0
+    GROUP BY owner_id, name HAVING COUNT(*) > 1) AS d);
+SET @has_key = (SELECT COUNT(*) FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agents' AND INDEX_NAME = 'uk_owner_active_name');
+SET @ddl = IF(@dupes = 0 AND @has_key = 0,
+    'ALTER TABLE agents ADD UNIQUE KEY uk_owner_active_name (owner_id, active_name)',
+    'SELECT 1');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- ============================================================
 -- ShedLock: single-run guarantee for @Scheduled jobs
