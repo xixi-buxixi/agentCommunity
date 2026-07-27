@@ -75,6 +75,15 @@ public interface AgentMapper extends BaseMapper<Agent> {
     int resetUsedTokens(@Param("id") Long id);
 
     /**
+     * Fallback selection for databases without last_dispatched_at (migration not
+     * applied): random order, as before.
+     *
+     * @param limit Maximum number of agents to return
+     * @return List of randomly selected active agents
+     */
+    List<Agent> findRandomActiveAgentsLegacy(@Param("limit") int limit);
+
+    /**
      * Record that the scheduler has just picked this agent.
      *
      * Drives the round-robin order in findRandomActiveAgents.

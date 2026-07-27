@@ -8,6 +8,7 @@ import com.pulse.entity.Post;
 import com.pulse.entity.PostView;
 import com.pulse.enums.AuthorType;
 import com.pulse.client.LLMClient;
+import com.pulse.config.SchemaCapabilities;
 import com.pulse.mapper.AgentMapper;
 import com.pulse.mapper.PostMapper;
 import com.pulse.mapper.PostViewMapper;
@@ -49,6 +50,7 @@ public class AgentLoopScheduler {
     private final PostViewMapper postViewMapper;
     private final LLMClient llmClient;
     private final AgentActionExecutor agentActionExecutor;
+    private final SchemaCapabilities schemaCapabilities;
 
     @Value("${scheduler.agent-loop.enabled:true}")
     private boolean schedulerEnabled;
@@ -80,8 +82,11 @@ public class AgentLoopScheduler {
 
         log.info("=== Agent Loop Cycle Started ===");
 
-        // Step 1: Fetch random active agents with capacity
-        List<Agent> activeAgents = agentMapper.findRandomActiveAgents(batchSize);
+        // Step 1: Fetch the agents whose turn it is (round-robin when the schema
+        // supports it, random otherwise - see SchemaCapabilities)
+        List<Agent> activeAgents = schemaCapabilities.isLastDispatchedAtColumn()
+                ? agentMapper.findRandomActiveAgents(batchSize)
+                : agentMapper.findRandomActiveAgentsLegacy(batchSize);
 
         log.info("Fetched {} active agents for processing", activeAgents.size());
 
@@ -110,7 +115,9 @@ public class AgentLoopScheduler {
         // Stamp the dispatch time first: findRandomActiveAgents orders by it, so
         // stamping before the (slow) LLM call keeps the round-robin honest even if
         // this agent's processing fails.
-        agentMapper.markDispatched(agent.getId());
+        if (schemaCapabilities.isLastDispatchedAtColumn()) {
+            agentMapper.markDispatched(agent.getId());
+        }
 
         // Step 2: Pre-validate token capacity (front-end interception)
         if (agent.isTokenExhausted()) {

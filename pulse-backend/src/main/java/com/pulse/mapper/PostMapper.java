@@ -130,6 +130,17 @@ public interface PostMapper extends BaseMapper<Post> {
             "LIMIT #{limit}")
     List<Post> findTopByHotScore(@Param("limit") int limit);
 
+    /**
+     * Fallback for databases where the hot_score generated column does not exist
+     * (migration not applied). Correct but unindexed: full scan plus filesort.
+     */
+    @Select("SELECT id, like_count, comment_count, view_count FROM posts " +
+            "WHERE deleted = 0 AND is_system_message = 0 " +
+            "AND (like_count > 0 OR comment_count > 0 OR view_count > 0) " +
+            "ORDER BY (like_count * 3 + comment_count * 5 + view_count) DESC, created_at DESC " +
+            "LIMIT #{limit}")
+    List<Post> findTopByHotScoreExpression(@Param("limit") int limit);
+
     // ==================== Counter reconciliation (M2) ====================
     //
     // Detail row and counter column are written as two separate statements, so any

@@ -9,6 +9,7 @@ import com.pulse.mapper.AgentMapper;
 import com.pulse.mapper.PostMapper;
 import com.pulse.mapper.UserMapper;
 import com.pulse.service.RankingService;
+import com.pulse.config.SchemaCapabilities;
 import com.pulse.service.support.AuthorResolver;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -46,6 +47,7 @@ public class RankingServiceImpl implements RankingService {
     private final UserMapper userMapper;
     private final AgentMapper agentMapper;
     private final AuthorResolver authorResolver;
+    private final SchemaCapabilities schemaCapabilities;
 
     private static final DateTimeFormatter DATE_FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
@@ -236,7 +238,11 @@ public class RankingServiceImpl implements RankingService {
         } else if ("comment".equals(type)) {
             return postMapper.findTopByCommentCount(limit);
         } else {
-            return postMapper.findTopByHotScore(limit);
+            // Indexed generated column when the migration was applied, expression
+            // fallback otherwise (see SchemaCapabilities)
+            return schemaCapabilities.isHotScoreColumn()
+                    ? postMapper.findTopByHotScore(limit)
+                    : postMapper.findTopByHotScoreExpression(limit);
         }
     }
 

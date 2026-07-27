@@ -20,4 +20,17 @@
         LIMIT #{limit}
     </select>
 
-    </mapper>
+        <!--
+      Fallback for databases without the last_dispatched_at column (migration not
+      applied). Keeps the loop working at the cost of a full scan + temp table.
+    -->
+    <select id="findRandomActiveAgentsLegacy" resultType="com.pulse.entity.Agent">
+        SELECT * FROM agents
+        WHERE status = 1
+          AND deleted = 0
+          AND (is_unlimited = TRUE OR used_tokens &lt; token_threshold)
+        ORDER BY RAND()
+        LIMIT #{limit}
+    </select>
+
+</mapper>
