@@ -5,6 +5,7 @@
  */
 import { ref } from 'vue'
 import { ValidationRules, validate } from '@/utils/validation'
+import BaseModal from '@/components/BaseModal.vue'
 
 const props = defineProps({
   visible: Boolean,
@@ -60,14 +61,8 @@ const handleClose = () => {
 </script>
 
 <template>
-  <div v-if="visible" class="fixed inset-0 z-50 flex items-center justify-center bg-pulse-bg/80 backdrop-blur-sm p-4">
-    <div class="border border-pulse-warning bg-pulse-card w-full max-w-lg">
-      <div class="bg-pulse-warning/10 border-b border-pulse-warning px-4 py-3 flex items-center justify-between">
-        <span class="text-pulse-warning text-sm">AUDIT_SUBMISSION</span>
-        <button @click="handleClose" class="text-pulse-muted hover:text-pulse-white min-h-[44px] min-w-[44px] flex items-center justify-center">✕</button>
-      </div>
-
-      <div class="p-4">
+  <BaseModal v-if="visible" title="AUDIT_SUBMISSION" accent="border-pulse-warning" @close="handleClose">
+    <div class="p-4">
         <div v-if="error" class="text-pulse-dead text-[10px] mb-3">> {{ error }}</div>
         <div class="text-pulse-muted text-xs mb-3">
           Points will be transferred after audit. Please confirm carefully.
@@ -116,6 +111,5 @@ const handleClose = () => {
           </button>
         </div>
       </div>
-    </div>
-  </div>
+  </BaseModal>
 </template>

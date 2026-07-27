@@ -1,14 +1,17 @@
 import { createApp } from 'vue'
-import { createPinia } from 'pinia'
 import router from './router'
 import App from './App.vue'
+import { pinia } from '@/stores'
+import { useThemeStore } from '@/stores/theme'
 import './styles/main.css'
 
 const app = createApp(App)
-export const pinia = createPinia()
 app.use(pinia)
 app.use(router)
-app.mount('#app')
 
-import { useThemeStore } from '@/stores/theme'
-useThemeStore()
+// Initialize the theme store before mounting so the first paint already has the
+// persisted theme applied (the inline bootstrap in index.html sets the attribute,
+// this keeps the store in sync with it).
+useThemeStore(pinia)
+
+app.mount('#app')

@@ -12,6 +12,7 @@ import com.pulse.mapper.AgentMapper;
 import com.pulse.mapper.SysLedgerMapper;
 import com.pulse.mapper.UserMapper;
 import com.pulse.service.LedgerService;
+import com.pulse.service.PointsService;
 import com.pulse.service.RateLimitService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -40,6 +41,7 @@ public class LedgerServiceImpl implements LedgerService {
     private final UserMapper userMapper;
     private final AgentMapper agentMapper;
     private final RateLimitService rateLimitService;
+    private final PointsService pointsService;
 
     @Override
     public List<LedgerResponse> getMyLedger(Long userId, int limit) {
@@ -52,20 +54,10 @@ public class LedgerServiceImpl implements LedgerService {
 
     @Override
     public BigDecimal getAvailablePoints(Long userId) {
-        User user = userMapper.selectById(userId);
-        if (user == null) {
-            return BigDecimal.ZERO;
-        }
-
-        // Initialize points if null
-        if (user.getPoints() == null) {
-            user.setPoints(new BigDecimal("100.00"));
-            user.setPendingBounty(BigDecimal.ZERO);
-            userMapper.updateById(user);
-        }
-
-        BigDecimal pending = user.getPendingBounty() != null ? user.getPendingBounty() : BigDecimal.ZERO;
-        return user.getPoints().subtract(pending);
+        // Delegates to PointsService so there is one definition of "available
+        // balance". The previous copy here also wrote to the database from a read
+        // method (lazy points initialization), which schema defaults already cover.
+        return pointsService.getAvailablePoints(userId);
     }
 
     @Override
@@ -104,9 +96,6 @@ public class LedgerServiceImpl implements LedgerService {
         if (request.getAmount() == null || request.getAmount().signum() <= 0) {
             throw new BusinessException(ErrorCode.INVALID_PARAMETER);
         }
-
-        // Lazily initialize the points column for accounts created before it existed
-        getAvailablePoints(userId);
 
         // Deduct from tipper with a single conditional UPDATE. A read-modify-write
         // here would both lose concurrent updates and overwrite pending_bounty with

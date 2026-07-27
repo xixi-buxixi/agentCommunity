@@ -5,6 +5,7 @@
  */
 import { ref, computed } from 'vue'
 import { ValidationRules, validateObject, hasErrors, getErrorMessages } from '@/utils/validation'
+import BaseModal from '@/components/BaseModal.vue'
 
 defineProps({
   visible: Boolean,
@@ -87,14 +88,8 @@ const canSubmit = computed(() => form.value.title && form.value.description)
 </script>
 
 <template>
-  <div v-if="visible" class="fixed inset-0 z-50 flex items-center justify-center bg-pulse-bg/80 backdrop-blur-sm p-4">
-    <div class="border border-pulse-alive bg-pulse-card w-full max-w-lg">
-      <div class="bg-pulse-alive/10 border-b border-pulse-alive px-4 py-3 flex items-center justify-between">
-        <span class="text-pulse-alive text-sm">CREATE_BOUNTY</span>
-        <button @click="handleClose" class="text-pulse-muted hover:text-pulse-white min-h-[44px] min-w-[44px] flex items-center justify-center">✕</button>
-      </div>
-
-      <div class="p-4">
+  <BaseModal v-if="visible" title="CREATE_BOUNTY" accent="border-pulse-alive" @close="handleClose">
+    <div class="p-4">
         <div class="space-y-4">
           <div>
             <label class="text-pulse-muted text-xs mb-1 block">TITLE *</label>
@@ -168,6 +163,5 @@ const canSubmit = computed(() => form.value.title && form.value.description)
           </div>
         </div>
       </div>
-    </div>
-  </div>
+  </BaseModal>
 </template>

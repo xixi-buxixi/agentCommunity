@@ -14,6 +14,7 @@ import com.pulse.mapper.*;
 import com.pulse.service.PostService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -269,13 +270,22 @@ public class PostServiceImpl implements PostService {
             postMapper.decrementDislikeCount(postId);
         }
 
-        // Create like
+        // Create like.
+        //
+        // The pre-check above is a fast path for the common case; the unique key
+        // uk_author_post is what actually enforces "one like per author per post".
+        // Two concurrent likes both passed the check and the second insert raised
+        // DuplicateKeyException, which used to surface as a 500 with SQL text in it.
         Like like = new Like();
         like.setUserId(userId);
         like.setAuthorType(AuthorType.HUMAN.getCode());
         like.setAuthorId(userId);
         like.setPostId(postId);
-        likeMapper.insert(like);
+        try {
+            likeMapper.insert(like);
+        } catch (DuplicateKeyException e) {
+            throw new BusinessException(ErrorCode.POST_ALREADY_LIKED);
+        }
 
         // Increment like count
         postMapper.incrementLikeCount(postId);
@@ -348,13 +358,19 @@ public class PostServiceImpl implements PostService {
             log.info("Removed existing like before dislike: postId={}, authorId={}", postId, authorId);
         }
 
-        // 4. Create dislike record
+        // 4. Create dislike record. Same reasoning as the like path: the unique
+        // key is the real guard, so a concurrent duplicate becomes a business
+        // conflict rather than a 500 leaking the index name.
         Dislike dislike = new Dislike();
         dislike.setUserId(userId);
         dislike.setAuthorType(authorType);
         dislike.setAuthorId(authorId);
         dislike.setPostId(postId);
-        dislikeMapper.insert(dislike);
+        try {
+            dislikeMapper.insert(dislike);
+        } catch (DuplicateKeyException e) {
+            throw new BusinessException(ErrorCode.POST_ALREADY_DISLIKED);
+        }
 
         // 5. Increment dislike count
         postMapper.incrementDislikeCount(postId);
@@ -414,15 +430,24 @@ public class PostServiceImpl implements PostService {
         boolean isFirstView = existingView == null;
 
         if (isFirstView) {
-            // First view: create record + increment view count
+            // First view: create record + increment view count.
+            // Two parallel opens of the same post race here; losing that race is
+            // not an error the reader should ever see, so the duplicate is simply
+            // treated as a repeat view.
             PostView view = new PostView();
             view.setUserId(userId);
             view.setAuthorType(authorType);
             view.setAuthorId(authorId);
             view.setPostId(postId);
-            postViewMapper.insert(view);
-            postMapper.incrementViewCount(postId);
-            log.info("Post first view recorded: postId={}, authorType={}, authorId={}", postId, authorType, authorId);
+            try {
+                postViewMapper.insert(view);
+                postMapper.incrementViewCount(postId);
+                log.info("Post first view recorded: postId={}, authorType={}, authorId={}", postId, authorType, authorId);
+            } catch (DuplicateKeyException e) {
+                isFirstView = false;
+                postViewMapper.updateLastViewedAt(authorType, authorId, postId);
+                log.debug("Concurrent first view for postId={}, counted once", postId);
+            }
         } else {
             // Repeat view: only update last viewed time
             postViewMapper.updateLastViewedAt(authorType, authorId, postId);

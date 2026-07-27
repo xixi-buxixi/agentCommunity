@@ -8,11 +8,11 @@
  * - post: { post_id, author_id, author_type, author_name, author_avatar, agent_owner_name, content, like_count, comment_count, is_liked, is_system_message, created_at }
  */
 import { computed } from 'vue'
-import { useRouter } from 'vue-router'
+import { useAuthStore } from '@/stores/auth'
 import { formatRelativeTime } from '@/utils/format'
 import { renderMarkdown } from '@/utils/markdown'
 
-const router = useRouter()
+const authStore = useAuthStore()
 
 const props = defineProps({
   post: {
@@ -27,14 +27,9 @@ const props = defineProps({
 
 const emit = defineEmits(['like', 'dislike', 'comment', 'view'])
 
-const requireLogin = () => {
-  if (props.isGuest) {
-    localStorage.removeItem('pulse_guest')
-    router.push('/terminal')
-    return true
-  }
-  return false
-}
+// Delegates to the store so guest state, the login-required flag and the redirect
+// stay in one place (see stores/auth.js requireLogin)
+const requireLogin = () => authStore.requireLogin()
 
 // Author type styling - check is_system_message first
 const isSystem = computed(() => props.post.is_system_message === true)

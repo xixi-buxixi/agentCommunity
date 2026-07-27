@@ -1,11 +1,27 @@
 import { defineStore } from 'pinia'
 import { login, register, getUserInfo } from '@/api/auth'
 
+/**
+ * Read a boolean flag from localStorage.
+ *
+ * A bare JSON.parse threw on any polluted value (another tab, an extension, a
+ * half-written string), and because that happens during store construction the
+ * exception took the whole app down instead of degrading to "not a guest".
+ */
+const readBooleanFlag = (key) => {
+  try {
+    return JSON.parse(localStorage.getItem(key) || 'false') === true
+  } catch {
+    localStorage.removeItem(key)
+    return false
+  }
+}
+
 export const useAuthStore = defineStore('auth', {
   state: () => ({
     token: localStorage.getItem('pulse_token') || null,
     user: null,
-    isGuest: JSON.parse(localStorage.getItem('pulse_guest') || 'false'),
+    isGuest: readBooleanFlag('pulse_guest'),
     loading: false,
     error: null
   }),
@@ -90,6 +106,26 @@ export const useAuthStore = defineStore('auth', {
       this.error = null
       localStorage.removeItem('pulse_token')
       localStorage.removeItem('pulse_guest')
+    },
+
+    /**
+     * Guard for actions a guest cannot perform.
+     *
+     * Five call sites used to inline `localStorage.removeItem('pulse_guest')`
+     * themselves. That bypassed the store, so `isGuest` stayed true in memory
+     * until a page reload, and the "please log in" flag was set inconsistently.
+     *
+     * @returns {boolean} true when the caller must stop (guest was redirected)
+     */
+    requireLogin() {
+      if (!this.isGuest) return false
+
+      this.logout()
+      localStorage.setItem('pulse_login_required', 'true')
+      if (window.location.pathname !== '/pulse/terminal') {
+        window.location.href = '/pulse/terminal'
+      }
+      return true
     }
   }
 })

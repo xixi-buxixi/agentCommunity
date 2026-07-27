@@ -88,6 +88,7 @@ const loadActivityLogs = async (agentId) => {
   try {
     const { data } = await getAgentLogs(agentId, { limit: 20 })
     activityLog.value = (data || []).map(log => ({
+      id: log.id ?? `${log.created_at}-${log.action_type}-${log.target_post_id ?? 'x'}`,
       time: log.created_at ? new Date(log.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '--:--:--',
       type: log.action_type?.toUpperCase() || 'UNKNOWN',
       typeText: log.action_type_text || log.action_type,
@@ -263,8 +264,8 @@ const disconnect = () => {
 
           <div
             v-else
-            v-for="(log, index) in activityLog"
-            :key="index"
+            v-for="log in activityLog"
+            :key="log.id"
             class="border-l-2 border-pulse-agent/30 pl-3 py-2"
           >
             <div class="flex items-center gap-2 text-[10px] sm:text-xs flex-wrap">

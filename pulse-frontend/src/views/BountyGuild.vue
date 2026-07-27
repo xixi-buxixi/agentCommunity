@@ -5,7 +5,6 @@
  * Refactored: Components split into separate files for maintainability
  */
 import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import {
   getBounties, getMyBounties, getMyAcceptedBounties,
@@ -14,6 +13,7 @@ import {
 } from '@/api/bounty'
 import { canCancelBounty, getBountyStatusLabel } from '@/utils/evolution'
 import BountyLogsPanel from '@/components/BountyLogsPanel.vue'
+import BaseModal from '@/components/BaseModal.vue'
 import BountyList from '@/components/BountyList.vue'
 import BountyDetail from '@/components/BountyDetail.vue'
 import MyTasksList from '@/components/MyTasksList.vue'
@@ -22,16 +22,8 @@ import BountySubmitModal from '@/components/BountySubmitModal.vue'
 import BountyAuditModal from '@/components/BountyAuditModal.vue'
 
 const authStore = useAuthStore()
-const router = useRouter()
 
-const requireLogin = () => {
-  if (authStore.isGuest) {
-    localStorage.removeItem('pulse_guest')
-    router.push('/terminal')
-    return true
-  }
-  return false
-}
+const requireLogin = () => authStore.requireLogin()
 
 // State
 const currentView = ref('list')
@@ -217,11 +209,30 @@ const handleAudit = async ({ payload, onSuccess }) => {
   }
 }
 
-// Cancel bounty before review starts
-const handleCancelBounty = async (task) => {
+// Cancel bounty before review starts.
+//
+// The reason used to be collected with window.prompt(), which is unstyleable,
+// blocks the whole tab and looks nothing like the rest of the terminal UI. It is
+// now a small in-page modal (see the CANCEL_BOUNTY modal in the template).
+const cancelTarget = ref(null)
+const cancelReason = ref('')
+
+const openCancelBounty = (task) => {
   if (requireLogin()) return
-  const reason = window.prompt('CANCEL_REASON', '需求已变化，暂不需要继续征集答案')
-  if (reason === null) return
+  cancelTarget.value = task
+  cancelReason.value = '需求已变化，暂不需要继续征集答案'
+}
+
+const closeCancelBounty = () => {
+  cancelTarget.value = null
+  cancelReason.value = ''
+}
+
+const confirmCancelBounty = async () => {
+  const task = cancelTarget.value
+  if (!task) return
+  const reason = cancelReason.value
+  cancelTarget.value = null
   canceling.value = true
   try {
     const { data } = await cancelBounty(task.id, { reason: reason.trim() || 'owner cancelled' })
@@ -436,7 +447,7 @@ onMounted(() => loadBounties())
             @accept="handleAccept"
             @submit="openSubmitModal"
             @audit="openAuditModal"
-            @cancel="handleCancelBounty"
+            @cancel="openCancelBounty"
           />
 
           <!-- My Tasks View -->
@@ -457,6 +468,43 @@ onMounted(() => loadBounties())
     </main>
 
     <!-- Modals -->
+    <BaseModal
+      v-if="cancelTarget"
+      title="CANCEL_BOUNTY"
+      :subtitle="cancelTarget.title"
+      accent="border-pulse-warning"
+      @close="closeCancelBounty"
+    >
+      <label for="cancel-reason" class="block text-pulse-muted text-[10px] sm:text-xs mb-2">
+        CANCEL_REASON:
+      </label>
+      <textarea
+        id="cancel-reason"
+        v-model="cancelReason"
+        rows="3"
+        class="w-full border border-pulse-border bg-pulse-bg px-3 py-2 text-xs sm:text-sm text-pulse-white"
+      ></textarea>
+      <p class="text-pulse-muted text-[10px]">取消后冻结的 {{ cancelTarget.reward_points }} 积分将退回。</p>
+
+      <template #footer>
+        <button
+          type="button"
+          class="flex-1 border border-pulse-border text-pulse-muted px-3 py-2 text-xs hover:text-pulse-white transition min-h-[44px]"
+          @click="closeCancelBounty"
+        >
+          KEEP_BOUNTY
+        </button>
+        <button
+          type="button"
+          :disabled="canceling"
+          class="flex-1 border border-pulse-warning text-pulse-warning px-3 py-2 text-xs hover:bg-pulse-warning/10 transition disabled:opacity-50 min-h-[44px]"
+          @click="confirmCancelBounty"
+        >
+          {{ canceling ? 'CANCELLING...' : 'CONFIRM_CANCEL' }}
+        </button>
+      </template>
+    </BaseModal>
+
     <BountyCreateModal
       :visible="showCreateModal"
       :creating="creating"

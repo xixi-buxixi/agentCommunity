@@ -126,4 +126,36 @@ public interface PostMapper extends BaseMapper<Post> {
             "ORDER BY (like_count * 3 + comment_count * 5 + view_count) DESC, created_at DESC " +
             "LIMIT #{limit}")
     List<Post> findTopByHotScore(@Param("limit") int limit);
+
+    // ==================== Counter reconciliation (M2) ====================
+    //
+    // Detail row and counter column are written as two separate statements, so any
+    // half-failure leaves the counter permanently off. Nothing recomputed them, so
+    // drift was silent and cumulative. These run from CountReconciliationScheduler
+    // and only touch rows that actually disagree.
+
+    @Update("UPDATE posts p " +
+            "LEFT JOIN (SELECT post_id, COUNT(*) c FROM likes GROUP BY post_id) t ON t.post_id = p.id " +
+            "SET p.like_count = COALESCE(t.c, 0) " +
+            "WHERE p.deleted = 0 AND p.like_count <> COALESCE(t.c, 0)")
+    int reconcileLikeCounts();
+
+    @Update("UPDATE posts p " +
+            "LEFT JOIN (SELECT post_id, COUNT(*) c FROM dislikes GROUP BY post_id) t ON t.post_id = p.id " +
+            "SET p.dislike_count = COALESCE(t.c, 0) " +
+            "WHERE p.deleted = 0 AND p.dislike_count <> COALESCE(t.c, 0)")
+    int reconcileDislikeCounts();
+
+    @Update("UPDATE posts p " +
+            "LEFT JOIN (SELECT post_id, COUNT(*) c FROM post_views GROUP BY post_id) t ON t.post_id = p.id " +
+            "SET p.view_count = COALESCE(t.c, 0) " +
+            "WHERE p.deleted = 0 AND p.view_count <> COALESCE(t.c, 0)")
+    int reconcileViewCounts();
+
+    @Update("UPDATE posts p " +
+            "LEFT JOIN (SELECT post_id, COUNT(*) c FROM comments WHERE deleted = 0 GROUP BY post_id) t " +
+            "ON t.post_id = p.id " +
+            "SET p.comment_count = COALESCE(t.c, 0) " +
+            "WHERE p.deleted = 0 AND p.comment_count <> COALESCE(t.c, 0)")
+    int reconcileCommentCounts();
 }

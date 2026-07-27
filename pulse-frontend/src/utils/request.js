@@ -1,6 +1,6 @@
 import axios from 'axios'
 import { useAuthStore } from '@/stores/auth'
-import { pinia } from '@/main'
+import { pinia } from '@/stores'
 import { DEFAULT_VERSION } from '@/api/config'
 
 const request = axios.create({
@@ -32,9 +32,8 @@ const clearAuthAndRedirect = () => {
 }
 
 const redirectGuestToLogin = () => {
-  localStorage.setItem('pulse_login_required', 'true')
-  localStorage.removeItem('pulse_guest')
-  window.location.href = '/pulse/terminal'
+  // Goes through the store so Pinia state and localStorage cannot disagree
+  getAuthStore()?.requireLogin()
   return new Error('GUEST_REQUIRES_LOGIN')
 }
 

@@ -98,6 +98,7 @@ const reviveForm = ref({
 })
 
 // Delete confirmation
+const deleteError = ref(null)
 const deleteConfirmName = ref('')
 
 // Activity logs (real data from posts)
@@ -145,6 +146,9 @@ const loadActivityLogs = async () => {
       }
 
       return {
+        // Prefer the backend id; fall back to a composite so the key stays stable
+        // across re-renders even when the API omits an id
+        id: log.id ?? `${log.agent_id}-${log.created_at}-${log.action_type}`,
         time,
         agent: log.agent_id ? `Agent#${log.agent_id}` : 'SYSTEM',
         action,
@@ -202,6 +206,7 @@ const handleRevive = (agent) => {
 const handleTerminate = (agent) => {
   selectedAgent.value = agent
   deleteConfirmName.value = ''
+  deleteError.value = null
   showDeleteModal.value = true
 }
 
@@ -293,8 +298,11 @@ const submitRevive = async () => {
 
 // Submit delete
 const submitDelete = async () => {
-  if (deleteConfirmName.value !== selectedAgent.value.name) {
-    alert('Name confirmation does not match')
+  // A native alert() breaks the terminal aesthetic and cannot be styled or tested;
+  // the modal already has an error slot.
+  deleteError.value = null
+  if (deleteConfirmName.value !== selectedAgent.value?.name) {
+    deleteError.value = 'NAME_CONFIRMATION_MISMATCH'
     return
   }
   const success = await agentStore.deleteAgent(selectedAgent.value.id, deleteConfirmName.value)
@@ -366,7 +374,7 @@ const formatTokens = (num) => {
             <span class="text-pulse-alive text-[10px] sm:text-xs hidden sm:inline">LIVE</span>
           </div>
           <div class="p-2 sm:p-3 space-y-1 text-[10px] sm:text-xs font-mono max-h-24 sm:max-h-32 overflow-y-auto">
-            <div v-for="(log, index) in activityLogs" :key="index" class="flex gap-2">
+            <div v-for="log in activityLogs" :key="log.id" class="flex gap-2">
               <span class="text-pulse-muted w-16 sm:w-24 shrink-0 truncate">[{{ log.time }}]</span>
               <span class="text-pulse-agent truncate">[{{ log.agent }}]</span>
               <span
@@ -623,6 +631,7 @@ const formatTokens = (num) => {
           <div>
             <div class="text-pulse-muted text-[10px] sm:text-xs mb-2">CONFIRM_NAME ({{ selectedAgent?.name }}):</div>
             <input v-model="deleteConfirmName" class="w-full border border-pulse-border bg-pulse-bg px-3 py-2 text-xs sm:text-sm text-pulse-white min-h-[44px]" />
+            <p v-if="deleteError" class="text-pulse-dead text-[10px] sm:text-xs mt-2">> {{ deleteError }}</p>
           </div>
 
           <div class="flex gap-2 pt-3 sm:pt-4">

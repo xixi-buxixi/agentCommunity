@@ -7,7 +7,8 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { getPostList, createPost, likePost, unlikePost, dislikePost, undislikePost } from '@/api/post'
+import { useReaction } from '@/composables/useReaction'
+import { getPostList, createPost } from '@/api/post'
 import PostCard from '@/components/PostCard.vue'
 import RankingPanel from '@/components/RankingPanel.vue'
 import BountyBoardSidebar from '@/components/BountyBoardSidebar.vue'
@@ -15,6 +16,7 @@ import DailyHotNewsPanel from '@/components/DailyHotNewsPanel.vue'
 
 const router = useRouter()
 const authStore = useAuthStore()
+const { toggleLike, toggleDislike } = useReaction()
 
 // Posts
 const posts = ref([])
@@ -88,47 +90,21 @@ const submitPost = async () => {
   }
 }
 
-// Handle like
+// Handle like / dislike via the shared composable (optimistic update, rollback on
+// failure, per-post in-flight guard - see composables/useReaction.js)
 const handleLike = async (postId) => {
-  try {
-    const post = posts.value.find(p => p.post_id === postId)
-    if (post.is_liked) {
-      const { data } = await unlikePost(postId)
-      post.is_liked = false
-      post.like_count = data.like_count
-      post.is_disliked = data.is_disliked
-      post.dislike_count = data.dislike_count
-    } else {
-      const { data } = await likePost(postId)
-      post.is_liked = true
-      post.like_count = data.like_count
-      post.is_disliked = data.is_disliked
-      post.dislike_count = data.dislike_count
-    }
-  } catch (err) {
-    error.value = err.message || 'ACTION_FAILED'
+  const post = posts.value?.find(p => p.post_id === postId)
+  const result = await toggleLike(post)
+  if (result.error) {
+    error.value = result.error.message || 'ACTION_FAILED'
   }
 }
 
-// Handle dislike
 const handleDislike = async (postId) => {
-  try {
-    const post = posts.value.find(p => p.post_id === postId)
-    if (post.is_disliked) {
-      const { data } = await undislikePost(postId)
-      post.is_disliked = false
-      post.dislike_count = data.dislike_count
-      post.is_liked = data.is_liked
-      post.like_count = data.like_count
-    } else {
-      const { data } = await dislikePost(postId)
-      post.is_disliked = true
-      post.dislike_count = data.dislike_count
-      post.is_liked = data.is_liked
-      post.like_count = data.like_count
-    }
-  } catch (err) {
-    error.value = err.message || 'ACTION_FAILED'
+  const post = posts.value?.find(p => p.post_id === postId)
+  const result = await toggleDislike(post)
+  if (result.error) {
+    error.value = result.error.message || 'ACTION_FAILED'
   }
 }
 

@@ -5,7 +5,7 @@
  * Mobile-First Responsive Design
  * Includes form validation for security
  */
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import TerminalInput from '@/components/TerminalInput.vue'
@@ -48,11 +48,12 @@ const registerErrors = ref({})
 const isRegisterMode = ref(false)
 
 // System messages
+let systemMessageSeq = 0
 const systemMessages = ref([
   '> SYSTEM INITIALIZING...',
   '> DETECTING USER TYPE: UNKNOWN',
   '> AWAITING PROTOCOL SELECTION'
-])
+].map((text) => ({ id: ++systemMessageSeq, text })))
 
 // Server error banner
 const serverError = ref(null)
@@ -61,9 +62,13 @@ const clearServerError = () => {
   serverError.value = null
 }
 
+// Messages carry a stable id so the template can key on identity instead of the
+// array index. Index keys make Vue reuse the wrong DOM node whenever the list is
+// prepended to or filtered.
 const pushSystemMessage = (message) => {
-  if (systemMessages.value[systemMessages.value.length - 1] !== message) {
-    systemMessages.value.push(message)
+  const last = systemMessages.value[systemMessages.value.length - 1]
+  if (!last || last.text !== message) {
+    systemMessages.value.push({ id: ++systemMessageSeq, text: message })
   }
 }
 
@@ -84,13 +89,24 @@ onMounted(() => {
     pushSystemMessage('> 请使用 HUMAN_HUB 登录或注册账号')
   }
   let seconds = 0
-  setInterval(() => {
+  // Keep the handle: an uncleaned interval keeps ticking (and keeps this
+  // component's closure alive) after navigating away from the terminal.
+  uptimeTimer = setInterval(() => {
     seconds++
     const h = Math.floor(seconds / 3600).toString().padStart(2, '0')
     const m = Math.floor((seconds % 3600) / 60).toString().padStart(2, '0')
     const s = (seconds % 60).toString().padStart(2, '0')
     uptime.value = `${h}:${m}:${s}`
   }, 1000)
+})
+
+let uptimeTimer = null
+
+onUnmounted(() => {
+  if (uptimeTimer) {
+    clearInterval(uptimeTimer)
+    uptimeTimer = null
+  }
 })
 
 // Login validation schema
@@ -299,7 +315,7 @@ const getProtocolClass = (type) => {
 
         <!-- System Messages -->
         <div class="text-pulse-muted text-[10px] sm:text-xs mb-4 sm:mb-6 space-y-1 max-h-32 overflow-y-auto">
-          <p v-for="(msg, index) in systemMessages" :key="index" :class="{ 'text-pulse-dead': msg.startsWith('> ERROR') }">{{ msg }}</p>
+          <p v-for="msg in systemMessages" :key="msg.id" :class="{ 'text-pulse-dead': msg.text.startsWith('> ERROR') }">{{ msg.text }}</p>
         </div>
 
         <!-- Protocol Selection -->

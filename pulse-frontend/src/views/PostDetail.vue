@@ -7,7 +7,8 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
-import { getPostDetail, likePost, unlikePost, dislikePost, undislikePost, recordView, getComments, createComment } from '@/api/post'
+import { getPostDetail, recordView, getComments, createComment } from '@/api/post'
+import { useReaction } from '@/composables/useReaction'
 import CommentThread from '@/components/CommentThread.vue'
 import { formatDateTime } from '@/utils/format'
 import { renderMarkdown } from '@/utils/markdown'
@@ -15,6 +16,7 @@ import { renderMarkdown } from '@/utils/markdown'
 const route = useRoute()
 const router = useRouter()
 const authStore = useAuthStore()
+const { toggleLike, toggleDislike } = useReaction()
 
 // Post data
 const post = ref(null)
@@ -70,7 +72,8 @@ const loadComments = async () => {
   try {
     const { data } = await getComments(route.params.id, { page: 1, size: 50 })
     comments.value = data.records || []
-    totalComments.value = post.value?.comment_count ?? data.total ?? 0
+    // Prefer the authoritative count from the post; fall back to pagination total
+    totalComments.value = post.value?.comment_count ?? data.total ?? comments.value.length
   } catch (err) {
     console.error('Failed to load comments:', err)
     comments.value = []
@@ -80,57 +83,21 @@ const loadComments = async () => {
   }
 }
 
-// Handle like
+// Handle like / dislike via the shared composable (optimistic update, rollback on
+// failure, per-post in-flight guard - see composables/useReaction.js)
 const handleLike = async () => {
-  if (!post.value) return
-  if (authStore.isGuest) {
-    localStorage.removeItem('pulse_guest')
-    router.push('/terminal')
-    return
-  }
-  try {
-    if (post.value.is_liked) {
-      const { data } = await unlikePost(post.value.post_id)
-      post.value.is_liked = false
-      post.value.like_count = data.like_count
-      post.value.is_disliked = data.is_disliked
-      post.value.dislike_count = data.dislike_count
-    } else {
-      const { data } = await likePost(post.value.post_id)
-      post.value.is_liked = true
-      post.value.like_count = data.like_count
-      post.value.is_disliked = data.is_disliked
-      post.value.dislike_count = data.dislike_count
-    }
-  } catch (err) {
-    console.error('Like action failed:', err)
+  if (authStore.requireLogin()) return
+  const result = await toggleLike(post.value)
+  if (result.error) {
+    console.error('Like action failed:', result.error)
   }
 }
 
-// Handle dislike
 const handleDislike = async () => {
-  if (!post.value) return
-  if (authStore.isGuest) {
-    localStorage.removeItem('pulse_guest')
-    router.push('/terminal')
-    return
-  }
-  try {
-    if (post.value.is_disliked) {
-      const { data } = await undislikePost(post.value.post_id)
-      post.value.is_disliked = false
-      post.value.dislike_count = data.dislike_count
-      post.value.is_liked = data.is_liked
-      post.value.like_count = data.like_count
-    } else {
-      const { data } = await dislikePost(post.value.post_id)
-      post.value.is_disliked = true
-      post.value.dislike_count = data.dislike_count
-      post.value.is_liked = data.is_liked
-      post.value.like_count = data.like_count
-    }
-  } catch (err) {
-    console.error('Dislike action failed:', err)
+  if (authStore.requireLogin()) return
+  const result = await toggleDislike(post.value)
+  if (result.error) {
+    console.error('Dislike action failed:', result.error)
   }
 }
 
@@ -153,9 +120,11 @@ const submitComment = async () => {
     await createComment(route.params.id, {
       content: newCommentContent.value.trim()
     })
-    post.value.comment_count++
-    totalComments.value++
     newCommentContent.value = ''
+    // Refetch instead of incrementing locally: post.value could be null (the
+    // detail request may still be in flight or have failed) and the server count
+    // also moves when other users comment.
+    await loadPost()
     await loadComments()
   } catch (err) {
     commentError.value = err.message || 'COMMENT_FAILED'
@@ -173,9 +142,8 @@ const submitReply = async ({ parentCommentId, content, done }) => {
       content,
       parent_comment_id: parentCommentId
     })
-    post.value.comment_count++
-    totalComments.value++
     if (done) done()
+    await loadPost()
     await loadComments()
   } catch (err) {
     commentError.value = err.message || 'REPLY_FAILED'
@@ -189,9 +157,13 @@ const goBack = () => {
   router.push('/square')
 }
 
-onMounted(() => {
-  loadPost()
-  loadComments()
+onMounted(async () => {
+  // loadComments reads post.value.comment_count, so the detail must land first.
+  // Firing both in parallel meant that whenever comments returned first the total
+  // silently fell back to the pagination count - a different number - so the
+  // displayed comment total was right or wrong depending on network timing.
+  await loadPost()
+  await loadComments()
   if (!authStore.isGuest) recordPostView()
 })
 </script>

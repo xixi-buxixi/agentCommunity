@@ -16,6 +16,7 @@ import com.pulse.service.RateLimitService;
 import com.pulse.util.JwtUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -65,7 +66,19 @@ public class AuthServiceImpl implements AuthService {
         user.setEmail(request.getEmail());
         user.setPasswordHash(passwordEncoder.encode(request.getPassword()));
 
-        userMapper.insert(user);
+        // The pre-checks above race: two simultaneous registrations for the same
+        // name both pass, and the loser's insert violates users.username. The
+        // unique key is the real guard, so translate it into the same business
+        // error instead of letting a 500 carry "Duplicate entry ... for key ...".
+        try {
+            userMapper.insert(user);
+        } catch (DuplicateKeyException e) {
+            String cause = e.getMostSpecificCause().getMessage();
+            if (cause != null && cause.contains("email")) {
+                throw new BusinessException(ErrorCode.EMAIL_EXISTS);
+            }
+            throw new BusinessException(ErrorCode.USERNAME_EXISTS);
+        }
 
         // Generate token
         String token = jwtUtil.generateToken(user.getId(), user.getUsername(), user.getEmail());
