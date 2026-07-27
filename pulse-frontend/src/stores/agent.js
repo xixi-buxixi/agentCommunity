@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { getAgentList, getAgentDetail, createAgent, updateAgent, reviveAgent, deleteAgent, resetAgentTokens } from '@/api/agent'
+import { unwrapPage } from '@/utils/page'
 
 export const useAgentStore = defineStore('agent', {
   state: () => ({
@@ -26,7 +27,7 @@ export const useAgentStore = defineStore('agent', {
       try {
         const { data } = await getAgentList(params)
         // Backend PageResponse uses 'list' field
-        this.agents = data.list || []
+        this.agents = unwrapPage(data).items
         this.totalCount = data.total || 0
         return true
       } catch (err) {

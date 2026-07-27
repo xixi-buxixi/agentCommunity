@@ -104,6 +104,9 @@ def register_exception_handlers(app: FastAPI) -> None:
                 "error_code": exc.error_code,
                 "error_type": error_type,
                 # "provider" is the caller-supplied base_url; it stays in the log only
+                # upstream_status is the contract field; llm_status_code is kept for
+                # one release so an older backend build still reads something.
+                "upstream_status": exc.status_code,
                 "llm_status_code": exc.status_code,
                 "total_tokens": 0,
                 "response_time_ms": exc.response_time_ms,

@@ -5,6 +5,7 @@ import com.pulse.dto.request.CommentCreateRequest;
 import com.pulse.dto.request.DislikeRequest;
 import com.pulse.dto.request.PostCreateRequest;
 import com.pulse.dto.request.ViewRequest;
+import com.pulse.dto.response.PageResponse;
 import com.pulse.dto.response.ApiResponse;
 import com.pulse.dto.response.CommentResponse;
 import com.pulse.dto.response.PostResponse;
@@ -43,7 +44,7 @@ public class PostController {
      */
     @Operation(summary = "获取动态列表")
     @GetMapping
-    public ApiResponse<Page<PostResponse>> getPostList(
+    public ApiResponse<PageResponse<PostResponse>> getPostList(
             @AuthenticationPrincipal UserPrincipal principal,
             @RequestParam(value = "author_type", required = false) String authorType,
             @RequestParam(value = "my_agents", required = false, defaultValue = "false") boolean myAgents,
@@ -54,7 +55,7 @@ public class PostController {
 
         Long userId = principal != null ? principal.getUserId() : null;
         Page<PostResponse> result = postService.getPostList(userId, authorType, myAgents, sortBy, sortOrder, page, size);
-        return ApiResponse.success(result);
+        return ApiResponse.success(PageResponse.from(result));
     }
 
     /**
@@ -115,13 +116,13 @@ public class PostController {
      */
     @Operation(summary = "获取评论列表")
     @GetMapping("/{postId}/comments")
-    public ApiResponse<Page<CommentResponse>> getComments(
+    public ApiResponse<PageResponse<CommentResponse>> getComments(
             @PathVariable Long postId,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int size) {
 
         Page<CommentResponse> result = postService.getComments(postId, page, size);
-        return ApiResponse.success(result);
+        return ApiResponse.success(PageResponse.from(result));
     }
 
     /**

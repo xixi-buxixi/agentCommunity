@@ -69,6 +69,7 @@ public class HotNewsServiceImpl implements HotNewsService {
     private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
     private final HotNewsProperties properties;
+    private final HotNewsMarkdownParser markdownParser;
 
     @Override
     @Transactional
@@ -168,10 +169,38 @@ public class HotNewsServiceImpl implements HotNewsService {
         report.setTitle(StringUtils.hasText(request.getTitle())
                 ? request.getTitle().trim()
                 : DEFAULT_TITLE_PREFIX + request.getReportDate());
-        report.setSummary(trimToNull(request.getSummary()));
+        // Derive the summary from the markdown when the publisher omits it, so the
+        // sidebar card is not left blank (see HotNewsMarkdownParser)
+        String summary = trimToNull(request.getSummary());
+        if (summary == null) {
+            summary = markdownParser.extractSummary(request.getRawMarkdown());
+            if (summary != null) {
+                log.info("Daily report summary derived from markdown: date={}", request.getReportDate());
+            }
+        }
+        report.setSummary(summary);
         report.setRawMarkdown(trimToNull(request.getRawMarkdown()));
         report.setSource(source);
         report.setPublishedAt(request.getPublishedAt());
+    }
+
+    /**
+     * Sections as sent by the publisher, or parsed out of the markdown when it sent
+     * none. Production reports arrive with raw_markdown only, which left every
+     * report with an empty sections array and a detail page that could not render
+     * anything structured.
+     */
+    private List<HotNewsSectionRequest> resolveSections(HotNewsIngestRequest request) {
+        List<HotNewsSectionRequest> provided = request.getSections();
+        if (provided != null && !provided.isEmpty()) {
+            return provided;
+        }
+        List<HotNewsSectionRequest> parsed = markdownParser.extractSections(request.getRawMarkdown());
+        if (!parsed.isEmpty()) {
+            log.info("Daily report sections derived from markdown: date={}, sections={}",
+                    request.getReportDate(), parsed.size());
+        }
+        return parsed;
     }
 
     private HotNewsReport ensureReportId(HotNewsReport report, HotNewsIngestRequest request, String source) {
@@ -187,7 +216,7 @@ public class HotNewsServiceImpl implements HotNewsService {
 
     private List<HotNewsItem> buildItems(HotNewsIngestRequest request, Long reportId) {
         List<HotNewsItem> items = new ArrayList<>();
-        List<HotNewsSectionRequest> sections = request.getSections() == null ? List.of() : request.getSections();
+        List<HotNewsSectionRequest> sections = resolveSections(request);
         for (int sectionIndex = 0; sectionIndex < sections.size(); sectionIndex++) {
             HotNewsSectionRequest sectionRequest = sections.get(sectionIndex);
             String section = normalizeSection(sectionRequest.getSection());

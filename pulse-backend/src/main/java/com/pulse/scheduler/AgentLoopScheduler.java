@@ -107,6 +107,11 @@ public class AgentLoopScheduler {
     private void processAgent(Agent agent) {
         log.debug("Processing agent: id={}, name={}", agent.getId(), agent.getName());
 
+        // Stamp the dispatch time first: findRandomActiveAgents orders by it, so
+        // stamping before the (slow) LLM call keeps the round-robin honest even if
+        // this agent's processing fails.
+        agentMapper.markDispatched(agent.getId());
+
         // Step 2: Pre-validate token capacity (front-end interception)
         if (agent.isTokenExhausted()) {
             log.info("Agent token exhausted, marking as DEAD: agentId={}", agent.getId());

@@ -18,22 +18,6 @@ import java.util.List;
 public interface AgentMapper extends BaseMapper<Agent> {
 
     /**
-     * Atomic token increment update (concurrency safe)
-     * Uses optimistic lock pattern: UPDATE with WHERE version check
-     *
-     * @param id Agent ID
-     * @param tokensToAdd Tokens to add
-     * @param oldVersion Current version for optimistic lock
-     * @return Number of rows affected (0 if version mismatch)
-     */
-    @Update("UPDATE agents SET used_tokens = used_tokens + #{tokensToAdd}, " +
-            "version = version + 1, last_active_at = NOW() " +
-            "WHERE id = #{id} AND version = #{oldVersion} AND status = 1 AND deleted = 0")
-    int incrementUsedTokensOptimistic(@Param("id") Long id,
-                                       @Param("tokensToAdd") Long tokensToAdd,
-                                       @Param("oldVersion") Integer oldVersion);
-
-    /**
      * Atomic token increment update (simple version, no optimistic lock)
      * Uses atomic SQL increment: safe for high concurrency
      *
@@ -80,14 +64,6 @@ public interface AgentMapper extends BaseMapper<Agent> {
     List<Agent> findRandomActiveAgents(@Param("limit") int limit);
 
     /**
-     * Find active agents with token capacity remaining
-     *
-     * @param limit Maximum number of agents
-     * @return List of agents that can still act
-     */
-    List<Agent> findActiveAgentsWithCapacity(@Param("limit") int limit);
-
-    /**
      * Reset used tokens to zero without changing status
      * Used for manual token reset while agent is still alive
      *
@@ -99,11 +75,20 @@ public interface AgentMapper extends BaseMapper<Agent> {
     int resetUsedTokens(@Param("id") Long id);
 
     /**
-     * Batch select agents by IDs
-     * Used for N+1 query optimization
+     * Record that the scheduler has just picked this agent.
      *
-     * @param ids List of agent IDs
-     * @return List of agents
+     * Drives the round-robin order in findRandomActiveAgents.
+     *
+     * @param id Agent ID
+     * @return Number of rows affected
      */
-    List<Agent> selectByIds(@Param("ids") List<Long> ids);
+    @Update("UPDATE agents SET last_dispatched_at = NOW() WHERE id = #{id} AND deleted = 0")
+    int markDispatched(@Param("id") Long id);
+
+    // NOTE: selectByIds was removed. It declared a batch select with no XML
+    // statement and no annotation, so the first caller would have hit
+    // BindingException at runtime. Use BaseMapper.selectBatchIds for batch loads.
+    // findActiveAgentsWithCapacity and incrementUsedTokensOptimistic were removed
+    // for the same reason as other dead code: no callers, and the "optimistic"
+    // variant was never wired up even though the agents table has a version column.
 }

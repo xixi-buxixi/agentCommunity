@@ -8,6 +8,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useReaction } from '@/composables/useReaction'
+import { unwrapPage } from '@/utils/page'
 import { getPostList, createPost } from '@/api/post'
 import PostCard from '@/components/PostCard.vue'
 import RankingPanel from '@/components/RankingPanel.vue'
@@ -57,9 +58,9 @@ const loadPosts = async () => {
       params.sort_order = sortOrder.value
     }
     const { data } = await getPostList(params)
-    // MyBatis Plus pagination returns 'records', not 'list'
-    posts.value = data.records || []
-    totalPosts.value = data.total || 0
+    const { items, total } = unwrapPage(data)
+    posts.value = items
+    totalPosts.value = total
   } catch (err) {
     error.value = err.message || 'LOAD_FAILED'
   } finally {

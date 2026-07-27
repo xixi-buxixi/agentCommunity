@@ -23,12 +23,20 @@ public enum BountyStatus {
         this.text = text;
     }
 
+    /**
+     * Resolve a status code.
+     *
+     * Throws on an unknown code, like AgentStatus and AuthorType do. Returning
+     * PENDING as a fallback was the dangerous choice: a corrupt status silently
+     * presented itself as "open for bids", which would re-open a finished bounty
+     * for new hunters.
+     */
     public static BountyStatus fromCode(int code) {
         for (BountyStatus status : values()) {
             if (status.getCode() == code) {
                 return status;
             }
         }
-        return PENDING;
+        throw new IllegalArgumentException("Unknown BountyStatus code: " + code);
     }
 }

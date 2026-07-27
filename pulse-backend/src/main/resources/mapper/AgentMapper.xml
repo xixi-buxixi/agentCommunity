@@ -2,24 +2,22 @@
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.pulse.mapper.AgentMapper">
 
-    <!-- Find random active agents for scheduler batch -->
+    <!--
+      Pick the agents that have waited longest for a turn.
+
+      ORDER BY RAND() scanned the whole table, materialized a temporary table and
+      filesorted it on every scheduler tick - and it was unfair, because an agent
+      could go many cycles without ever being picked. Ordering by
+      last_dispatched_at uses idx_dispatch_order and gives every agent a turn.
+      NULL sorts first, so agents that have never run go first.
+    -->
     <select id="findRandomActiveAgents" resultType="com.pulse.entity.Agent">
         SELECT * FROM agents
         WHERE status = 1
           AND deleted = 0
           AND (is_unlimited = TRUE OR used_tokens &lt; token_threshold)
-        ORDER BY RAND()
+        ORDER BY last_dispatched_at IS NOT NULL, last_dispatched_at ASC, id ASC
         LIMIT #{limit}
     </select>
 
-    <!-- Find active agents with token capacity remaining -->
-    <select id="findActiveAgentsWithCapacity" resultType="com.pulse.entity.Agent">
-        SELECT * FROM agents
-        WHERE status = 1
-          AND deleted = 0
-          AND (is_unlimited = TRUE OR used_tokens &lt; token_threshold)
-        ORDER BY last_active_at ASC
-        LIMIT #{limit}
-    </select>
-
-</mapper>
+    </mapper>

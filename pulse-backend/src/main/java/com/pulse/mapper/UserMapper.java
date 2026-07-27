@@ -7,7 +7,6 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Update;
 
 import java.math.BigDecimal;
-import java.util.List;
 
 /**
  * User Mapper
@@ -47,23 +46,10 @@ public interface UserMapper extends BaseMapper<User> {
             "AND pending_bounty >= #{amount} AND points >= #{amount}")
     int settleFrozenPointsAtomic(@Param("id") Long id, @Param("amount") BigDecimal amount);
 
-    /**
-     * Atomic points release and add (concurrency safe)
-     * Releases frozen points and adds reward in single atomic operation
-     *
-     * @param id User ID
-     * @param releaseAmount Amount to release from pending_bounty
-     * @param addAmount Amount to add to points
-     * @return Number of rows affected
-     */
-    @Update("UPDATE users SET points = points + #{addAmount}, " +
-            "pending_bounty = pending_bounty - #{releaseAmount}, " +
-            "updated_at = NOW() " +
-            "WHERE id = #{id} AND deleted = 0 " +
-            "AND pending_bounty >= #{releaseAmount}")
-    int releaseAndAddPointsAtomic(@Param("id") Long id,
-                                   @Param("releaseAmount") BigDecimal releaseAmount,
-                                   @Param("addAmount") BigDecimal addAmount);
+    // NOTE: releaseAndAddPointsAtomic was removed here. It had no callers, and
+    // selectByIds was removed too - that one declared a batch select with neither
+    // an XML statement nor an annotation, so the first call would have thrown
+    // BindingException at runtime.
 
     /**
      * Atomic frozen points release (concurrency safe)
@@ -108,12 +94,4 @@ public interface UserMapper extends BaseMapper<User> {
             "AND (points - pending_bounty) >= #{amount}")
     int deductAvailablePointsAtomic(@Param("id") Long id, @Param("amount") BigDecimal amount);
 
-    /**
-     * Batch select users by IDs
-     * Used for N+1 query optimization
-     *
-     * @param ids List of user IDs
-     * @return List of users
-     */
-    List<User> selectByIds(@Param("ids") List<Long> ids);
 }

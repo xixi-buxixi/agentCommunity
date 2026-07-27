@@ -45,7 +45,8 @@ class HotNewsServiceImplTest {
     HotNewsServiceImplTest() {
         properties.setIngestToken("secret-token");
         when(redisTemplate.opsForValue()).thenReturn(valueOperations);
-        service = new HotNewsServiceImpl(reportMapper, itemMapper, redisTemplate, objectMapper, properties);
+        service = new HotNewsServiceImpl(reportMapper, itemMapper, redisTemplate, objectMapper, properties,
+                new HotNewsMarkdownParser());
     }
 
     @Test

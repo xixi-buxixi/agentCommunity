@@ -39,7 +39,7 @@ public class BountyController {
      */
     @Operation(summary = "Get bounty list", security = @SecurityRequirement(name = "Bearer"))
     @GetMapping
-    public ApiResponse<Map<String, Object>> getBountyList(
+    public ApiResponse<PageResponse<BountyListResponse>> getBountyList(
             @AuthenticationPrincipal UserPrincipal principal,
             @RequestParam(required = false) Integer status,
             @RequestParam(required = false) String task_type,
@@ -51,13 +51,7 @@ public class BountyController {
         Long userId = principal != null ? principal.getUserId() : null;
         IPage<BountyListResponse> bountyPage = bountyService.getBountyList(status, task_type, sortBy, sortOrder, page, size);
 
-        Map<String, Object> data = new HashMap<>();
-        data.put("list", bountyPage.getRecords());
-        data.put("total", bountyPage.getTotal());
-        data.put("page", bountyPage.getCurrent());
-        data.put("size", bountyPage.getSize());
-
-        return ApiResponse.success(data);
+        return ApiResponse.success(PageResponse.from(bountyPage));
     }
 
     /**
@@ -65,7 +59,7 @@ public class BountyController {
      */
     @Operation(summary = "Get my bounties", security = @SecurityRequirement(name = "Bearer"))
     @GetMapping("/my")
-    public ApiResponse<Map<String, Object>> getMyBounties(
+    public ApiResponse<PageResponse<BountyListResponse>> getMyBounties(
             @AuthenticationPrincipal UserPrincipal principal,
             @RequestParam(required = false) Integer status,
             @RequestParam(value = "sort_by", required = false, defaultValue = "created_at") String sortBy,
@@ -75,13 +69,7 @@ public class BountyController {
 
         IPage<BountyListResponse> bountyPage = bountyService.getMyBounties(principal.getUserId(), status, sortBy, sortOrder, page, size);
 
-        Map<String, Object> data = new HashMap<>();
-        data.put("list", bountyPage.getRecords());
-        data.put("total", bountyPage.getTotal());
-        data.put("page", bountyPage.getCurrent());
-        data.put("size", bountyPage.getSize());
-
-        return ApiResponse.success(data);
+        return ApiResponse.success(PageResponse.from(bountyPage));
     }
 
     /**
@@ -89,7 +77,7 @@ public class BountyController {
      */
     @Operation(summary = "Get my accepted bounties", security = @SecurityRequirement(name = "Bearer"))
     @GetMapping("/accepted")
-    public ApiResponse<Map<String, Object>> getMyAcceptedBounties(
+    public ApiResponse<PageResponse<BountyListResponse>> getMyAcceptedBounties(
             @AuthenticationPrincipal UserPrincipal principal,
             @RequestParam(required = false) Integer status,
             @RequestParam(value = "sort_by", required = false, defaultValue = "created_at") String sortBy,
@@ -99,13 +87,7 @@ public class BountyController {
 
         IPage<BountyListResponse> bountyPage = bountyService.getMyAcceptedBounties(principal.getUserId(), status, sortBy, sortOrder, page, size);
 
-        Map<String, Object> data = new HashMap<>();
-        data.put("list", bountyPage.getRecords());
-        data.put("total", bountyPage.getTotal());
-        data.put("page", bountyPage.getCurrent());
-        data.put("size", bountyPage.getSize());
-
-        return ApiResponse.success(data);
+        return ApiResponse.success(PageResponse.from(bountyPage));
     }
 
     /**

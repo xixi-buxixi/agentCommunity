@@ -120,10 +120,13 @@ public interface PostMapper extends BaseMapper<Post> {
      * @param limit Number of posts to fetch
      * @return List of posts ordered by hot score descending
      */
-    @Select("SELECT id, like_count, comment_count, view_count FROM posts " +
-            "WHERE deleted = 0 AND is_system_message = 0 " +
-            "AND (like_count > 0 OR comment_count > 0 OR view_count > 0) " +
-            "ORDER BY (like_count * 3 + comment_count * 5 + view_count) DESC, created_at DESC " +
+    // Reads the stored generated column hot_score (see schema.sql migrations)
+    // instead of sorting by the raw expression, which could never use an index and
+    // therefore scanned every post and filesorted it on each ranking refresh.
+    // Requires MySQL 5.7+ for generated columns.
+    @Select("SELECT id, like_count, comment_count, view_count, hot_score FROM posts " +
+            "WHERE deleted = 0 AND is_system_message = 0 AND hot_score > 0 " +
+            "ORDER BY hot_score DESC, created_at DESC " +
             "LIMIT #{limit}")
     List<Post> findTopByHotScore(@Param("limit") int limit);
 

@@ -9,6 +9,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { getPostDetail, recordView, getComments, createComment } from '@/api/post'
 import { useReaction } from '@/composables/useReaction'
+import { unwrapPage } from '@/utils/page'
 import CommentThread from '@/components/CommentThread.vue'
 import { formatDateTime } from '@/utils/format'
 import { renderMarkdown } from '@/utils/markdown'
@@ -71,9 +72,10 @@ const loadComments = async () => {
   loadingComments.value = true
   try {
     const { data } = await getComments(route.params.id, { page: 1, size: 50 })
-    comments.value = data.records || []
+    const { items, total } = unwrapPage(data)
+    comments.value = items
     // Prefer the authoritative count from the post; fall back to pagination total
-    totalComments.value = post.value?.comment_count ?? data.total ?? comments.value.length
+    totalComments.value = post.value?.comment_count ?? total
   } catch (err) {
     console.error('Failed to load comments:', err)
     comments.value = []

@@ -14,6 +14,7 @@ import {
 import { canCancelBounty, getBountyStatusLabel } from '@/utils/evolution'
 import BountyLogsPanel from '@/components/BountyLogsPanel.vue'
 import BaseModal from '@/components/BaseModal.vue'
+import { unwrapPage } from '@/utils/page'
 import BountyList from '@/components/BountyList.vue'
 import BountyDetail from '@/components/BountyDetail.vue'
 import MyTasksList from '@/components/MyTasksList.vue'
@@ -66,7 +67,7 @@ const loadBounties = async () => {
       params.sort_order = bountySortOrder.value
     }
     const { data } = await getBounties(params)
-    bounties.value = data?.list || data || []
+    bounties.value = unwrapPage(data).items
   } catch (err) {
     error.value = err.message || 'Load failed'
     bounties.value = []
@@ -93,7 +94,7 @@ const loadMyBounties = async () => {
   try {
     const params = { page: 1, size: 50 }
     const { data } = await getMyBounties(params)
-    myBounties.value = data?.list || data || []
+    myBounties.value = unwrapPage(data).items
   } catch (err) {
     error.value = err.message || 'Load failed'
     myBounties.value = []
@@ -109,7 +110,7 @@ const loadMyAcceptedTasks = async () => {
   try {
     const params = { page: 1, size: 50 }
     const { data } = await getMyAcceptedBounties(params)
-    myAcceptedTasks.value = data?.list || data || []
+    myAcceptedTasks.value = unwrapPage(data).items
   } finally {
     loading.value = false
   }

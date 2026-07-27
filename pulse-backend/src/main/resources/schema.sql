@@ -334,6 +334,97 @@ CREATE TABLE IF NOT EXISTS hot_news_items (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Daily technical hot news items';
 
 -- ============================================================
+-- Idempotent migrations (M4)
+-- ============================================================
+-- This file is re-applied on every deploy and `mysql < file` aborts on the first
+-- error, so plain ALTER TABLE statements cannot be used here: the second deploy
+-- would fail on "Duplicate key name" and silently skip everything after it. These
+-- helpers check information_schema first, which makes re-running the file a no-op.
+
+DROP PROCEDURE IF EXISTS pulse_add_index;
+DROP PROCEDURE IF EXISTS pulse_add_column;
+DROP PROCEDURE IF EXISTS pulse_add_agent_name_unique;
+
+DELIMITER $$
+
+CREATE PROCEDURE pulse_add_index(IN p_table VARCHAR(64), IN p_index VARCHAR(64), IN p_cols VARCHAR(255))
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.TABLES
+               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = p_table)
+       AND NOT EXISTS (SELECT 1 FROM information_schema.STATISTICS
+                       WHERE TABLE_SCHEMA = DATABASE()
+                         AND TABLE_NAME = p_table
+                         AND INDEX_NAME = p_index) THEN
+        SET @ddl = CONCAT('ALTER TABLE `', p_table, '` ADD INDEX `', p_index, '` (', p_cols, ')');
+        PREPARE stmt FROM @ddl;
+        EXECUTE stmt;
+        DEALLOCATE PREPARE stmt;
+    END IF;
+END$$
+
+CREATE PROCEDURE pulse_add_column(IN p_table VARCHAR(64), IN p_column VARCHAR(64), IN p_definition VARCHAR(500))
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.TABLES
+               WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = p_table)
+       AND NOT EXISTS (SELECT 1 FROM information_schema.COLUMNS
+                       WHERE TABLE_SCHEMA = DATABASE()
+                         AND TABLE_NAME = p_table
+                         AND COLUMN_NAME = p_column) THEN
+        SET @ddl = CONCAT('ALTER TABLE `', p_table, '` ADD COLUMN `', p_column, '` ', p_definition);
+        PREPARE stmt FROM @ddl;
+        EXECUTE stmt;
+        DEALLOCATE PREPARE stmt;
+    END IF;
+END$$
+
+-- Agent names must be unique per owner: agentNameExists() only checks in
+-- application code, so two concurrent creates could both succeed. The constraint
+-- is added only when existing data allows it - otherwise this deploy step would
+-- fail and the operator has to deduplicate first.
+CREATE PROCEDURE pulse_add_agent_name_unique()
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.STATISTICS
+                   WHERE TABLE_SCHEMA = DATABASE()
+                     AND TABLE_NAME = 'agents'
+                     AND INDEX_NAME = 'uk_owner_name')
+       AND NOT EXISTS (SELECT 1 FROM (
+                           SELECT owner_id, name FROM agents WHERE deleted = 0
+                           GROUP BY owner_id, name HAVING COUNT(*) > 1
+                       ) AS dupes) THEN
+        ALTER TABLE agents ADD UNIQUE KEY uk_owner_name (owner_id, name, deleted);
+    END IF;
+END$$
+
+DELIMITER ;
+
+-- Composite indexes for the access paths that had none
+CALL pulse_add_index('posts', 'idx_author_created', 'author_type, author_id, created_at');
+CALL pulse_add_index('comments', 'idx_post_author', 'post_id, author_type, author_id');
+CALL pulse_add_index('bounty_tasks', 'idx_agent_created', 'agent_id, created_at');
+CALL pulse_add_index('bounty_tasks', 'idx_status_deadline', 'status, deadline');
+CALL pulse_add_index('agent_logs', 'idx_agent_created', 'agent_id, created_at');
+CALL pulse_add_index('sys_ledger', 'idx_user_created', 'user_id, created_at');
+
+-- Materialized hot score. Sorting by the expression (like*3 + comment*5 + view)
+-- forced a full scan plus filesort on every ranking refresh; a stored generated
+-- column can be indexed and MySQL keeps it in sync automatically.
+CALL pulse_add_column('posts', 'hot_score',
+    'INT AS (COALESCE(like_count,0) * 3 + COALESCE(comment_count,0) * 5 + COALESCE(view_count,0)) STORED');
+CALL pulse_add_index('posts', 'idx_hot_score', 'hot_score, created_at');
+
+-- Round-robin agent dispatch. ORDER BY RAND() scans the whole table and builds a
+-- temporary file on every scheduler tick; ordering by "least recently dispatched"
+-- uses an index and is fairer than random selection.
+CALL pulse_add_column('agents', 'last_dispatched_at', 'DATETIME NULL');
+CALL pulse_add_index('agents', 'idx_dispatch_order', 'status, deleted, last_dispatched_at');
+
+CALL pulse_add_agent_name_unique();
+
+DROP PROCEDURE IF EXISTS pulse_add_index;
+DROP PROCEDURE IF EXISTS pulse_add_column;
+DROP PROCEDURE IF EXISTS pulse_add_agent_name_unique;
+
+-- ============================================================
 -- ShedLock: single-run guarantee for @Scheduled jobs
 -- ============================================================
 -- Without it, a second instance wakes the same agents (burning the user's real

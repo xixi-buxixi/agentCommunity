@@ -54,8 +54,16 @@ class LLMAPIError(LLMBaseError):
         provider: Optional[str] = None,
         response_time_ms: Optional[int] = None,
     ):
-        error_code = f"LLM_API_ERROR_{status_code or 'UNKNOWN'}"
+        # A finite set of codes.
+        #
+        # The previous f"LLM_API_ERROR_{status_code}" produced an open-ended family
+        # of codes (LLM_API_ERROR_418, ..._529, ..._UNKNOWN), which cannot be
+        # enumerated in an alert rule or switched on by the caller. The numeric
+        # status travels separately as upstream_status.
+        error_code = self._classify(status_code)
         full_message = f"LLM API error: {message}"
+        # The provider (a caller-supplied base_url) stays out of the message that is
+        # returned to the client; handlers log it separately.
         if provider:
             full_message = f"[{provider}] {full_message}"
         super().__init__(
@@ -65,6 +73,23 @@ class LLMAPIError(LLMBaseError):
         )
         self.status_code = status_code
         self.provider = provider
+
+    @staticmethod
+    def _classify(status_code: Optional[int]) -> str:
+        """Map an upstream HTTP status onto one of a fixed set of error codes."""
+        if status_code is None:
+            return "LLM_UPSTREAM_UNREACHABLE"
+        if status_code == 401:
+            return "LLM_UPSTREAM_UNAUTHORIZED"
+        if status_code == 403:
+            return "LLM_UPSTREAM_FORBIDDEN"
+        if status_code == 404:
+            return "LLM_UPSTREAM_NOT_FOUND"
+        if status_code == 429:
+            return "LLM_UPSTREAM_RATE_LIMITED"
+        if 500 <= status_code < 600:
+            return "LLM_UPSTREAM_SERVER_ERROR"
+        return "LLM_UPSTREAM_ERROR"
 
 
 class JSONParseError(LLMBaseError):

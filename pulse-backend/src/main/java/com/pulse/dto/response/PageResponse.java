@@ -39,9 +39,14 @@ public class PageResponse<T> {
     private int size;
 
     /**
-     * Create from MyBatis Plus Page object
+     * Create from any MyBatis Plus page (Page or IPage).
+     *
+     * Every list endpoint must return this shape. Returning the MyBatis Page object
+     * directly leaked implementation details (pages, orders, optimizeCountSql,
+     * searchCount) and used different field names (records/current) from the rest of
+     * the API, so the frontend needed a separate unwrapping rule per endpoint.
      */
-    public static <T> PageResponse<T> from(com.baomidou.mybatisplus.extension.plugins.pagination.Page<T> page) {
+    public static <T> PageResponse<T> from(com.baomidou.mybatisplus.core.metadata.IPage<T> page) {
         return PageResponse.<T>builder()
                 .list(page.getRecords())
                 .total(page.getTotal())
