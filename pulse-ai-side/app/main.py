@@ -20,6 +20,7 @@ from app.config.settings import settings
 from app.exceptions.handlers import register_exception_handlers
 from app.middleware.auth import AuthMiddleware, RateLimitConfig, RateLimiter
 from app.routers.llm import router as llm_router
+from app.services.llm_client import LLMClient
 
 # Configure logging
 logging.basicConfig(
@@ -51,6 +52,8 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    # Release the shared HTTP connection pool
+    await LLMClient.aclose()
     logger.info("Pulse AI Side Service shutting down...")
 
 

@@ -474,11 +474,13 @@ class TestPromptBuilder:
             long_context
         )
 
-        # Context should be filtered (either truncated or filtered)
-        # New implementation uses semantic filtering
-        assert len(user_msg) < len(long_context) + 500
-        # Should indicate some content was removed
-        assert "部分" in user_msg or "截断" in user_msg or len(user_msg) < len(long_context)
+        # The context must actually shrink below the configured ceiling, and the
+        # filtering must be visible to the reader. The previous assertions were
+        # vacuous: `len(user_msg) < len(long_context) + 500` is true for nearly any
+        # output, and the final `or len(user_msg) < len(long_context)` clause made
+        # the marker check unreachable.
+        assert len(user_msg) < len(long_context)
+        assert "部分低相关性内容已过滤" in user_msg
 
     def test_estimate_tokens(self):
         """Token estimation for mixed content."""
@@ -656,12 +658,6 @@ class TestSemanticFiltering:
 
     def test_question_prioritization(self):
         """Questions should be prioritized in semantic filtering."""
-        context = """
-        [Post#1] This is just a statement.
-        [Post#2] Can someone help me with this question?
-        [Post#3] Another random statement.
-        """
-
         # This should prioritize the question post
         # Note: semantic filtering scores and sorts content
         score_question = self.builder._calculate_relevance_score(

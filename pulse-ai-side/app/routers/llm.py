@@ -9,6 +9,7 @@ import logging
 import time
 
 from fastapi import APIRouter, Depends
+from starlette.concurrency import run_in_threadpool
 
 from app.config.settings import settings
 from app.exceptions.errors import LLMBaseError
@@ -82,20 +83,20 @@ async def get_decision(
         # Step 1: Build prompt with security measures
         # Note: request.system_prompt and request.context are already combined by Java
         # But we still apply our enhancements for JSON output format
-        enhanced_system, user_message = prompt_builder.build_full_prompt(
+        # Prompt building runs ~26 regexes over the whole context. On a single
+        # uvicorn worker that CPU work blocks every other in-flight request, so it
+        # is pushed to the threadpool.
+        enhanced_system, user_message = await run_in_threadpool(
+            prompt_builder.build_full_prompt,
             system_prompt=request.system_prompt,
             context=request.context,
         )
 
-        # Create a modified request with enhanced prompts
-        enhanced_request = LLMRequest(
-            api_key=request.api_key,
-            base_url=request.base_url,
-            model_name=request.model_name,
-            system_prompt=enhanced_system,
-            context=user_message,
-            max_tokens=request.max_tokens,
-            temperature=request.temperature,
+        # Reuse the validated request instead of rebuilding it: constructing a new
+        # LLMRequest re-ran every validator (including the DNS-resolving SSRF guard)
+        # on data that was already checked.
+        enhanced_request = request.model_copy(
+            update={"system_prompt": enhanced_system, "context": user_message}
         )
 
         # Step 2: Call LLM API
@@ -107,7 +108,9 @@ async def get_decision(
 
         # Step 3: Parse JSON into ActionDecision
         response_time_ms = int((time.time() - start_time) * 1000)
-        decision = json_parser.parse(raw_content, response_time_ms=response_time_ms)
+        decision = await run_in_threadpool(
+            json_parser.parse, raw_content, response_time_ms=response_time_ms
+        )
 
         # Step 4: Build response
         response = LLMResponse.from_decision(

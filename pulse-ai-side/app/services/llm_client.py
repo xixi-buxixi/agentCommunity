@@ -8,6 +8,7 @@ Supports multiple providers via base_url configuration.
 import asyncio
 import json
 import logging
+import random
 import time
 from typing import Any, Dict, Optional, Tuple
 
@@ -18,6 +19,9 @@ from app.exceptions.errors import LLMAPIError, LLMTimeoutError
 from app.models.request import LLMRequest
 
 logger = logging.getLogger(__name__)
+
+# Statuses worth another attempt: rate limiting plus transient server errors.
+RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
 
 class LLMClient:
@@ -31,6 +35,12 @@ class LLMClient:
     - Retry logic
     """
 
+    # One connection pool for the whole process. Creating an AsyncClient per
+    # request threw away every pooled connection, paying a fresh TLS handshake
+    # (200-500ms) on each agent decision.
+    _shared_client: Optional[httpx.AsyncClient] = None
+    _client_lock = asyncio.Lock()
+
     def __init__(self):
         """
         Initialize HTTP client with timeout configuration.
@@ -41,6 +51,28 @@ class LLMClient:
             write=settings.REQUEST_TIMEOUT_SECONDS,
             pool=settings.CONNECT_TIMEOUT_SECONDS,
         )
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Lazily create the process-wide AsyncClient."""
+        if LLMClient._shared_client is None or LLMClient._shared_client.is_closed:
+            async with LLMClient._client_lock:
+                if LLMClient._shared_client is None or LLMClient._shared_client.is_closed:
+                    LLMClient._shared_client = httpx.AsyncClient(
+                        timeout=self.timeout,
+                        limits=httpx.Limits(
+                            max_connections=20,
+                            max_keepalive_connections=10,
+                            keepalive_expiry=30.0,
+                        ),
+                    )
+        return LLMClient._shared_client
+
+    @classmethod
+    async def aclose(cls) -> None:
+        """Close the shared client (called from the app lifespan)."""
+        if cls._shared_client is not None and not cls._shared_client.is_closed:
+            await cls._shared_client.aclose()
+        cls._shared_client = None
 
     async def call_llm(
         self,
@@ -66,76 +98,114 @@ class LLMClient:
 
         logger.info(f"Calling LLM: model={request.model_name}, url={request.base_url}")
 
-        # Use async HTTP client
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            for attempt in range(settings.MAX_RETRIES + 1):
-                try:
-                    response = await client.post(
-                        url,
-                        json=request_body,
-                        headers=headers,
-                    )
+        client = await self._get_client()
+        for attempt in range(settings.MAX_RETRIES + 1):
+            last_attempt = attempt >= settings.MAX_RETRIES
+            try:
+                response = await client.post(
+                    url,
+                    json=request_body,
+                    headers=headers,
+                )
 
-                    response_time_ms = int((time.time() - start_time) * 1000)
+                response_time_ms = int((time.time() - start_time) * 1000)
 
-                    if response.status_code == 200:
-                        response_body = response.json()
-                        logger.info(
-                            f"LLM call successful: "
-                            f"model={request.model_name}, "
-                            f"time={response_time_ms}ms, "
-                            f"attempt={attempt + 1}"
-                        )
-                        return response_body, self._extract_usage(
-                            response_body,
-                            prompt_text=self._prompt_text_for_estimate(request),
-                        )
-
-                    # Handle error status codes
-                    await self._handle_error_status(
-                        response.status_code,
-                        response.text,
-                        request.base_url,
-                        response_time_ms,
-                    )
-
-                except httpx.TimeoutException:
-                    response_time_ms = int((time.time() - start_time) * 1000)
-                    logger.warning(
-                        f"LLM timeout: model={request.model_name}, "
+                if response.status_code == 200:
+                    response_body = response.json()
+                    logger.info(
+                        f"LLM call successful: "
+                        f"model={request.model_name}, "
                         f"time={response_time_ms}ms, "
                         f"attempt={attempt + 1}"
                     )
-
-                    if attempt < settings.MAX_RETRIES:
-                        await asyncio.sleep(settings.RETRY_DELAY_SECONDS)
-                        continue
-
-                    raise LLMTimeoutError(
-                        timeout_seconds=settings.REQUEST_TIMEOUT_SECONDS,
-                        response_time_ms=response_time_ms,
+                    return response_body, self._extract_usage(
+                        response_body,
+                        prompt_text=self._prompt_text_for_estimate(request),
                     )
 
-                except httpx.RequestError as e:
-                    response_time_ms = int((time.time() - start_time) * 1000)
-                    logger.error(
-                        f"LLM request error: {str(e)}, "
-                        f"attempt={attempt + 1}"
+                # Retryable upstream failures: rate limiting and server errors.
+                # These used to fall straight through to _handle_error_status,
+                # whose LLMAPIError escaped the loop uncaught - so MAX_RETRIES
+                # only ever applied to timeouts and connection errors, never to
+                # the 429/5xx responses that most deserve a retry.
+                if response.status_code in RETRYABLE_STATUS and not last_attempt:
+                    delay = self._retry_delay(attempt, response.headers.get("Retry-After"))
+                    logger.warning(
+                        f"LLM returned retryable status {response.status_code}; "
+                        f"retrying in {delay:.1f}s (attempt {attempt + 1})"
                     )
+                    await asyncio.sleep(delay)
+                    continue
 
-                    if attempt < settings.MAX_RETRIES:
-                        await asyncio.sleep(settings.RETRY_DELAY_SECONDS)
-                        continue
+                await self._handle_error_status(
+                    response.status_code,
+                    response.text,
+                    request.base_url,
+                    response_time_ms,
+                )
 
-                    raise LLMAPIError(
-                        message=str(e),
-                        status_code=None,
-                        provider=request.base_url,
-                        response_time_ms=response_time_ms,
-                    )
+            except httpx.TimeoutException as exc:
+                response_time_ms = int((time.time() - start_time) * 1000)
+                logger.warning(
+                    f"LLM timeout: model={request.model_name}, "
+                    f"time={response_time_ms}ms, "
+                    f"attempt={attempt + 1}"
+                )
 
-        # Should not reach here
-        raise LLMAPIError(message="Max retries exceeded", provider=request.base_url)
+                # A timeout may hit after the model already ran and billed the
+                # user, so only retry while there is budget left.
+                if not last_attempt:
+                    await asyncio.sleep(self._retry_delay(attempt))
+                    continue
+
+                raise LLMTimeoutError(
+                    timeout_seconds=settings.REQUEST_TIMEOUT_SECONDS,
+                    response_time_ms=response_time_ms,
+                ) from exc
+
+            except httpx.RequestError as exc:
+                response_time_ms = int((time.time() - start_time) * 1000)
+                logger.error(
+                    f"LLM request error: {str(exc)}, "
+                    f"attempt={attempt + 1}"
+                )
+
+                if not last_attempt:
+                    await asyncio.sleep(self._retry_delay(attempt))
+                    continue
+
+                raise LLMAPIError(
+                    message=str(exc),
+                    status_code=None,
+                    provider=request.base_url,
+                    response_time_ms=response_time_ms,
+                ) from exc
+
+        # Every attempt returned a retryable status without raising
+        raise LLMAPIError(
+            message="Upstream kept returning retryable errors",
+            status_code=None,
+            provider=request.base_url,
+            response_time_ms=int((time.time() - start_time) * 1000),
+        )
+
+    def _retry_delay(self, attempt: int, retry_after: Optional[str] = None) -> float:
+        """
+        Exponential backoff with jitter, honouring Retry-After when the upstream
+        sends one. The previous fixed 1s delay made every retrying worker come
+        back at the same instant (thundering herd) and ignored Retry-After.
+        """
+        if retry_after:
+            try:
+                # Retry-After may be seconds or an HTTP date; only seconds is honoured
+                return min(float(retry_after), settings.RETRY_MAX_DELAY_SECONDS)
+            except ValueError:
+                pass
+        base = min(
+            settings.RETRY_DELAY_SECONDS * (2 ** attempt),
+            settings.RETRY_MAX_DELAY_SECONDS,
+        )
+        return base * (0.5 + random.random() / 2)
 
     def _build_request_body(self, request: LLMRequest) -> Dict[str, Any]:
         """
@@ -155,8 +225,13 @@ class LLMClient:
                     "content": request.context,
                 },
             ],
-            "max_tokens": request.max_tokens or settings.DEFAULT_MAX_TOKENS,
-            "temperature": request.temperature or settings.DEFAULT_TEMPERATURE,
+            # `or` would substitute the default for any falsy value, so an
+            # explicit max_tokens=0 or temperature=0.0 (a caller asking for
+            # deterministic output) was silently replaced by 0.7.
+            "max_tokens": request.max_tokens if request.max_tokens is not None
+            else settings.DEFAULT_MAX_TOKENS,
+            "temperature": request.temperature if request.temperature is not None
+            else settings.DEFAULT_TEMPERATURE,
             "tools": [
                 {
                     "type": "function",
