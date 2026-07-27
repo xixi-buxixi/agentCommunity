@@ -8,13 +8,24 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Runs an agent-initiated bounty creation in its own transaction.
+ * Runs an agent-initiated bounty creation inside its own savepoint.
  *
- * Why REQUIRES_NEW: createBounty freezes points and throws BusinessException on
- * insufficient balance. Joining the agent-loop transaction would mark it
- * rollback-only, and since the caller swallows the exception to continue with the
- * other actions, the whole cycle would then fail at commit time with
- * UnexpectedRollbackException - losing every other action of that cycle.
+ * The problem being solved: createBounty freezes points and throws
+ * BusinessException on insufficient balance. Joining the agent-loop transaction
+ * plainly would mark it rollback-only, and because the caller swallows the
+ * exception to carry on with the other actions, the cycle would then fail at commit
+ * time with UnexpectedRollbackException - losing every other action of that cycle.
+ *
+ * NESTED rather than REQUIRES_NEW: a nested transaction is a savepoint inside the
+ * caller's transaction, so
+ * - a failed bounty rolls back to the savepoint and the outer cycle continues, and
+ * - if the outer transaction later fails, the bounty (and its point freeze) rolls
+ *   back with it.
+ * With REQUIRES_NEW the bounty committed immediately, so a later failure in the
+ * same cycle left a funded bounty behind with no matching log row or token charge.
+ *
+ * Requires a transaction manager that supports savepoints; DataSourceTransactionManager
+ * (what MyBatis uses here) does, on InnoDB.
  */
 @Service
 @RequiredArgsConstructor
@@ -22,7 +33,7 @@ public class AgentBountyExecutor {
 
     private final BountyService bountyService;
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    @Transactional(propagation = Propagation.NESTED)
     public void createForAgent(Long ownerId, BountyCreateRequest request) {
         bountyService.createBounty(ownerId, request);
     }

@@ -107,7 +107,12 @@ public class LedgerServiceImpl implements LedgerService {
 
         // Read the real post-update balance so the ledger trail is continuous
         // instead of derived from a pre-update snapshot.
-        BigDecimal tipperNewBalance = currentPoints(userId);
+        //
+        // AVAILABLE balance, not total points: PointsService records available
+        // balance (points - pending_bounty) in its rows, and mixing the two bases in
+        // one ledger made the trail discontinuous - a user with 60 frozen would see a
+        // bounty row ending at 40 followed by a tip row starting at 100.
+        BigDecimal tipperNewBalance = currentAvailablePoints(userId);
         BigDecimal tipperBalanceBefore = tipperNewBalance.add(request.getAmount());
 
         // Create tipper ledger entry
@@ -130,7 +135,7 @@ public class LedgerServiceImpl implements LedgerService {
             throw new BusinessException(ErrorCode.USER_NOT_FOUND);
         }
 
-        BigDecimal ownerNewBalance = currentPoints(agent.getOwnerId());
+        BigDecimal ownerNewBalance = currentAvailablePoints(agent.getOwnerId());
         BigDecimal ownerBalanceBefore = ownerNewBalance.subtract(request.getAmount());
 
         // Create owner ledger entry
@@ -154,14 +159,13 @@ public class LedgerServiceImpl implements LedgerService {
     }
 
     /**
-     * Re-read the persisted total points of a user, for ledger balance snapshots.
+     * Re-read the persisted AVAILABLE balance of a user, for ledger snapshots.
+     *
+     * Same basis as PointsService uses, so the two sources of ledger rows produce a
+     * single continuous balance trail.
      */
-    private BigDecimal currentPoints(Long userId) {
-        User user = userMapper.selectById(userId);
-        if (user == null || user.getPoints() == null) {
-            return BigDecimal.ZERO;
-        }
-        return user.getPoints();
+    private BigDecimal currentAvailablePoints(Long userId) {
+        return pointsService.getAvailablePoints(userId);
     }
 
     /**

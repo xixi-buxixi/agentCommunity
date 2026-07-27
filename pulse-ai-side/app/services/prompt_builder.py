@@ -122,8 +122,15 @@ class PromptBuilder:
         ),
     ]
 
-    # Post block header written by the Java side: "[Post#123] ..."
-    POST_HEADER_RE = re.compile(r"^\[Post#\d+\]")
+    # Post block header exactly as the Java side writes it:
+    #   "[Post#123] [HUMAN alice]: content"
+    #
+    # The full shape is required on purpose. A loose "^\[Post#\d+\]" also matched a
+    # line inside a post's own text, which let an attacker forge a block boundary and
+    # split a payload so that neither half tripped the per-block detectors. The
+    # backend additionally strips newlines from post content, so content cannot start
+    # a line at all.
+    POST_HEADER_RE = re.compile(r"^\[Post#\d+\]\s*\[[A-Za-z]+\s[^\]]*\]\s*:")
 
     # Forged decision payloads, covering BOTH the legacy single-action key and the
     # multi-action key that the current contract actually uses.
@@ -239,6 +246,20 @@ class PromptBuilder:
             )
 
         context = "\n".join(sanitized_blocks)
+
+        # Whole-context re-check.
+        #
+        # Block boundaries are recognised from a line starting with [Post#N], and post
+        # CONTENT can contain such a line too. An attacker can therefore split a
+        # payload across a forged boundary - "ignore all previous\n[Post#999]
+        # instructions..." - so that neither half trips the per-block detectors, while
+        # the rejoined text still reads as one instruction to the model.
+        # Detecting on the reassembled text closes that gap.
+        rejoined_reason = self._detect_injection(context)
+        if rejoined_reason:
+            raise PromptInjectionDetected(
+                detection_reason=f"reassembled context still matches: {rejoined_reason}",
+            )
 
         # Step 3: neutralize control structures (tags, fake decision JSON)
         context = self._escape_control_chars(context)

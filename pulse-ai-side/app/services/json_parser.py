@@ -114,7 +114,7 @@ class JSONParser:
         return self._create_decision(parsed, raw_content)
 
     def _attempt_repair(self, malformed: str) -> str:
-        """
+        r"""
         对畸形 JSON 做保守修复。
 
         原实现有两条替换会破坏本来合法的 JSON：
@@ -147,8 +147,8 @@ class JSONParser:
             return None
         return value if isinstance(value, dict) else None
 
-    @staticmethod
-    def _close_truncated(text: str) -> str:
+    @classmethod
+    def _close_truncated(cls, text: str) -> str:
         """
         补齐被 max_tokens 截断的 JSON。
 
@@ -182,14 +182,48 @@ class JSONParser:
             return text
 
         repaired = text
-        # 截断可能停在键名或逗号后面，先去掉不完整的尾巴
+
         if in_string:
+            # 停在字符串中间：内容本身可能被截断，但至少是完整的 token 边界，
+            # 补上引号即可（内容偏短由上层的截断逻辑负责）。
             repaired += '"'
+        else:
+            # 停在字符串外面时，尾巴可能是被截断的**数字或字面量**——
+            # 例如 target_post_id 原本是 123，截断成 12 后如果直接补括号，
+            # 会得到一个语法合法但语义错误的 JSON（去操作 12 号帖子），
+            # reward 被截成 10 同理会创建错误金额的悬赏。
+            # 因此这里把不完整的尾部键值整段丢掉，而不是猜它的值。
+            repaired = cls._drop_incomplete_tail(repaired)
+
         repaired = re.sub(r',\s*$', '', repaired)
         repaired = re.sub(r'"\s*:\s*$', '": null', repaired)
         for opener in reversed(stack):
             repaired += "}" if opener == "{" else "]"
         return repaired
+
+    # 结尾疑似被截断的裸 token（数字 / true / false / null 的前缀）
+    _TRAILING_TOKEN = re.compile(r'(-?\d[\d.eE+-]*|t(?:r(?:u(?:e)?)?)?|f(?:a(?:l(?:s(?:e)?)?)?)?|n(?:u(?:l(?:l)?)?)?)$')
+
+    @classmethod
+    def _drop_incomplete_tail(cls, text: str) -> str:
+        """
+        丢弃结尾那个可能被截断的裸 token 及其键。
+
+        无法从文本判断 `12` 是完整的 12 还是被截断的 123，所以只能整段丢弃：
+        宁可少一个字段（上层会退化为 ignore 或用默认值），也不能拿一个错误的
+        帖子 id 或悬赏金额去执行动作。
+        """
+        stripped = text.rstrip()
+        if not cls._TRAILING_TOKEN.search(stripped):
+            return text
+
+        # 回退到上一个逗号或容器起始处，把 "key": <被截断的值> 一起去掉
+        cut = max(stripped.rfind(','), stripped.rfind('{'), stripped.rfind('['))
+        if cut < 0:
+            return stripped
+        if stripped[cut] == ',':
+            return stripped[:cut]
+        return stripped[: cut + 1]
 
     def _create_decision(self, parsed: dict, raw_content: Optional[str] = None) -> ActionDecision:
         """

@@ -358,8 +358,15 @@ public class BountyServiceImpl implements BountyService {
 
         // 4. Increment accepted count
         bountyTaskMapper.incrementAcceptedCount(taskId);
+        // PENDING -> ACCEPTED as a compare-and-set. An unconditional write here could
+        // resurrect a task that cancel or the expiry sweep had already settled and
+        // refunded in the meantime, leaving released points on a live task.
         if (task.getStatus() == BountyStatus.PENDING.getCode()) {
-            bountyTaskMapper.updateStatus(taskId, BountyStatus.ACCEPTED.getCode());
+            int moved = bountyTaskMapper.updateStatusIfIn(taskId, BountyStatus.ACCEPTED.getCode(),
+                    List.of(BountyStatus.PENDING.getCode()));
+            if (moved == 0) {
+                throw new BusinessException(ErrorCode.BOUNTY_NOT_ACCEPTABLE);
+            }
         }
 
         // 5. Log the acceptance
@@ -422,9 +429,18 @@ public class BountyServiceImpl implements BountyService {
         // 5. Update acceptance status
         bountyAcceptanceMapper.updateStatus(taskId, userId, AcceptanceStatus.SUBMITTED.getCode());
 
-        // 6. Update task submission count and status
+        // 6. Update task submission count and status.
+        // Conditional: writing REVIEWING unconditionally could pull a task that was
+        // just settled (COMPLETED) back into review, and the audit path would then
+        // accept it a second time - paying the reward twice.
         bountyTaskMapper.incrementSubmissionCount(taskId);
-        bountyTaskMapper.updateStatus(taskId, BountyStatus.REVIEWING.getCode());
+        int moved = bountyTaskMapper.updateStatusIfIn(taskId, BountyStatus.REVIEWING.getCode(),
+                List.of(BountyStatus.PENDING.getCode(),
+                        BountyStatus.ACCEPTED.getCode(),
+                        BountyStatus.REVIEWING.getCode()));
+        if (moved == 0) {
+            throw new BusinessException(ErrorCode.BOUNTY_NOT_ACCEPTABLE);
+        }
 
         // 7. Log the submission
         User hunter = userMapper.selectById(userId);
@@ -473,6 +489,11 @@ public class BountyServiceImpl implements BountyService {
             .decision(request.getDecision());
 
         if ("ACCEPT".equalsIgnoreCase(request.getDecision())) {
+            // A submission may only be judged once
+            if (submission.getReviewedAt() != null) {
+                throw new BusinessException(ErrorCode.BOUNTY_STATUS_INVALID);
+            }
+
             // Claim the task with a compare-and-set BEFORE any money moves.
             // Without this, a second audit of an already COMPLETED task (or two
             // concurrent accepts) would settle the reward twice, and because
@@ -523,7 +544,22 @@ public class BountyServiceImpl implements BountyService {
             log.info("Bounty accepted: taskId={}, submissionId={}, hunterId={}", taskId, submission.getId(), submission.getHunterId());
 
         } else {
-            // Reject submission
+            // Reject submission.
+            //
+            // Guarded for the same reason as the accept branch: without it a task that
+            // was already COMPLETED (and paid) could still have its submission flipped
+            // to rejected, leaving submission/acceptance state contradicting the money
+            // that actually moved. A submission that was already reviewed cannot be
+            // reviewed again either.
+            BountyStatus current = BountyStatus.fromCode(task.getStatus());
+            if (current != BountyStatus.PENDING && current != BountyStatus.ACCEPTED
+                    && current != BountyStatus.REVIEWING) {
+                throw new BusinessException(ErrorCode.BOUNTY_STATUS_INVALID);
+            }
+            if (submission.getReviewedAt() != null) {
+                throw new BusinessException(ErrorCode.BOUNTY_STATUS_INVALID);
+            }
+
             submission.setIsAccepted(false);
             submission.setRejectReason(request.getFeedback());
             submission.setReviewedAt(LocalDateTime.now());

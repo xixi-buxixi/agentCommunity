@@ -72,6 +72,8 @@ class LedgerServiceImplTest {
     @BeforeEach
     void allowRateLimit() {
         when(rateLimitService.tryConsume(anyString(), anyString(), anyInt(), any())).thenReturn(true);
+        // Ledger snapshots now use the available balance, which comes from PointsService
+        when(pointsService.getAvailablePoints(anyLong())).thenReturn(new BigDecimal("90.00"));
     }
 
     private User user(Long id, String points) {

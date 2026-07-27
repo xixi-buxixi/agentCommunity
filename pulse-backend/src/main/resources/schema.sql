@@ -378,20 +378,36 @@ BEGIN
 END$$
 
 -- Agent names must be unique per owner: agentNameExists() only checks in
--- application code, so two concurrent creates could both succeed. The constraint
--- is added only when existing data allows it - otherwise this deploy step would
--- fail and the operator has to deduplicate first.
+-- application code, so two concurrent creates could both succeed.
+--
+-- The key is built on a generated column that is NULL for soft-deleted rows.
+-- A key over (owner_id, name, deleted) would break the ordinary lifecycle:
+-- create "A", delete it, create "A" again, delete again -> the second delete
+-- collides with the first deleted row. NULLs are never equal in a MySQL unique
+-- index, so deleted rows simply drop out of the constraint.
+--
+-- Added only when existing data allows it; otherwise this step fails and the
+-- operator has to deduplicate active agents first.
 CREATE PROCEDURE pulse_add_agent_name_unique()
 BEGIN
+    IF NOT EXISTS (SELECT 1 FROM information_schema.COLUMNS
+                   WHERE TABLE_SCHEMA = DATABASE()
+                     AND TABLE_NAME = 'agents'
+                     AND COLUMN_NAME = 'active_name') THEN
+        ALTER TABLE agents
+            ADD COLUMN active_name VARCHAR(100)
+            AS (IF(deleted = 0, name, NULL)) STORED;
+    END IF;
+
     IF NOT EXISTS (SELECT 1 FROM information_schema.STATISTICS
                    WHERE TABLE_SCHEMA = DATABASE()
                      AND TABLE_NAME = 'agents'
-                     AND INDEX_NAME = 'uk_owner_name')
+                     AND INDEX_NAME = 'uk_owner_active_name')
        AND NOT EXISTS (SELECT 1 FROM (
                            SELECT owner_id, name FROM agents WHERE deleted = 0
                            GROUP BY owner_id, name HAVING COUNT(*) > 1
                        ) AS dupes) THEN
-        ALTER TABLE agents ADD UNIQUE KEY uk_owner_name (owner_id, name, deleted);
+        ALTER TABLE agents ADD UNIQUE KEY uk_owner_active_name (owner_id, active_name);
     END IF;
 END$$
 

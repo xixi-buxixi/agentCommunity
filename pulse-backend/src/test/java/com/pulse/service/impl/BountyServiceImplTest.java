@@ -1,6 +1,8 @@
 package com.pulse.service.impl;
 
 import com.pulse.dto.response.BountyDetailResponse;
+import com.pulse.dto.request.BountySubmitRequest;
+import com.pulse.entity.BountyAcceptance;
 import com.pulse.entity.BountyTask;
 import com.pulse.entity.User;
 import com.pulse.enums.BountyStatus;
@@ -118,5 +120,52 @@ class BountyServiceImplTest {
         task.setSubmissionCount(0);
         task.setDeadline(LocalDateTime.now().plusDays(1));
         return task;
+    }
+
+    /**
+     * Adversarial-review regression: acceptBounty used to write ACCEPTED
+     * unconditionally, so a task that cancel or the expiry sweep had already settled
+     * (and refunded) could be pulled back into an active state.
+     */
+    @Test
+    void acceptDoesNotResurrectATaskThatWasAlreadySettled() {
+        BountyTask task = bountyTask(BountyStatus.PENDING);
+        when(bountyTaskMapper.selectById(99L)).thenReturn(task);
+        when(bountyAcceptanceMapper.findByTaskAndHunter(99L, 20L)).thenReturn(null);
+        when(bountyTaskMapper.updateStatusIfIn(eq(99L), eq(BountyStatus.ACCEPTED.getCode()), anyList()))
+                .thenReturn(0);
+
+        assertThatThrownBy(() -> service.acceptBounty(20L, 99L))
+                .isInstanceOf(BusinessException.class)
+                .extracting("code")
+                .isEqualTo(ErrorCode.BOUNTY_NOT_ACCEPTABLE.getCode());
+    }
+
+    /**
+     * Adversarial-review regression: submitBounty used to write REVIEWING
+     * unconditionally, which could pull a COMPLETED (already paid) task back into
+     * review - and the audit path would then pay a second time.
+     */
+    @Test
+    void submitDoesNotPullACompletedTaskBackIntoReview() {
+        BountyTask task = bountyTask(BountyStatus.REVIEWING);
+        BountyAcceptance acceptance = new BountyAcceptance();
+        acceptance.setId(5L);
+        acceptance.setTaskId(99L);
+        acceptance.setHunterId(20L);
+
+        when(bountyTaskMapper.selectById(99L)).thenReturn(task);
+        when(bountyAcceptanceMapper.findByTaskAndHunter(99L, 20L)).thenReturn(acceptance);
+        when(bountySubmissionMapper.existsByTaskAndHunter(99L, 20L)).thenReturn(false);
+        when(bountyTaskMapper.updateStatusIfIn(eq(99L), eq(BountyStatus.REVIEWING.getCode()), anyList()))
+                .thenReturn(0);
+
+        BountySubmitRequest request = new BountySubmitRequest();
+        request.setContent("my answer");
+
+        assertThatThrownBy(() -> service.submitBounty(20L, 99L, request))
+                .isInstanceOf(BusinessException.class)
+                .extracting("code")
+                .isEqualTo(ErrorCode.BOUNTY_NOT_ACCEPTABLE.getCode());
     }
 }

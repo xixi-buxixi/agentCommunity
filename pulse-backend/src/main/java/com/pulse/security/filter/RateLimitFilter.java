@@ -9,6 +9,7 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.MediaType;
@@ -17,6 +18,8 @@ import org.springframework.util.AntPathMatcher;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.time.Duration;
 import java.util.List;
 
@@ -43,6 +46,13 @@ public class RateLimitFilter extends OncePerRequestFilter {
             new Rule("POST", "/api/v1/auth/register", "register:ip", 5, Duration.ofHours(1)),
             new Rule("POST", "/api/v1/hot-news/ingest", "ingest:ip", 30, Duration.ofHours(1))
     );
+
+    /**
+     * Comma-separated proxy addresses whose X-Forwarded-For may be trusted.
+     * Empty means "loopback and private ranges".
+     */
+    @Value("${pulse.trusted-proxies:}")
+    private String trustedProxies;
 
     private final AntPathMatcher pathMatcher = new AntPathMatcher();
     private final RateLimitService rateLimitService;
@@ -85,23 +95,63 @@ public class RateLimitFilter extends OncePerRequestFilter {
     }
 
     /**
-     * Client IP behind the nginx reverse proxy.
+     * Client IP for rate-limit bucketing.
      *
-     * X-Forwarded-For is caller-controlled, so only the FIRST entry is used and only
-     * as a bucketing hint; the value is never trusted for authorization.
+     * Forwarding headers are only honoured when the request actually arrived from a
+     * trusted proxy, and then the LAST entry is used - that is the value our own
+     * proxy appended. Taking the first entry would hand the bucket key to the
+     * caller: X-Forwarded-For is client-supplied, so rotating it defeats the limit
+     * entirely. (The nginx config also overwrites the header rather than appending,
+     * so normally there is exactly one value.)
      */
     private String resolveClientIp(HttpServletRequest request) {
+        String remoteAddr = request.getRemoteAddr();
+        if (!isTrustedProxy(remoteAddr)) {
+            return remoteAddr != null ? remoteAddr : "unknown";
+        }
+
         String forwarded = request.getHeader("X-Forwarded-For");
         if (forwarded != null && !forwarded.isBlank()) {
-            String first = forwarded.split(",")[0].trim();
-            if (!first.isEmpty()) {
-                return first;
+            String[] hops = forwarded.split(",");
+            for (int i = hops.length - 1; i >= 0; i--) {
+                String hop = hops[i].trim();
+                if (!hop.isEmpty()) {
+                    return hop;
+                }
             }
         }
         String realIp = request.getHeader("X-Real-IP");
         if (realIp != null && !realIp.isBlank()) {
             return realIp.trim();
         }
-        return request.getRemoteAddr() != null ? request.getRemoteAddr() : "unknown";
+        return remoteAddr != null ? remoteAddr : "unknown";
+    }
+
+    /**
+     * Whether forwarding headers from this peer may be believed.
+     *
+     * Defaults to loopback plus the private ranges, which covers "nginx on the same
+     * host" and "nginx on the same private network". Override with
+     * pulse.trusted-proxies when the reverse proxy sits on a public address.
+     */
+    private boolean isTrustedProxy(String remoteAddr) {
+        if (remoteAddr == null || remoteAddr.isBlank()) {
+            return false;
+        }
+        if (!trustedProxies.isBlank()) {
+            for (String candidate : trustedProxies.split(",")) {
+                if (remoteAddr.equals(candidate.trim())) {
+                    return true;
+                }
+            }
+            return false;
+        }
+        try {
+            InetAddress address = InetAddress.getByName(remoteAddr);
+            return address.isLoopbackAddress() || address.isSiteLocalAddress()
+                    || address.isLinkLocalAddress();
+        } catch (UnknownHostException e) {
+            return false;
+        }
     }
 }

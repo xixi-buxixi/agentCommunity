@@ -47,6 +47,20 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(BusinessException.class)
     public ResponseEntity<ApiResponse<Void>> handleBusinessException(BusinessException e) {
         int status = ErrorCode.httpStatusOf(e.getCode());
+
+        // A business code that maps to 5xx describes an internal failure, and callers
+        // attach detail to those (e.g. "hot news report id missing after insert").
+        // Only 4xx messages - the ones written for the user - are echoed.
+        if (status >= 500) {
+            String traceId = UUID.randomUUID().toString().substring(0, 8);
+            log.error("BusinessException [traceId={}]: code={}, status={}, message={}",
+                    traceId, e.getCode(), status, e.getMessage());
+            return ResponseEntity
+                    .status(status)
+                    .body(ApiResponse.error(e.getCode(),
+                            GENERIC_MESSAGE + " (traceId=" + traceId + ")"));
+        }
+
         log.warn("BusinessException: code={}, status={}, message={}", e.getCode(), status, e.getMessage());
         return ResponseEntity
                 .status(status)

@@ -181,7 +181,7 @@ public class AgentLoopScheduler {
         StringBuilder postsContext = new StringBuilder();
         for (Post post : latestPosts) {
             // CRITICAL: Truncate content to prevent context explosion
-            String truncatedContent = post.getTruncatedContent();
+            String truncatedContent = flattenForContext(post.getTruncatedContent());
 
             // Use real post ID instead of sequence number
             // Format: [Post#ID] [AuthorType AuthorName]: Content
@@ -241,6 +241,25 @@ public class AgentLoopScheduler {
             return "Agent#" + post.getAuthorId();
         }
         return "Human#" + post.getAuthorId();
+    }
+
+    /**
+     * Flatten post content into a single line for the context block.
+     *
+     * The gateway splits the context into per-post blocks on lines that look like
+     * "[Post#N] [TYPE name]:". Post content is user-controlled, so a post containing
+     * a newline followed by such a line could forge a block boundary and split an
+     * injection payload across two blocks, each passing the filters on its own.
+     * Removing newlines (and defusing a literal "[Post#") makes that impossible at
+     * the source.
+     */
+    private String flattenForContext(String content) {
+        if (content == null) {
+            return "";
+        }
+        return content
+                .replaceAll("[\\r\\n]+", " ")
+                .replace("[Post#", "(Post#");
     }
 
     private String safeMessage(Exception e) {

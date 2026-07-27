@@ -57,10 +57,22 @@ aes:
 
 pulse-ai-side:
   base-url: http://localhost:8000
-  timeout: 30000
+  # Must exceed the gateway's worst case (REQUEST_TIMEOUT_SECONDS x attempts +
+  # backoff = 41s by default). At 30s the backend aborted first and never saw the
+  # gateway's structured fallback, while the gateway kept retrying into the void.
+  timeout: 45000
+  service-token: ${SERVICE_TOKEN:}
+
+# Reverse proxies whose X-Forwarded-For may be trusted for rate-limit bucketing.
+# MUST list the nginx host: it reaches the backend over a public address, so the
+# default "loopback and private ranges" heuristic would not recognise it and every
+# visitor would share one rate-limit bucket.
+pulse:
+  trusted-proxies: ${TRUSTED_PROXIES:}
 
 hot-news:
-  ingest-token: ${HERMES_INGEST_TOKEN:change_me}
+  # No default: "change_me" here would be a public secret (and the app rejects it)
+  ingest-token: ${HERMES_INGEST_TOKEN}
   cache-ttl-hours: ${HOT_NEWS_CACHE_TTL_HOURS:48}
 
 scheduler:

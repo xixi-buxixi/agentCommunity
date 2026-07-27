@@ -163,16 +163,39 @@ jobs:
           target: /opt/pulse/backend/
           strip_components: 3
       - name: Apply schema migration
-        continue-on-error: true
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.QINIUYUN_HOST }}
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           timeout: 60s
+          command_timeout: 10m
           script: |
             export $(cat /opt/pulse/backend/.env | xargs) 2>/dev/null
-            mysql -u pulse -p"${DB_PASSWORD}" pulse_db < /opt/pulse/backend/schema.sql 2>&1 || echo "Schema migration completed (warnings above are normal)"
+
+            # --force so that statements needing privileges this user may not have
+            # (CREATE DATABASE) do not abort the rest of the file...
+            mysql -u pulse -p"${DB_PASSWORD}" --force pulse_db < /opt/pulse/backend/schema.sql
+
+            # ...but the objects the application now depends on are then verified
+            # explicitly. Previously this step was continue-on-error AND swallowed
+            # mysql's exit code with `|| echo`, so a failed migration still reported
+            # success and the app ran against a schema without shedlock / hot_score /
+            # last_dispatched_at - scheduled jobs failing while health stayed UP.
+            missing=""
+            check() {
+              count=$(mysql -u pulse -p"${DB_PASSWORD}" -N -B pulse_db -e "$2" 2>/dev/null | head -1)
+              [ "$count" = "1" ] || missing="$missing $1"
+            }
+            check "table:shedlock" "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='shedlock'"
+            check "column:posts.hot_score" "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='posts' AND COLUMN_NAME='hot_score'"
+            check "column:agents.last_dispatched_at" "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='agents' AND COLUMN_NAME='last_dispatched_at'"
+            if [ -n "$missing" ]; then
+              echo "Schema migration incomplete, missing:$missing"
+              echo "The backend is NOT restarted; the previous version keeps running."
+              exit 1
+            fi
+            echo "Schema migration verified"
       - name: Restart backend
         uses: appleboy/ssh-action@v1
         with:
@@ -219,6 +242,12 @@ jobs:
             ensure_secret HERMES_INGEST_TOKEN
             # Shared with the AI gateway, which now refuses to start without it
             ensure_secret SERVICE_TOKEN
+
+            # The nginx host reaches the backend over a public address, so it must be
+            # named explicitly before its X-Forwarded-For is believed (rate limiting).
+            sed -i "/^TRUSTED_PROXIES=/d" "$ENV_FILE"
+            printf '%s\n' "TRUSTED_PROXIES=${{ secrets.TENCENT_HOST }}" >> "$ENV_FILE"
+
             chmod 600 "$ENV_FILE"
             grep -q "^DB_PASSWORD=..*" "$ENV_FILE" || echo "WARNING: DB_PASSWORD is empty in $ENV_FILE - the backend cannot start without it"
 
