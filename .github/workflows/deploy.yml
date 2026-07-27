@@ -350,6 +350,27 @@ jobs:
             JAR=/opt/pulse/backend/pulse-backend-1.0.0-SNAPSHOT.jar
             PREVIOUS=/opt/pulse/backend/pulse-backend-previous.jar
 
+            # Locate java explicitly.
+            #
+            # A non-interactive ssh shell does not read the login profile, so a JDK
+            # installed via a profile-managed PATH is simply not there. The previous
+            # version of this step ran `nohup java ...` and then echoed
+            # "Backend restarted" unconditionally, so this failure - if it was
+            # happening - was invisible: files were copied, nothing was restarted.
+            JAVA_BIN=$(command -v java 2>/dev/null || true)
+            if [ -z "$JAVA_BIN" ]; then
+              for candidate in "$JAVA_HOME/bin/java" /usr/bin/java /usr/local/bin/java \
+                               /usr/lib/jvm/*/bin/java /opt/java/*/bin/java /opt/jdk*/bin/java; do
+                if [ -x "$candidate" ]; then JAVA_BIN="$candidate"; break; fi
+              done
+            fi
+            if [ -z "$JAVA_BIN" ]; then
+              echo "FATAL: no java executable found on this host."
+              echo "Looked at: PATH ($PATH), \$JAVA_HOME, /usr/bin, /usr/local/bin, /usr/lib/jvm/*, /opt/java*/, /opt/jdk*/"
+              exit 1
+            fi
+            echo "Using java: $JAVA_BIN ($("$JAVA_BIN" -version 2>&1 | head -1))"
+
             # "Is the application serving?" - deliberately NOT "is every dependency
             # healthy?". /actuator/health aggregates DB and Redis, so a Redis blip
             # would report DOWN (503) for a perfectly functional API, and the deploy
@@ -357,7 +378,7 @@ jobs:
             # actually matters here; any HTTP status from the port also proves the
             # container is up.
             start_backend() {
-              nohup java -Xms512m -Xmx768m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 \
+              nohup "$JAVA_BIN" -Xms512m -Xmx768m -XX:+UseG1GC -XX:MaxGCPauseMillis=200 \
                 -jar "$1" \
                 --spring.profiles.active=prod \
                 > /opt/pulse/logs/backend.log 2>&1 &
@@ -427,6 +448,29 @@ jobs:
                    "> /opt/pulse/logs/backend.log 2>&1 &"
             fi
             exit 1
+
+      - name: Diagnose failed backend restart
+        if: failure()
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/diag_key
+          chmod 600 ~/.ssh/diag_key
+          remote() {
+            ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes \
+                -i ~/.ssh/diag_key root@${{ secrets.QINIUYUN_HOST }} "$1" 2>&1
+          }
+          echo "### Backend process"
+          remote "pgrep -af 'pulse-backend.*jar' || echo 'no backend process'"
+          echo "### java availability"
+          remote "command -v java || echo 'java NOT on PATH'; ls -d /usr/lib/jvm/* 2>/dev/null || true"
+          echo "### listener on 8080"
+          remote "ss -ltnp 2>/dev/null | grep ':8080' || echo 'nothing listening on 8080'"
+          echo "### startup log (filtered)"
+          LOG=$(remote "grep -aE 'APPLICATION FAILED TO START|Caused by|Could not resolve placeholder|Description:|Action:|Port 8080|Error:|Started PulseApplication' /opt/pulse/logs/backend.log | tail -15")
+          echo "$LOG"
+          # Emitted from the runner, so GitHub parses it and it shows up as an
+          # annotation - readable without log access.
+          printf '::error title=Backend restart diagnostics::%s\n' "$(printf '%s' "$LOG" | head -c 900 | sed 's/$/%0A/' | tr -d '\n')"
 
   deploy-aiside:
     needs: [changes, test-aiside]
