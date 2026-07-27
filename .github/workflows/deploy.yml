@@ -246,7 +246,43 @@ jobs:
           timeout: 60s
           command_timeout: 8m
           script: |
-            pkill -f 'pulse-backend.*\.jar' || true
+            # Stop the running process WITHOUT matching our own command line.
+            #
+            # This step used to run `pkill -f 'pulse-backend.*\.jar'`. The ssh action
+            # passes this script to the remote shell inline, so the shell's own
+            # /proc/<pid>/cmdline contains that very pattern - pkill therefore killed
+            # the deploy script itself, right before the line that starts the new JVM.
+            # Net effect: files were copied, the old backend was killed, nothing was
+            # started, and the step just reported a non-zero exit. (This is also why
+            # production had been serving a months-old build: the restart never
+            # actually happened.)
+            #
+            # The loop below skips our own shell (identified by a string that only
+            # exists in this script) and only kills processes that really are the
+            # target program.
+            stop_process() {
+              marker="$1"; launcher="$2"
+              for procdir in /proc/[0-9]*; do
+                pid=${procdir#/proc/}
+                [ "$pid" = "$$" ] && continue
+                [ "$pid" = "$PPID" ] && continue
+                cmd=$(tr '\0' ' ' < "$procdir/cmdline" 2>/dev/null) || continue
+                [ -z "$cmd" ] && continue
+                case "$cmd" in *stop_process*) continue ;; esac
+                case "$cmd" in *"$marker"*) ;; *) continue ;; esac
+                # One plain glob: alternation coming from a variable is NOT
+                # interpreted as alternation by the shell (the "|" stays literal),
+                # so a pattern like 'java\ *|*/java\ *' would never match.
+                case "$cmd" in
+                  $launcher)
+                    echo "  stopping pid $pid"
+                    kill "$pid" 2>/dev/null || true
+                    ;;
+                esac
+              done
+            }
+            echo "Stopping the running backend (if any)..."
+            stop_process "pulse-backend-1.0.0-SNAPSHOT.jar" "*java*"
             sleep 3
             mkdir -p /opt/pulse/logs /opt/pulse/backend
             ENV_FILE=/opt/pulse/backend/.env
@@ -382,6 +418,7 @@ jobs:
                 -jar "$1" \
                 --spring.profiles.active=prod \
                 > /opt/pulse/logs/backend.log 2>&1 &
+              echo $! > /opt/pulse/backend/backend.pid
               for i in $(seq 1 36); do
                 code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
                   http://127.0.0.1:8080/actuator/health/liveness 2>/dev/null || echo 000)
@@ -531,7 +568,43 @@ jobs:
             printf '%s\n' "SERVICE_TOKEN=$TOKEN" >> "$AI_ENV"
             chmod 600 "$AI_ENV"
 
-            pkill -f 'uvicorn.*app.main:app' || true
+            # Stop the running process WITHOUT matching our own command line.
+            #
+            # This step used to run `pkill -f 'uvicorn.*app.main:app'`. The ssh action
+            # passes this script to the remote shell inline, so the shell's own
+            # /proc/<pid>/cmdline contains that very pattern - pkill therefore killed
+            # the deploy script itself, right before the line that starts uvicorn.
+            # Net effect: files were copied, the old backend was killed, nothing was
+            # started, and the step just reported a non-zero exit. (This is also why
+            # production had been serving a months-old build: the restart never
+            # actually happened.)
+            #
+            # The loop below skips our own shell (identified by a string that only
+            # exists in this script) and only kills processes that really are the
+            # target program.
+            stop_process() {
+              marker="$1"; launcher="$2"
+              for procdir in /proc/[0-9]*; do
+                pid=${procdir#/proc/}
+                [ "$pid" = "$$" ] && continue
+                [ "$pid" = "$PPID" ] && continue
+                cmd=$(tr '\0' ' ' < "$procdir/cmdline" 2>/dev/null) || continue
+                [ -z "$cmd" ] && continue
+                case "$cmd" in *stop_process*) continue ;; esac
+                case "$cmd" in *"$marker"*) ;; *) continue ;; esac
+                # One plain glob: alternation coming from a variable is NOT
+                # interpreted as alternation by the shell (the "|" stays literal),
+                # so a pattern like 'java\ *|*/java\ *' would never match.
+                case "$cmd" in
+                  $launcher)
+                    echo "  stopping pid $pid"
+                    kill "$pid" 2>/dev/null || true
+                    ;;
+                esac
+              done
+            }
+            echo "Stopping the running AI gateway (if any)..."
+            stop_process "app.main:app" "*uvicorn*"
             sleep 2
             mkdir -p /opt/pulse/logs
             # Bind to loopback: the gateway receives decrypted API keys and has no
