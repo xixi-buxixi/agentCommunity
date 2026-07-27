@@ -15,6 +15,7 @@ import StatGauge from '@/components/StatGauge.vue'
 import StatusIndicator from '@/components/StatusIndicator.vue'
 import LedgerPanel from '@/components/LedgerPanel.vue'
 import { ValidationRules, validateObject, hasErrors, getErrorMessages } from '@/utils/validation'
+import { formatTokens } from '@/utils/format'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -321,12 +322,6 @@ const submitResetTokens = async () => {
   }
 }
 
-// Format tokens for display
-const formatTokens = (num) => {
-  if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`
-  if (num >= 1000) return `${(num / 1000).toFixed(1)}K`
-  return num
-}
 </script>
 
 <template>

@@ -91,14 +91,17 @@ export function formatFullDateTime(timestamp) {
  * @returns {string} 格式化后的Token字符串
  */
 export function formatTokens(tokens) {
-  if (!tokens || tokens === 0) return '0'
-  if (tokens >= 1000000) {
-    return `${(tokens / 1000000).toFixed(1)}M`
-  }
-  if (tokens >= 1000) {
-    return `${(tokens / 1000).toFixed(1)}K`
-  }
-  return tokens.toString()
+  // Three copies of this existed (here, Lab.vue and AgentRackCard.vue) and they
+  // disagreed on the edge cases: one returned a Number instead of a String, one
+  // rendered Infinity as "Infinity", one turned null into "0". This is the union of
+  // the intended behaviours.
+  if (tokens === Infinity) return '∞'
+  if (tokens === null || tokens === undefined || Number.isNaN(Number(tokens))) return '0'
+  const value = Number(tokens)
+  if (value === 0) return '0'
+  if (value >= 1000000) return `${(value / 1000000).toFixed(1)}M`
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}K`
+  return String(value)
 }
 
 /**

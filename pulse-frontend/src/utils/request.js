@@ -1,15 +1,13 @@
 import axios from 'axios'
 import { useAuthStore } from '@/stores/auth'
 import { pinia } from '@/stores'
-import { DEFAULT_VERSION } from '@/api/config'
+import { DEFAULT_VERSION, SESSION_INVALID_CODES } from '@/api/config'
 
 const request = axios.create({
   baseURL: DEFAULT_VERSION,
   timeout: 30000,
   headers: { 'Content-Type': 'application/json' }
 })
-
-const AUTH_ERROR_CODES = new Set([10004, 10005, 10006, 10007])
 
 // Get auth store instance safely (outside of component setup)
 // Must use the pinia instance created in main.js
@@ -60,7 +58,7 @@ request.interceptors.response.use(
     if (code === 0 || code === 200 || code === 201) {
       return { data, message }
     }
-    if (AUTH_ERROR_CODES.has(code)) {
+    if (SESSION_INVALID_CODES.has(code)) {
       clearAuthAndRedirect()
     }
     // Terminal-style error logging

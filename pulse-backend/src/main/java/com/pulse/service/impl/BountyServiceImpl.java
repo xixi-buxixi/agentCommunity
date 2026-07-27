@@ -206,9 +206,14 @@ public class BountyServiceImpl implements BountyService {
         // If user is the owner, include submissions
         if (userId != null && userId.equals(task.getOwnerId())) {
             List<BountySubmission> submissions = bountySubmissionMapper.findByTaskId(taskId);
+            // One query for all hunters instead of one per submission
+            Map<Long, User> huntersById = loadUsers(submissions.stream()
+                    .map(BountySubmission::getHunterId)
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toSet()));
             List<BountyDetailResponse.BountySubmissionResponse> submissionResponses = submissions.stream()
                 .map(sub -> {
-                    User hunter = userMapper.selectById(sub.getHunterId());
+                    User hunter = huntersById.get(sub.getHunterId());
                     return BountyDetailResponse.BountySubmissionResponse.builder()
                         .id(sub.getId())
                         .hunterId(sub.getHunterId())
@@ -737,34 +742,24 @@ public class BountyServiceImpl implements BountyService {
             .build();
     }
 
-    private BountyListResponse buildListResponse(BountyTask task) {
-        User owner = userMapper.selectById(task.getOwnerId());
-
-        return BountyListResponse.builder()
-            .id(task.getId())
-            .agentId(task.getAgentId())
-            .authorType(task.getAuthorType())
-            .authorName(task.getAuthorName())
-            .ownerId(task.getOwnerId())
-            .ownerName(owner != null ? owner.getUsername() : "Unknown")
-            .title(task.getTitle())
-            .description(task.getDescription())
-            .rewardPoints(task.getRewardPoints())
-            .taskType(task.getTaskType())
-            .crisisLevel(task.getCrisisLevel())
-            .status(task.getStatus())
-            .statusText(BountyStatus.fromCode(task.getStatus()).getText())
-            .acceptedCount(task.getAcceptedCount())
-            .submissionCount(task.getSubmissionCount())
-            .deadline(task.getDeadline())
-            .createdAt(task.getCreatedAt())
-            .build();
+    /**
+     * Batch-load users by id.
+     */
+    private Map<Long, User> loadUsers(java.util.Set<Long> ids) {
+        if (ids == null || ids.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, User> byId = new HashMap<>();
+        for (User user : userMapper.selectBatchIds(ids)) {
+            byId.put(user.getId(), user);
+        }
+        return byId;
     }
 
-    /**
-     * Build BountyListResponse using pre-loaded cached data (N+1 optimization).
-     * Used by getBountyList for batch processing.
-     */
+    // NOTE: a second, unused buildListResponse(BountyTask) lived here. Every caller
+    // goes through buildListResponseCached, which batch-preloads owners, so the
+    // per-row variant was dead weight that invited reintroducing the N+1.
+
     private BountyListResponse buildListResponseCached(BountyTask task, Map<Long, User> ownerCache) {
         User owner = ownerCache.get(task.getOwnerId());
 

@@ -17,6 +17,7 @@ import com.pulse.mapper.LikeMapper;
 import com.pulse.mapper.PostMapper;
 import com.pulse.mapper.PostViewMapper;
 import com.pulse.mapper.UserMapper;
+import com.pulse.service.support.AuthorResolver;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
@@ -38,6 +39,7 @@ class PostServiceImplTest {
     private final PostViewMapper postViewMapper = mock(PostViewMapper.class);
     private final UserMapper userMapper = mock(UserMapper.class);
     private final AgentMapper agentMapper = mock(AgentMapper.class);
+    private final AuthorResolver authorResolver = new AuthorResolver(userMapper, agentMapper);
 
     private final PostServiceImpl service = new PostServiceImpl(
             postMapper,
@@ -46,7 +48,8 @@ class PostServiceImplTest {
             dislikeMapper,
             postViewMapper,
             userMapper,
-            agentMapper
+            agentMapper,
+            authorResolver
     );
 
     @Test

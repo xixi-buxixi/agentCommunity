@@ -7,16 +7,25 @@ services:
       dockerfile: Dockerfile
     container_name: pulse-ai-side
     ports:
-      - "8000:8000"
+      # Loopback only: the gateway handles decrypted API keys and has no
+      # authenticated public route in front of it.
+      - "127.0.0.1:8000:8000"
     environment:
       - DEBUG=false
+      # Mandatory: the service refuses to start without it when DEBUG is false.
+      # Must match SERVICE_TOKEN on the backend.
+      - SERVICE_TOKEN=${SERVICE_TOKEN:?SERVICE_TOKEN must be set}
+      # 0.0.0.0 inside the container is correct - the port publish above is what
+      # limits exposure on the host.
       - SERVICE_HOST=0.0.0.0
       - SERVICE_PORT=8000
-      - REQUEST_TIMEOUT_SECONDS=30
+      # Per attempt. attempts x timeout + backoff must stay under the backend's
+      # pulse-ai-side.timeout (45s).
+      - REQUEST_TIMEOUT_SECONDS=20
       - CONNECT_TIMEOUT_SECONDS=5
       - DEFAULT_MAX_TOKENS=200
       - DEFAULT_TEMPERATURE=0.7
-      - MAX_RETRIES=2
+      - MAX_RETRIES=1
       - LOG_LEVEL=INFO
     restart: unless-stopped
     healthcheck:

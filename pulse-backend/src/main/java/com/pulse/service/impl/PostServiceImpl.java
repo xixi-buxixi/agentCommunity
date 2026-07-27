@@ -12,6 +12,7 @@ import com.pulse.exception.BusinessException;
 import com.pulse.exception.ErrorCode;
 import com.pulse.mapper.*;
 import com.pulse.service.PostService;
+import com.pulse.service.support.AuthorResolver;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DuplicateKeyException;
@@ -37,6 +38,7 @@ public class PostServiceImpl implements PostService {
     private final PostViewMapper postViewMapper;
     private final UserMapper userMapper;
     private final AgentMapper agentMapper;
+    private final AuthorResolver authorResolver;
 
     private static final DateTimeFormatter DATE_FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
@@ -490,9 +492,16 @@ public class PostServiceImpl implements PostService {
                 ? Collections.emptyList()
                 : commentMapper.findRepliesByRootIds(rootIds);
 
+        // Resolve every author of the tree in three queries instead of one or two
+        // per comment: 20 roots + 60 replies used to mean ~160 selectById calls.
+        List<Comment> allComments = new ArrayList<>(rootComments);
+        allComments.addAll(replies);
+        Map<String, AuthorResolver.AuthorInfo> authors = authorResolver.resolveAll(
+                allComments, Comment::getAuthorType, Comment::getAuthorId);
+
         Map<Long, CommentResponse> responseById = new LinkedHashMap<>();
-        rootComments.forEach(comment -> responseById.put(comment.getId(), buildCommentResponse(comment)));
-        replies.forEach(comment -> responseById.put(comment.getId(), buildCommentResponse(comment)));
+        rootComments.forEach(comment -> responseById.put(comment.getId(), buildCommentResponse(comment, authors)));
+        replies.forEach(comment -> responseById.put(comment.getId(), buildCommentResponse(comment, authors)));
 
         replies.forEach(reply -> {
             CommentResponse replyResponse = responseById.get(reply.getId());
@@ -726,32 +735,28 @@ public class PostServiceImpl implements PostService {
                 .build();
     }
 
+    /**
+     * Single comment, resolving its author on its own. Used by createComment, where
+     * there is genuinely one row.
+     */
     private CommentResponse buildCommentResponse(Comment comment) {
-        String authorName = null;
-        String authorAvatar = null;
-        String agentOwnerName = null;
+        return buildCommentResponse(comment, Map.of());
+    }
 
-        if (AuthorType.HUMAN.getCode().equalsIgnoreCase(comment.getAuthorType())) {
-            User user = userMapper.selectById(comment.getAuthorId());
-            if (user != null) {
-                authorName = user.getUsername();
-                authorAvatar = user.getAvatarUrl();
-            }
-        } else if (AuthorType.AGENT.getCode().equalsIgnoreCase(comment.getAuthorType())) {
-            Agent agent = agentMapper.selectById(comment.getAuthorId());
-            if (agent != null) {
-                authorName = agent.getName();
-                authorAvatar = agent.getAvatarUrl();
-
-                User owner = userMapper.selectById(agent.getOwnerId());
-                if (owner != null) {
-                    agentOwnerName = owner.getUsername();
-                }
-            }
-        } else if (AuthorType.SYSTEM.getCode().equalsIgnoreCase(comment.getAuthorType())) {
-            // System comment
-            authorName = "SYSTEM";
+    /**
+     * @param authors pre-resolved authors keyed by AuthorResolver#key; an empty map
+     *                falls back to resolving this one author directly
+     */
+    private CommentResponse buildCommentResponse(Comment comment,
+                                                 Map<String, AuthorResolver.AuthorInfo> authors) {
+        AuthorResolver.AuthorInfo author = authors.get(
+                authorResolver.key(comment.getAuthorType(), comment.getAuthorId()));
+        if (author == null) {
+            author = authorResolver.resolve(comment.getAuthorType(), comment.getAuthorId());
         }
+        String authorName = author.getAuthorName();
+        String authorAvatar = author.getAuthorAvatar();
+        String agentOwnerName = author.getAgentOwnerName();
 
         return CommentResponse.builder()
                 .commentId(comment.getId())

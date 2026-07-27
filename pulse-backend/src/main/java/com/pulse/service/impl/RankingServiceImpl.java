@@ -9,6 +9,7 @@ import com.pulse.mapper.AgentMapper;
 import com.pulse.mapper.PostMapper;
 import com.pulse.mapper.UserMapper;
 import com.pulse.service.RankingService;
+import com.pulse.service.support.AuthorResolver;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -44,6 +45,7 @@ public class RankingServiceImpl implements RankingService {
     private final PostMapper postMapper;
     private final UserMapper userMapper;
     private final AgentMapper agentMapper;
+    private final AuthorResolver authorResolver;
 
     private static final DateTimeFormatter DATE_FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
@@ -272,16 +274,22 @@ public class RankingServiceImpl implements RankingService {
             return Collections.emptyList();
         }
 
+        // Index the batch once instead of scanning it per rank position: the nested
+        // stream().filter().findFirst() inside the loop made this O(n^2).
+        Map<Long, Post> postsById = new HashMap<>();
+        for (Post post : posts) {
+            postsById.put(post.getId(), post);
+        }
+        // One batch author resolution for the whole page (was 1-2 queries per post)
+        Map<String, AuthorInfo> authorsByKey = getAuthorInfos(posts);
+
         // Build responses with rank
         List<RankingPostResponse> responses = new ArrayList<>();
         int rank = 1;
 
         for (Long postId : postIds) {
-            // Find the post by id (maintain order from ranking)
-            Post post = posts.stream()
-                    .filter(p -> p.getId().equals(postId))
-                    .findFirst()
-                    .orElse(null);
+            // Keep the order the ranking gave us
+            Post post = postsById.get(postId);
 
             if (post == null || post.getDeleted() == 1) {
                 log.warn("Post not found or deleted in ranking: postId={}", postId);
@@ -289,7 +297,9 @@ public class RankingServiceImpl implements RankingService {
             }
 
             // Get author info
-            AuthorInfo authorInfo = getAuthorInfo(post);
+            AuthorInfo authorInfo = authorsByKey.getOrDefault(
+                    authorResolver.key(post.getAuthorType(), post.getAuthorId()),
+                    new AuthorInfo());
 
             // Get score (like_count or comment_count)
             Integer score = scoreMap.getOrDefault(postId, 0);
@@ -325,35 +335,33 @@ public class RankingServiceImpl implements RankingService {
     /**
      * Get author info (human user or agent)
      */
+    /**
+     * Author display data for one post.
+     *
+     * Delegates to the shared AuthorResolver: this method used to be a third copy
+     * of the HUMAN/AGENT/SYSTEM logic, issuing one or two queries per ranked post.
+     */
     private AuthorInfo getAuthorInfo(Post post) {
+        return toAuthorInfo(authorResolver.resolve(post.getAuthorType(), post.getAuthorId()));
+    }
+
+    private AuthorInfo toAuthorInfo(AuthorResolver.AuthorInfo resolved) {
         AuthorInfo info = new AuthorInfo();
-
-        if (AuthorType.HUMAN.getCode().equalsIgnoreCase(post.getAuthorType())) {
-            // Human author
-            User user = userMapper.selectById(post.getAuthorId());
-            if (user != null) {
-                info.authorName = user.getUsername();
-                info.authorAvatar = user.getAvatarUrl();
-            }
-        } else if (AuthorType.AGENT.getCode().equalsIgnoreCase(post.getAuthorType())) {
-            // Agent author
-            Agent agent = agentMapper.selectById(post.getAuthorId());
-            if (agent != null) {
-                info.authorName = agent.getName();
-                info.authorAvatar = agent.getAvatarUrl();
-
-                // Get owner name
-                User owner = userMapper.selectById(agent.getOwnerId());
-                if (owner != null) {
-                    info.agentOwnerName = owner.getUsername();
-                }
-            }
-        } else if (AuthorType.SYSTEM.getCode().equalsIgnoreCase(post.getAuthorType())) {
-            // System message
-            info.authorName = "SYSTEM";
-        }
-
+        info.authorName = resolved.getAuthorName();
+        info.authorAvatar = resolved.getAuthorAvatar();
+        info.agentOwnerName = resolved.getAgentOwnerName();
         return info;
+    }
+
+    /**
+     * Batch variant used when building a whole leaderboard page.
+     */
+    private Map<String, AuthorInfo> getAuthorInfos(List<Post> posts) {
+        Map<String, AuthorResolver.AuthorInfo> resolved = authorResolver.resolveAll(
+                posts, Post::getAuthorType, Post::getAuthorId);
+        Map<String, AuthorInfo> byKey = new HashMap<>();
+        resolved.forEach((key, value) -> byKey.put(key, toAuthorInfo(value)));
+        return byKey;
     }
 
     /**

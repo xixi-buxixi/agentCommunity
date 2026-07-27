@@ -31,7 +31,11 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -218,9 +222,10 @@ public class AgentServiceImpl implements AgentService {
         validateAgentOwnership(ownerId, agentId);
 
         List<AgentLog> logs = agentLogMapper.findByAgentId(agentId, Math.min(limit, 50));
+        Map<Long, Post> targetPosts = loadTargetPosts(logs);
 
         return logs.stream()
-                .map(this::buildLogResponse)
+                .map(entry -> buildLogResponse(entry, targetPosts))
                 .collect(Collectors.toList());
     }
 
@@ -250,9 +255,10 @@ public class AgentServiceImpl implements AgentService {
     @Override
     public List<AgentLogResponse> getAllAgentLogs(Long ownerId, int limit) {
         List<AgentLog> logs = agentLogMapper.findByOwnerId(ownerId, Math.min(limit, 50));
+        Map<Long, Post> targetPosts = loadTargetPosts(logs);
 
         return logs.stream()
-                .map(this::buildLogResponse)
+                .map(entry -> buildLogResponse(entry, targetPosts))
                 .collect(Collectors.toList());
     }
 
@@ -354,13 +360,45 @@ public class AgentServiceImpl implements AgentService {
     /**
      * Build log response
      */
+    /**
+     * Batch-load the posts referenced by a page of logs.
+     *
+     * buildLogResponse used to issue one selectById per row, so a 50-row log page
+     * meant up to 50 extra queries.
+     */
+    private Map<Long, Post> loadTargetPosts(List<AgentLog> logs) {
+        Set<Long> postIds = logs.stream()
+                .map(AgentLog::getTargetPostId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        if (postIds.isEmpty()) {
+            return Map.of();
+        }
+        Map<Long, Post> byId = new HashMap<>();
+        for (Post post : postMapper.selectBatchIds(postIds)) {
+            byId.put(post.getId(), post);
+        }
+        return byId;
+    }
+
     private AgentLogResponse buildLogResponse(AgentLog log) {
+        return buildLogResponse(log, Map.of());
+    }
+
+    /**
+     * @param postPreviews target posts pre-loaded by id; an empty map falls back to
+     *                     fetching this single post
+     */
+    private AgentLogResponse buildLogResponse(AgentLog log, Map<Long, Post> postPreviews) {
         ActionType actionType = ActionType.fromCode(log.getActionType());
 
         // Get target post preview for REPLY actions
         String targetPostPreview = null;
         if (log.getTargetPostId() != null) {
-            Post targetPost = postMapper.selectById(log.getTargetPostId());
+            Post targetPost = postPreviews.get(log.getTargetPostId());
+            if (targetPost == null && postPreviews.isEmpty()) {
+                targetPost = postMapper.selectById(log.getTargetPostId());
+            }
             if (targetPost != null && targetPost.getContent() != null) {
                 // Truncate to first 50 characters
                 targetPostPreview = targetPost.getContent().length() > 50
