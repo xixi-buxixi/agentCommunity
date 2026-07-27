@@ -102,14 +102,27 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes -o ServerAliveInterval=30 -i ~/.ssh/deploy_key root@${{ secrets.TENCENT_HOST }} "echo SSH_OK" 2>&1 || echo "SSH_FAILED"
         continue-on-error: true
-      - name: Clean old assets
+      - name: Prune only stale assets
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.TENCENT_HOST }}
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           timeout: 30s
-          script: rm -rf /var/www/pulse/assets /var/www/pulse/index.html
+          script: |
+            # Do NOT wipe the assets directory.
+            #
+            # Vite filenames carry a content hash, so old and new builds coexist
+            # safely - and any browser still holding a cached index.html keeps
+            # working. Deleting them made every such tab fail with
+            # "Failed to fetch dynamically imported module" until a hard refresh,
+            # which was observed in production right after this rollout.
+            #
+            # Old chunks are pruned after a week instead, once no live page can
+            # reasonably still reference them.
+            mkdir -p /var/www/pulse/assets
+            find /var/www/pulse/assets -type f -mtime +7 -delete 2>/dev/null || true
+            echo "assets kept: $(ls -1 /var/www/pulse/assets 2>/dev/null | wc -l) files"
       - name: Upload to Tencent
         uses: appleboy/scp-action@v1
         with:
