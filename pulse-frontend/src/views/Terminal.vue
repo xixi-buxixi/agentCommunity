@@ -6,14 +6,32 @@
  * Includes form validation for security
  */
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import TerminalInput from '@/components/TerminalInput.vue'
 import { ValidationRules, validateObject, hasErrors } from '@/utils/validation'
 import { getAgentDetail } from '@/api/agent'
 
 const router = useRouter()
+const route = useRoute()
 const authStore = useAuthStore()
+
+/**
+ * Where to go once authenticated.
+ *
+ * The auth guard and the guest login prompt both attach `?redirect=`, so a
+ * visitor who was blocked mid-task returns to that task instead of being dropped
+ * on /lab. Only same-origin absolute paths are honoured — a protocol-relative
+ * value like `//evil.example` is a valid `router.push` target and would send the
+ * user off-site.
+ */
+const isSafeInternalPath = (value) =>
+  typeof value === 'string' && value.startsWith('/') && !value.startsWith('//')
+
+const postAuthTarget = () => {
+  const redirect = route.query.redirect
+  return isSafeInternalPath(redirect) && redirect !== '/terminal' ? redirect : '/lab'
+}
 
 // Protocol selection
 const protocol = ref('human')
@@ -83,10 +101,14 @@ const uptime = ref('00:00:00')
 
 // Calculate uptime
 onMounted(() => {
-  if (localStorage.getItem('pulse_login_required') === 'true') {
-    localStorage.removeItem('pulse_login_required')
-    pushSystemMessage('> AUTH_REQUIRED: 游客模式下该操作需要登录')
-    pushSystemMessage('> 请使用 HUMAN_HUB 登录或注册账号')
+  // Legacy flag from the old "log the guest out and hard-redirect" gate. Nothing
+  // sets it any more; clearing it stops a stale value from firing this banner on
+  // an unrelated visit.
+  localStorage.removeItem('pulse_login_required')
+
+  if (isSafeInternalPath(route.query.redirect)) {
+    pushSystemMessage('> AUTH_REQUIRED: 该操作需要登录')
+    pushSystemMessage(`> 登录后将返回: ${route.query.redirect}`)
   }
   let seconds = 0
   // Keep the handle: an uncleaned interval keeps ticking (and keeps this
@@ -183,7 +205,7 @@ const handleLogin = async () => {
   if (success) {
     pushSystemMessage(`> CONNECTION ESTABLISHED`)
     pushSystemMessage(`> SESSION ACTIVE`)
-    router.push('/lab')
+    router.push(postAuthTarget())
   } else {
     showServerError(authStore.error || '登录失败，请检查邮箱和密码')
   }
@@ -206,7 +228,7 @@ const handleRegister = async () => {
   if (success) {
     pushSystemMessage(`> INSTANCE CREATED`)
     pushSystemMessage(`> SESSION ACTIVE`)
-    router.push('/lab')
+    router.push(postAuthTarget())
   } else {
     showServerError(authStore.error || '注册失败，请重试')
   }
@@ -261,7 +283,10 @@ const enterAsGuest = () => {
   authStore.enterGuestMode()
   pushSystemMessage('> GUEST_MODE: READ_ONLY_ACCESS')
   pushSystemMessage('> SESSION: OBSERVER')
-  router.push('/square')
+  // Guests land on the page they were trying to read, when there was one. The
+  // router guard still bounces them off anything guests may not see.
+  const redirect = route.query.redirect
+  router.push(isSafeInternalPath(redirect) && redirect !== '/terminal' ? redirect : '/square')
 }
 
 // Toggle mode

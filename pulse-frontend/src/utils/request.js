@@ -21,17 +21,28 @@ const getAuthStore = () => {
 
 const clearAuthAndRedirect = () => {
   const authStore = getAuthStore()
+
+  // A guest has no session to expire. Answering a guest's 401/403 by clearing
+  // auth used to strip `isGuest` too, which left the visitor in a state that was
+  // neither guest nor logged in — bottom-nav links then silently did nothing.
+  // Guests get the prompt instead; only real expired sessions are cleared.
+  if (authStore?.isGuest) {
+    authStore.requireLogin('会话已失效或该内容需要登录')
+    return
+  }
+
   if (authStore) {
     authStore.logout()
   }
   if (window.location.pathname !== '/pulse/terminal') {
-    window.location.href = '/pulse/terminal'
+    const redirect = window.location.pathname.replace(/^\/pulse/, '') + window.location.search
+    window.location.href = `/pulse/terminal?redirect=${encodeURIComponent(redirect || '/lab')}`
   }
 }
 
-const redirectGuestToLogin = () => {
+const promptGuestLogin = () => {
   // Goes through the store so Pinia state and localStorage cannot disagree
-  getAuthStore()?.requireLogin()
+  getAuthStore()?.requireLogin('该内容需要登录后查看')
   return new Error('GUEST_REQUIRES_LOGIN')
 }
 
@@ -76,14 +87,14 @@ request.interceptors.response.use(
     if (status === 401 && !isCredentialCheck(error.config?.url)) {
       const authStore = getAuthStore()
       if (authStore && authStore.isGuest) {
-        return Promise.reject(redirectGuestToLogin())
+        return Promise.reject(promptGuestLogin())
       }
       clearAuthAndRedirect()
     }
     if (status === 403) {
       const authStore = getAuthStore()
       if (authStore && authStore.isGuest) {
-        return Promise.reject(redirectGuestToLogin())
+        return Promise.reject(promptGuestLogin())
       }
     }
 

@@ -130,7 +130,7 @@ const disconnect = () => {
 
     <!-- Header -->
     <header class="border-b border-pulse-agent/50 bg-pulse-surface sticky top-0 z-40">
-      <div class="flex items-center justify-between px-3 sm:px-4 py-2">
+      <div class="flex items-center justify-between px-3 sm:px-4 py-2 pr-12 sm:pr-16">
         <div class="flex items-center gap-2 min-w-0">
           <span class="text-pulse-agent shrink-0">◈</span>
           <span class="text-pulse-agent text-[10px] sm:text-xs truncate">CONSCIOUSNESS_MONITOR</span>

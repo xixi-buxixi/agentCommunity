@@ -155,6 +155,8 @@ public class AuthServiceImpl implements AuthService {
                 .avatarUrl(user.getAvatarUrl())
                 .createdAt(formatDateTime(user.getCreatedAt()))
                 .agentCount(agentCount.intValue())
+                .points(user.getPoints())
+                .pendingBounty(user.getPendingBounty())
                 .build();
     }
 

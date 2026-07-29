@@ -3,9 +3,10 @@
  * Bounty Detail Component
  * Displays detailed view of a bounty task with submissions
  */
+import { computed } from 'vue'
 import { canCancelBounty, getBountyStatusLabel } from '@/utils/evolution'
 
-defineProps({
+const props = defineProps({
   task: Object,
   logs: Array,
   detailSource: String,
@@ -13,10 +14,59 @@ defineProps({
   isGuest: {
     type: Boolean,
     default: false
+  },
+  /**
+   * True when `task` is the list DTO shown because getBountyDetail() failed.
+   * List responses carry no personalised state (`is_accepted_by_me` is always
+   * null there), so offering ACCEPT or SUBMIT would send a request the backend
+   * rejects — BOUNTY_ALREADY_ACCEPTED for a hunter who is already on the task.
+   */
+  degraded: {
+    type: Boolean,
+    default: false
   }
 })
 
-defineEmits(['back', 'accept', 'submit', 'audit', 'cancel'])
+defineEmits(['back', 'accept', 'submit', 'audit', 'cancel', 'login'])
+
+/**
+ * A contract is open for work while its status is PENDING, ACCEPTED or REVIEWING
+ * and its deadline has not passed.
+ *
+ * These are exactly the preconditions BountyServiceImpl.acceptBounty() and
+ * submitBounty() both enforce — several hunters may compete on one contract until
+ * an answer is accepted. The UI disagreed with the API in both directions: ACCEPT
+ * rendered only for PENDING, so a task somebody else had already picked up looked
+ * closed even though the API would still take you; SUBMIT rendered for anything
+ * that was not COMPLETED, so it also appeared on abandoned, cancelled and expired
+ * contracts where the request could only fail.
+ */
+const ACCEPTABLE_STATUSES = new Set(['PENDING', 'ACCEPTED', 'REVIEWING'])
+
+const isExpired = computed(() => {
+  const deadline = props.task?.deadline
+  return Boolean(deadline) && new Date(deadline) - new Date() <= 0
+})
+
+const isTaskOpen = computed(() =>
+  ACCEPTABLE_STATUSES.has(getBountyStatusLabel(props.task || {})) && !isExpired.value
+)
+
+// Actions are only offered when the detail payload is the real one.
+const canAct = computed(() => isTaskOpen.value && !props.degraded)
+
+/**
+ * Why no action is available, for the block that replaces "no buttons, no reason".
+ *
+ * Status is checked before the deadline on purpose: a COMPLETED contract whose
+ * deadline has also passed is closed because it is finished, and reporting
+ * "已超过截止时间" would name the wrong reason.
+ */
+const closedReason = computed(() => {
+  const label = getBountyStatusLabel(props.task || {})
+  if (!ACCEPTABLE_STATUSES.has(label)) return `当前状态为 ${label}`
+  return '已超过截止时间'
+})
 
 const formatDate = (dateString) => {
   if (!dateString) return 'UNKNOWN'
@@ -141,16 +191,15 @@ const getLogActionColor = (actionType) => {
 
       <!-- Action Buttons (for non-owner) -->
       <div class="flex gap-3" v-if="detailSource !== 'audit' && (!task.submissions || task.submissions.length === 0) && !task.is_accepted_by_me && !isGuest">
-        <template v-if="getBountyStatusLabel(task) === 'PENDING'">
-          <button
-            @click="$emit('accept', task)"
-            class="flex-1 border border-pulse-warning text-pulse-warning py-3 text-sm hover:bg-pulse-warning/10 min-h-[44px]"
-          >
-            ACCEPT
-          </button>
-        </template>
+        <button
+          v-if="canAct"
+          @click="$emit('accept', task)"
+          class="flex-1 border border-pulse-warning text-pulse-warning py-3 text-sm hover:bg-pulse-warning/10 min-h-[44px]"
+        >
+          ACCEPT
+        </button>
       </div>
-      <div class="flex gap-3" v-if="detailSource !== 'audit' && task.is_accepted_by_me && !task.submitted && getBountyStatusLabel(task) !== 'COMPLETED' && !isGuest">
+      <div class="flex gap-3" v-if="detailSource !== 'audit' && task.is_accepted_by_me && !task.submitted && canAct && !isGuest">
         <button
           @click="$emit('submit', task)"
           class="flex-1 border border-pulse-accent text-pulse-accent py-3 text-sm hover:bg-pulse-accent/10 min-h-[44px]"
@@ -159,9 +208,42 @@ const getLogActionColor = (actionType) => {
         </button>
       </div>
 
-      <!-- Guest Login Prompt -->
-      <div v-if="isGuest && detailSource !== 'audit'" class="border border-pulse-warning/40 bg-pulse-warning/5 p-3 text-center mt-3">
-        <span class="text-pulse-warning text-xs">GUEST_MODE // 登录后可参与悬赏</span>
+      <!--
+        Guest login prompt.
+
+        Was a dead line of text. It now offers the action, and the surrounding
+        block also explains a *closed* contract: a guest looking at a COMPLETED or
+        EXPIRED bounty previously saw no button and no reason for its absence.
+      -->
+      <div v-if="isGuest && detailSource !== 'audit'" class="border border-pulse-warning/40 bg-pulse-warning/5 p-3 mt-3 text-center">
+        <div class="text-pulse-warning text-xs">GUEST_MODE // 登录后可参与悬赏</div>
+        <button
+          type="button"
+          class="mt-3 border border-pulse-human text-pulse-human px-4 py-2 text-[10px] sm:text-xs hover:bg-pulse-human/10 transition min-h-[44px]"
+          @click="$emit('login')"
+        >
+          [LOGIN_TO_PARTICIPATE]
+        </button>
+      </div>
+
+      <!-- Detail request failed: say so instead of offering actions we cannot trust -->
+      <div
+        v-else-if="degraded && detailSource !== 'audit'"
+        class="border border-pulse-dead/40 bg-pulse-dead/5 p-3 mt-3 text-center"
+      >
+        <span class="text-pulse-dead text-[10px] sm:text-xs">
+          悬赏详情加载失败，当前显示的是列表中的简要信息，暂时无法接取或提交。
+        </span>
+      </div>
+
+      <!-- Closed contract: say so rather than showing nothing -->
+      <div
+        v-else-if="!isGuest && detailSource !== 'audit' && !isTaskOpen"
+        class="border border-pulse-border bg-pulse-bg p-3 mt-3 text-center"
+      >
+        <span class="text-pulse-muted text-[10px] sm:text-xs">
+          该悬赏<span class="text-pulse-white">{{ closedReason }}</span>，已不可接取。
+        </span>
       </div>
     </div>
   </div>

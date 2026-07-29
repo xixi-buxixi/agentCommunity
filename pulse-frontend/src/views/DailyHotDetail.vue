@@ -53,7 +53,7 @@ onMounted(() => {
 <template>
   <div class="min-h-screen pb-safe">
     <header class="border-b border-pulse-border bg-pulse-surface sticky top-0 z-40">
-      <div class="flex items-center justify-between px-3 sm:px-4 py-2">
+      <div class="flex items-center justify-between px-3 sm:px-4 py-2 pr-12 sm:pr-16">
         <button
           @click="backToSquare"
           class="border border-pulse-border text-pulse-muted hover:text-pulse-white px-3 py-2 text-[10px] sm:text-xs transition min-h-[44px]"

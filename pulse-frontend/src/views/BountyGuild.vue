@@ -24,7 +24,7 @@ import BountyAuditModal from '@/components/BountyAuditModal.vue'
 
 const authStore = useAuthStore()
 
-const requireLogin = () => authStore.requireLogin()
+const requireLogin = (message) => authStore.requireLogin(message)
 
 // State
 const currentView = ref('list')
@@ -32,12 +32,42 @@ const detailSource = ref('list')
 const bounties = ref([])
 const myBounties = ref([])
 const myAcceptedTasks = ref([])
-const loading = ref(false)
+/**
+ * Per-view loading flags.
+ *
+ * A single shared `loading` let any of the four loaders clear the spinner another
+ * one was still showing: opening MY_BOUNTIES while the public list request was in
+ * flight made the audit view flash a false NO_BOUNTIES_PUBLISHED as soon as the
+ * unrelated public request settled.
+ */
+const listLoading = ref(false)
+const myBountiesLoading = ref(false)
+const myTasksLoading = ref(false)
+const detailLoading = ref(false)
 const error = ref(null)
+
+/**
+ * True when the detail view is showing the list DTO because getBountyDetail()
+ * failed. That fallback has no personalised fields — `is_accepted_by_me` is
+ * always null in list responses, since BountyService.getBountyList() is not even
+ * given a userId — so acting on it would offer ACCEPT to a hunter who has already
+ * accepted, and the backend would reject it.
+ */
+const detailDegraded = ref(false)
 
 // Sorting
 const bountySortBy = ref(null)
 const bountySortOrder = ref('desc')
+
+/**
+ * Status filter for the public board.
+ *
+ * `null` means "every status". The list used to hard-code `status: 0` with no way
+ * to change it, so once the open bounties ran out the board showed
+ * NO_CONTRACTS_FOUND and the existing completed/expired contracts were
+ * unreachable — the module looked broken rather than quiet.
+ */
+const bountyStatus = ref(0)
 
 // Logs panel ref
 const logsPanelRef = ref(null)
@@ -56,23 +86,42 @@ const auditing = ref(false)
 const canceling = ref(false)
 const currentSubmission = ref(null)
 
+/**
+ * Sequence number for list requests.
+ *
+ * Switching filter twice in quick succession fires two overlapping requests. If
+ * the first one is slower it lands last and paints the previous filter's rows
+ * while the newly selected chip is still highlighted. Only the newest request is
+ * allowed to write to state.
+ */
+let bountyRequestSeq = 0
+
 // Load public bounty list
 const loadBounties = async () => {
-  loading.value = true
+  const requestId = ++bountyRequestSeq
+  listLoading.value = true
   error.value = null
   try {
-    const params = { status: 0, page: 1, size: 50 }
+    const params = { page: 1, size: 50 }
+    // Omit the param entirely for "ALL" — the backend treats a null status as
+    // "no status predicate", and sending status= would bind an empty string.
+    if (bountyStatus.value !== null) {
+      params.status = bountyStatus.value
+    }
     if (bountySortBy.value) {
       params.sort_by = bountySortBy.value
       params.sort_order = bountySortOrder.value
     }
     const { data } = await getBounties(params)
+    if (requestId !== bountyRequestSeq) return
     bounties.value = unwrapPage(data).items
   } catch (err) {
+    if (requestId !== bountyRequestSeq) return
     error.value = err.message || 'Load failed'
     bounties.value = []
   } finally {
-    loading.value = false
+    // A superseded request must not clear the spinner the newer one is showing.
+    if (requestId === bountyRequestSeq) listLoading.value = false
   }
 }
 
@@ -87,9 +136,15 @@ const setBountySort = (sort) => {
   loadBounties()
 }
 
+const setBountyStatus = (status) => {
+  if (bountyStatus.value === status) return
+  bountyStatus.value = status
+  loadBounties()
+}
+
 // Load my bounties (audit list)
 const loadMyBounties = async () => {
-  loading.value = true
+  myBountiesLoading.value = true
   error.value = null
   try {
     const params = { page: 1, size: 50 }
@@ -99,28 +154,29 @@ const loadMyBounties = async () => {
     error.value = err.message || 'Load failed'
     myBounties.value = []
   } finally {
-    loading.value = false
+    myBountiesLoading.value = false
   }
 }
 
 // Load my accepted tasks
 const loadMyAcceptedTasks = async () => {
-  loading.value = true
+  myTasksLoading.value = true
   error.value = null
   try {
     const params = { page: 1, size: 50 }
     const { data } = await getMyAcceptedBounties(params)
     myAcceptedTasks.value = unwrapPage(data).items
   } finally {
-    loading.value = false
+    myTasksLoading.value = false
   }
 }
 
 // View detail
 const viewDetail = async (task, source = 'list') => {
-  loading.value = true
+  detailLoading.value = true
   error.value = null
   detailSource.value = source
+  detailDegraded.value = false
   try {
     const { data } = await getBountyDetail(task.id)
     currentTask.value = data
@@ -136,14 +192,15 @@ const viewDetail = async (task, source = 'list') => {
     currentTask.value = task
     currentView.value = 'detail'
     taskLogs.value = []
+    detailDegraded.value = true
   } finally {
-    loading.value = false
+    detailLoading.value = false
   }
 }
 
 // Accept task
 const handleAccept = async (task) => {
-  if (requireLogin()) return
+  if (requireLogin('接取悬赏需要登录账号')) return
   try {
     await acceptBounty(task.id)
     task.is_accepted_by_me = true
@@ -164,7 +221,7 @@ const openSubmitModal = (task) => {
 
 // Submit answer
 const handleSubmitAnswer = async ({ content, onSuccess }) => {
-  if (requireLogin()) return
+  if (requireLogin('提交答案需要登录账号')) return
   submitting.value = true
   try {
     await submitBounty(currentTask.value.id, { content })
@@ -192,7 +249,7 @@ const openAuditModal = (submission) => {
 
 // Audit submission
 const handleAudit = async ({ payload, onSuccess }) => {
-  if (requireLogin()) return
+  if (requireLogin('审核答案需要登录账号')) return
   auditing.value = true
   try {
     await auditBounty(currentTask.value.id, payload)
@@ -219,7 +276,7 @@ const cancelTarget = ref(null)
 const cancelReason = ref('')
 
 const openCancelBounty = (task) => {
-  if (requireLogin()) return
+  if (requireLogin('取消悬赏需要登录账号')) return
   cancelTarget.value = task
   cancelReason.value = '需求已变化，暂不需要继续征集答案'
 }
@@ -264,7 +321,7 @@ const confirmCancelBounty = async () => {
 
 // Create bounty
 const handleCreateBounty = async ({ payload, onSuccess, error: createError }) => {
-  if (requireLogin()) return
+  if (requireLogin('发布悬赏需要登录账号')) return
   if (createError) {
     error.value = createError
     return
@@ -283,8 +340,20 @@ const handleCreateBounty = async ({ payload, onSuccess, error: createError }) =>
   }
 }
 
+// Views that read a personal endpoint and are therefore meaningless for a guest.
+const LOGIN_ONLY_VIEWS = {
+  audit: '查看「我发布的悬赏」需要登录账号',
+  'my-tasks': '查看「我接取的任务」需要登录账号'
+}
+
 // Switch view
 const switchView = (view) => {
+  // Gate before switching, not after: a guest used to land on the tab, fire a
+  // request at /bounties/my, and only then get bounced - previously all the way
+  // out to the login page, losing the board entirely.
+  const gateMessage = LOGIN_ONLY_VIEWS[view]
+  if (gateMessage && requireLogin(gateMessage)) return
+
   currentView.value = view
   error.value = null
   if (view === 'list') loadBounties()
@@ -312,15 +381,23 @@ onMounted(() => loadBounties())
   <div class="min-h-screen pb-safe">
     <!-- Header -->
     <header class="border-b border-pulse-border bg-pulse-surface sticky top-0 z-40">
-      <div class="flex items-center justify-between px-3 sm:px-4 py-2">
+      <div class="flex items-center justify-between px-3 sm:px-4 py-2 pr-12 sm:pr-16">
         <div class="flex items-center gap-2 sm:gap-4 min-w-0">
           <div class="flex items-center gap-2 shrink-0">
             <div class="w-3 h-3 border border-pulse-warning bg-pulse-warning/20"></div>
             <span class="text-pulse-white font-bold tracking-wider text-sm sm:text-base">PULSE</span>
             <span class="text-pulse-muted text-[10px] sm:text-xs hidden sm:inline">// BOUNTY_GUILD</span>
           </div>
+          <!--
+            This used to read `authStore.user?.points || 100`, so a guest - who has
+            no account and no points at all - was shown a confident "POINTS: 100",
+            and a logged-in user with a zero balance saw 100 as well.
+          -->
           <div class="text-[10px] sm:text-xs text-pulse-muted border-l border-pulse-border pl-2 sm:pl-4 truncate">
-            POINTS: <span class="text-pulse-warning">{{ authStore.user?.points || 100 }}</span>
+            <span v-if="authStore.isGuest" class="text-pulse-warning">⊙ GUEST</span>
+            <template v-else>
+              POINTS: <span class="text-pulse-warning">{{ authStore.user?.points ?? '--' }}</span>
+            </template>
           </div>
         </div>
         <div class="flex items-center gap-2 sm:gap-4 text-[10px] sm:text-xs">
@@ -342,26 +419,34 @@ onMounted(() => loadBounties())
           >
             [BOUNTY_LIST]
           </button>
+          <!--
+            The ⊙ marks tabs a guest cannot use. Previously they looked identical
+            to [BOUNTY_LIST], so the only way to discover the restriction was to
+            click and get thrown off the page.
+          -->
           <button
             @click="switchView('audit')"
             class="px-4 py-2 text-xs border transition whitespace-nowrap min-h-[44px]"
             :class="currentView === 'audit' ? 'border-pulse-accent bg-pulse-accent/20 text-pulse-accent' : 'border-pulse-border text-pulse-muted hover:text-pulse-white'"
+            :title="authStore.isGuest ? '需要登录' : ''"
           >
-            [MY_BOUNTIES]
+            <span v-if="authStore.isGuest" class="text-pulse-warning">⊙ </span>[MY_BOUNTIES]
           </button>
           <button
             @click="switchView('my-tasks')"
             class="px-4 py-2 text-xs border transition whitespace-nowrap min-h-[44px]"
             :class="currentView === 'my-tasks' ? 'border-pulse-human bg-pulse-human/20 text-pulse-human' : 'border-pulse-border text-pulse-muted hover:text-pulse-white'"
+            :title="authStore.isGuest ? '需要登录' : ''"
           >
-            [MY_TASKS]
+            <span v-if="authStore.isGuest" class="text-pulse-warning">⊙ </span>[MY_TASKS]
           </button>
         </div>
         <button
-          @click="requireLogin() || (showCreateModal = true)"
+          @click="requireLogin('发布悬赏需要登录账号') || (showCreateModal = true)"
           class="border border-pulse-alive text-pulse-alive px-4 py-2 text-xs hover:bg-pulse-alive/10 min-h-[44px] whitespace-nowrap"
+          :title="authStore.isGuest ? '需要登录' : ''"
         >
-          + CREATE_BOUNTY
+          <span v-if="authStore.isGuest" class="text-pulse-warning">⊙ </span>+ CREATE_BOUNTY
         </button>
       </div>
 
@@ -378,16 +463,18 @@ onMounted(() => loadBounties())
           <BountyList
             v-if="currentView === 'list'"
             :tasks="bounties"
-            :loading="loading"
+            :loading="listLoading"
             :sort-by="bountySortBy"
             :sort-order="bountySortOrder"
+            :status="bountyStatus"
             @view-detail="(task) => viewDetail(task)"
             @set-sort="setBountySort"
+            @set-status="setBountyStatus"
           />
 
           <!-- Audit List View -->
           <div v-if="currentView === 'audit'">
-            <div v-if="loading" class="text-center py-12">
+            <div v-if="myBountiesLoading" class="text-center py-12">
               <span class="text-pulse-accent text-xs animate-pulse">> LOADING_MY_CONTRACTS...</span>
             </div>
 
@@ -437,8 +524,13 @@ onMounted(() => loadBounties())
           </div>
 
           <!-- Detail View -->
+          <div v-if="currentView === 'detail' && detailLoading" class="text-center py-12">
+            <span class="text-pulse-warning text-xs animate-pulse">> LOADING_CONTRACT...</span>
+          </div>
+
           <BountyDetail
-            v-if="currentView === 'detail' && currentTask"
+            v-if="currentView === 'detail' && currentTask && !detailLoading"
+            :degraded="detailDegraded"
             :task="currentTask"
             :logs="taskLogs"
             :detail-source="detailSource"
@@ -449,13 +541,14 @@ onMounted(() => loadBounties())
             @submit="openSubmitModal"
             @audit="openAuditModal"
             @cancel="openCancelBounty"
+            @login="requireLogin('参与悬赏需要登录账号')"
           />
 
           <!-- My Tasks View -->
           <MyTasksList
             v-if="currentView === 'my-tasks'"
             :tasks="myAcceptedTasks"
-            :loading="loading"
+            :loading="myTasksLoading"
             @submit="openSubmitModal"
             @view-detail="(task) => viewDetail(task, 'my-tasks')"
           />

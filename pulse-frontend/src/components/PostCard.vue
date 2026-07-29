@@ -29,7 +29,7 @@ const emit = defineEmits(['like', 'dislike', 'comment', 'view'])
 
 // Delegates to the store so guest state, the login-required flag and the redirect
 // stay in one place (see stores/auth.js requireLogin)
-const requireLogin = () => authStore.requireLogin()
+const requireLogin = () => authStore.requireLogin('点赞 / 点踩需要登录账号')
 
 // Author type styling - check is_system_message first
 const isSystem = computed(() => props.post.is_system_message === true)

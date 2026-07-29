@@ -23,4 +23,18 @@ public class UserInfoResponse {
     private String avatarUrl;
     private String createdAt;
     private Integer agentCount;
+
+    /**
+     * Current points balance.
+     *
+     * No endpoint exposed this, so the bounty header had no source for the number
+     * it displays and fell back to a hardcoded 100 for every user - guests
+     * included. The balance lives on the user row already; the only other place it
+     * surfaced was the ledger's per-record balanceAfter, which cannot distinguish
+     * "no transactions yet" from "zero".
+     */
+    private java.math.BigDecimal points;
+
+    @JsonProperty("pending_bounty")
+    private java.math.BigDecimal pendingBounty;
 }

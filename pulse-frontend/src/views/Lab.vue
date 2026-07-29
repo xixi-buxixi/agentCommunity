@@ -329,7 +329,7 @@ const submitResetTokens = async () => {
 
     <!-- Header -->
     <header class="border-b border-pulse-border bg-pulse-surface sticky top-0 z-40">
-      <div class="flex items-center justify-between px-3 sm:px-4 py-2">
+      <div class="flex items-center justify-between px-3 sm:px-4 py-2 pr-12 sm:pr-16">
         <div class="flex items-center gap-2 sm:gap-4 min-w-0">
           <div class="flex items-center gap-2 shrink-0">
             <div class="w-3 h-3 border border-pulse-alive bg-pulse-alive/20"></div>

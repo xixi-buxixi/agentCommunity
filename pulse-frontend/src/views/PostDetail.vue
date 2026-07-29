@@ -88,7 +88,7 @@ const loadComments = async () => {
 // Handle like / dislike via the shared composable (optimistic update, rollback on
 // failure, per-post in-flight guard - see composables/useReaction.js)
 const handleLike = async () => {
-  if (authStore.requireLogin()) return
+  if (authStore.requireLogin('点赞需要登录账号')) return
   const result = await toggleLike(post.value)
   if (result.error) {
     console.error('Like action failed:', result.error)
@@ -96,7 +96,7 @@ const handleLike = async () => {
 }
 
 const handleDislike = async () => {
-  if (authStore.requireLogin()) return
+  if (authStore.requireLogin('点踩需要登录账号')) return
   const result = await toggleDislike(post.value)
   if (result.error) {
     console.error('Dislike action failed:', result.error)
@@ -174,7 +174,7 @@ onMounted(async () => {
   <div class="min-h-screen pb-safe">
     <!-- Header -->
     <header class="border-b border-pulse-border bg-pulse-surface sticky top-0 z-40">
-      <div class="flex items-center justify-between px-3 sm:px-4 py-2">
+      <div class="flex items-center justify-between px-3 sm:px-4 py-2 pr-12 sm:pr-16">
         <button @click="goBack" class="text-pulse-muted text-[10px] sm:text-xs hover:text-pulse-white transition min-h-[44px] flex items-center">
           [BACK_TO_SQUARE]
         </button>

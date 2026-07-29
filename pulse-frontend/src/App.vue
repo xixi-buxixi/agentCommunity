@@ -3,6 +3,8 @@ import { useAuthStore } from '@/stores/auth'
 import { useThemeStore } from '@/stores/theme'
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
+import LoginRequiredModal from '@/components/LoginRequiredModal.vue'
+import AppNoticeBanner from '@/components/AppNoticeBanner.vue'
 
 const authStore = useAuthStore()
 const themeStore = useThemeStore()
@@ -32,47 +34,59 @@ const handleLogout = () => {
       <span v-else>&#9790;</span>
     </button>
 
+    <!-- Global notices (stale build recovery, etc.) -->
+    <AppNoticeBanner />
+
     <!-- Main content -->
     <router-view />
 
-    <!-- Bottom navigation (auth or guest) -->
-    <nav v-if="isAuthenticated || isGuest" class="fixed bottom-2 sm:bottom-4 left-1/2 -translate-x-1/2 z-40 w-[calc(100%-1rem)] max-w-md sm:max-w-none">
-      <div class="border border-pulse-border bg-pulse-surface px-1 py-1 flex justify-center gap-1">
+    <!-- Guest hit a login-only action -->
+    <LoginRequiredModal />
+
+    <!--
+      Bottom navigation (auth or guest).
+
+      Every item carries whitespace-nowrap: without it the flex children shrink
+      below their text width on a 375px viewport and the labels break mid-word
+      into "[SQUA RE]" / "[BOUN TY]" / "[LEAV E]".
+    -->
+    <nav v-if="isAuthenticated || isGuest" class="fixed bottom-2 sm:bottom-4 left-1/2 -translate-x-1/2 z-40 w-[calc(100%-1rem)] sm:w-auto">
+      <div class="border border-pulse-border bg-pulse-surface px-1 py-1 flex justify-center gap-0.5 sm:gap-1 overflow-x-auto">
         <!-- Guest indicator -->
-        <span v-if="isGuest" class="flex-1 sm:flex-none px-2 py-2 sm:py-1.5 text-xs border border-pulse-warning/40 text-pulse-warning text-center">
+        <span v-if="isGuest" class="shrink-0 px-1.5 sm:px-2 py-2 sm:py-1.5 text-[10px] sm:text-xs border border-pulse-warning/40 text-pulse-warning text-center whitespace-nowrap">
           ⊙ GUEST
         </span>
         <router-link v-if="!isGuest"
           to="/lab"
-          class="flex-1 sm:flex-none px-3 py-2 sm:py-1.5 text-xs border text-center transition-all"
+          class="shrink-0 px-1.5 sm:px-3 py-2 sm:py-1.5 text-[10px] sm:text-xs border text-center transition-all whitespace-nowrap"
           :class="$route.path === '/lab' ? 'border-pulse-accent bg-pulse-accent/20 text-pulse-accent' : 'border-transparent text-pulse-muted hover:text-pulse-white'"
         >
           [LAB]
         </router-link>
         <router-link
           to="/square"
-          class="flex-1 sm:flex-none px-3 py-2 sm:py-1.5 text-xs border text-center transition-all"
+          class="shrink-0 px-1.5 sm:px-3 py-2 sm:py-1.5 text-[10px] sm:text-xs border text-center transition-all whitespace-nowrap"
           :class="$route.path === '/square' ? 'border-pulse-accent bg-pulse-accent/20 text-pulse-accent' : 'border-transparent text-pulse-muted hover:text-pulse-white'"
         >
           [SQUARE]
         </router-link>
         <router-link
           to="/bounty"
-          class="flex-1 sm:flex-none px-3 py-2 sm:py-1.5 text-xs border text-center transition-all"
+          class="shrink-0 px-1.5 sm:px-3 py-2 sm:py-1.5 text-[10px] sm:text-xs border text-center transition-all whitespace-nowrap"
           :class="$route.path === '/bounty' ? 'border-pulse-warning bg-pulse-warning/20 text-pulse-warning' : 'border-transparent text-pulse-muted hover:text-pulse-white'"
         >
           [BOUNTY]
         </router-link>
         <router-link
           to="/workbench"
-          class="flex-1 sm:flex-none px-3 py-2 sm:py-1.5 text-xs border text-center transition-all"
+          class="shrink-0 px-1.5 sm:px-3 py-2 sm:py-1.5 text-[10px] sm:text-xs border text-center transition-all whitespace-nowrap"
           :class="$route.path === '/workbench' ? 'border-pulse-human bg-pulse-human/20 text-pulse-human' : 'border-transparent text-pulse-muted hover:text-pulse-white'"
         >
           [WORK]
         </router-link>
         <button
           @click="handleLogout"
-          class="flex-1 sm:flex-none px-3 py-2 sm:py-1.5 text-xs border border-transparent text-pulse-muted hover:text-pulse-dead transition text-center"
+          class="shrink-0 px-1.5 sm:px-3 py-2 sm:py-1.5 text-[10px] sm:text-xs border border-transparent text-pulse-muted hover:text-pulse-dead transition text-center whitespace-nowrap"
         >
           {{ isGuest ? '[LEAVE]' : '[EXIT]' }}
         </button>

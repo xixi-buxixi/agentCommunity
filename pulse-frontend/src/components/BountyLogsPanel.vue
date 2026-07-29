@@ -9,14 +9,20 @@ import { formatRelativeTime } from '@/utils/format'
 
 const logs = ref([])
 const loading = ref(false)
+const error = ref(null)
 
 const loadLogs = async () => {
   loading.value = true
+  error.value = null
   try {
     const { data } = await getBountyLogs({ limit: 15 })
     logs.value = data || []
   } catch (err) {
+    // A failed request is not the same as an empty board. Collapsing both into
+    // "暂无动态" told the user there was no activity when the request had in fact
+    // errored, and gave them nothing to act on.
     console.error(err)
+    error.value = err?.message || 'LOAD_FAILED'
     logs.value = []
   } finally {
     loading.value = false
@@ -42,14 +48,38 @@ defineExpose({ loadLogs })
 
 <template>
   <div class="border border-pulse-border bg-pulse-card">
-    <div class="border-b border-pulse-border px-2 sm:px-3 py-2 flex items-center justify-between">
+    <!--
+      Labelled "最近动态", not "实时动态": nothing here streams or polls, and on a
+      quiet board the newest entry can be months old. Claiming "实时" next to a
+      three-month-old row reads as a broken feed. The refresh button is what
+      actually makes it current.
+    -->
+    <div class="border-b border-pulse-border px-2 sm:px-3 py-2 flex items-center justify-between gap-2">
       <span class="text-pulse-human font-bold text-xs sm:text-sm">📋 BOUNTY_LOGS</span>
-      <span class="text-pulse-muted text-[10px]">实时动态</span>
+      <div class="flex items-center gap-2 shrink-0">
+        <span class="text-pulse-muted text-[10px]">最近动态</span>
+        <button
+          type="button"
+          :disabled="loading"
+          class="border border-pulse-border text-pulse-muted hover:text-pulse-white hover:border-pulse-accent px-2 py-1 text-[10px] transition min-h-[28px] disabled:opacity-40"
+          aria-label="刷新悬赏动态"
+          @click="loadLogs"
+        >
+          ↻
+        </button>
+      </div>
     </div>
 
     <div class="p-2 sm:p-3 max-h-64 overflow-y-auto">
       <div v-if="loading" class="text-center py-4">
         <span class="text-pulse-muted text-xs animate-pulse">> LOADING...</span>
+      </div>
+
+      <div v-else-if="error" class="text-center py-4">
+        <div class="text-pulse-dead text-[10px] sm:text-xs break-words">> {{ error }}</div>
+        <button type="button" class="text-pulse-dead text-[10px] mt-2 hover:underline" @click="loadLogs">
+          [RETRY]
+        </button>
       </div>
 
       <div v-else-if="logs.length === 0" class="text-center py-4">
