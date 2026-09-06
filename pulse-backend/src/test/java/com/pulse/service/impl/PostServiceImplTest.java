@@ -17,6 +17,7 @@ import com.pulse.mapper.LikeMapper;
 import com.pulse.mapper.PostMapper;
 import com.pulse.mapper.PostViewMapper;
 import com.pulse.mapper.UserMapper;
+import com.pulse.service.AgentWakeEventService;
 import com.pulse.service.support.AuthorResolver;
 import org.junit.jupiter.api.Test;
 
@@ -28,6 +29,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class PostServiceImplTest {
@@ -40,6 +42,7 @@ class PostServiceImplTest {
     private final UserMapper userMapper = mock(UserMapper.class);
     private final AgentMapper agentMapper = mock(AgentMapper.class);
     private final AuthorResolver authorResolver = new AuthorResolver(userMapper, agentMapper);
+    private final AgentWakeEventService agentWakeEventService = mock(AgentWakeEventService.class);
 
     private final PostServiceImpl service = new PostServiceImpl(
             postMapper,
@@ -49,7 +52,8 @@ class PostServiceImplTest {
             postViewMapper,
             userMapper,
             agentMapper,
-            authorResolver
+            authorResolver,
+            agentWakeEventService
     );
 
     @Test
@@ -149,6 +153,66 @@ class PostServiceImplTest {
         assertThat(rootResponse.getReplies()).hasSize(1);
         assertThat(rootResponse.getReplies().get(0).getParentCommentId()).isEqualTo(5L);
         assertThat(rootResponse.getReplies().get(0).getReplyDepth()).isEqualTo(1);
+    }
+
+    // ========== Wake queue enqueue (phase 3) ==========
+
+    /**
+     * A comment on an agent's post should bring that agent back to answer, and the
+     * notification must name the comment so the same one cannot wake it twice.
+     */
+    @Test
+    void commentingOnAnAgentPostQueuesAWakeEventForThatAgent() {
+        Post agentPost = agentPost(88L, 30L);
+        when(postMapper.selectById(88L)).thenReturn(agentPost);
+        when(userMapper.selectById(20L)).thenReturn(user(20L, "bob"));
+        when(commentMapper.insert(any(Comment.class))).thenAnswer(invocation -> {
+            invocation.getArgument(0, Comment.class).setId(900L);
+            return 1;
+        });
+
+        service.createComment(20L, 88L, commentRequest("有意思的观点", null));
+
+        verify(agentWakeEventService).recordCommentOnAgentPost(30L, 88L, 900L,
+                AuthorType.HUMAN.getCode(), 20L);
+    }
+
+    /**
+     * In a thread the person whose words were answered is the one who should come back -
+     * not necessarily the post owner.
+     */
+    @Test
+    void replyingToAnAgentCommentQueuesAWakeEventForTheCommentAuthor() {
+        when(postMapper.selectById(88L)).thenReturn(humanPost(88L, 10L));
+        when(userMapper.selectById(20L)).thenReturn(user(20L, "bob"));
+        Comment agentComment = topLevelComment(5L, 88L, 30L);
+        agentComment.setAuthorType(AuthorType.AGENT.getCode());
+        when(commentMapper.selectById(5L)).thenReturn(agentComment);
+        when(commentMapper.insert(any(Comment.class))).thenAnswer(invocation -> {
+            invocation.getArgument(0, Comment.class).setId(901L);
+            return 1;
+        });
+
+        service.createComment(20L, 88L, commentRequest("我不同意", 5L));
+
+        verify(agentWakeEventService).recordReplyToAgentComment(30L, 5L, 901L,
+                AuthorType.HUMAN.getCode(), 20L);
+    }
+
+    @Test
+    void commentingOnAHumanPostQueuesNothing() {
+        when(postMapper.selectById(88L)).thenReturn(humanPost(88L, 10L));
+        when(userMapper.selectById(20L)).thenReturn(user(20L, "bob"));
+
+        service.createComment(20L, 88L, commentRequest("普通评论", null));
+
+        verifyNoInteractions(agentWakeEventService);
+    }
+
+    private Post agentPost(Long id, Long authorId) {
+        Post post = humanPost(id, authorId);
+        post.setAuthorType(AuthorType.AGENT.getCode());
+        return post;
     }
 
     private CommentCreateRequest commentRequest(String content, Long parentCommentId) {

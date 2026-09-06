@@ -12,6 +12,7 @@ import com.pulse.exception.BusinessException;
 import com.pulse.exception.ErrorCode;
 import com.pulse.mapper.*;
 import com.pulse.service.PostService;
+import com.pulse.service.AgentWakeEventService;
 import com.pulse.service.support.AuthorResolver;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -39,6 +40,7 @@ public class PostServiceImpl implements PostService {
     private final UserMapper userMapper;
     private final AgentMapper agentMapper;
     private final AuthorResolver authorResolver;
+    private final AgentWakeEventService agentWakeEventService;
 
     private static final DateTimeFormatter DATE_FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
@@ -586,7 +588,33 @@ public class PostServiceImpl implements PostService {
 
         log.info("Comment created: commentId={}, postId={}, userId={}", comment.getId(), postId, userId);
 
+        queueWakeEventForComment(post, parentComment, comment, userId);
+
         return buildCommentResponse(comment);
+    }
+
+    /**
+     * Let an agent know somebody just talked to it.
+     *
+     * A reply to an agent's comment is attributed to the comment's author, otherwise the
+     * post's author is notified - the person whose words were answered is the one who
+     * should come back, which is not always the post owner in a threaded discussion.
+     *
+     * The service swallows its own failures, so this cannot affect the comment.
+     */
+    private void queueWakeEventForComment(Post post, Comment parentComment, Comment comment, Long userId) {
+        String actorType = AuthorType.HUMAN.getCode();
+        if (parentComment != null) {
+            if (AuthorType.AGENT.getCode().equalsIgnoreCase(parentComment.getAuthorType())) {
+                agentWakeEventService.recordReplyToAgentComment(parentComment.getAuthorId(),
+                        parentComment.getId(), comment.getId(), actorType, userId);
+            }
+            return;
+        }
+        if (post.isAgentPost()) {
+            agentWakeEventService.recordCommentOnAgentPost(post.getAuthorId(), post.getId(),
+                    comment.getId(), actorType, userId);
+        }
     }
 
     // ========== Helper Methods ==========

@@ -23,12 +23,17 @@ import com.pulse.mapper.PostMapper;
 import com.pulse.mapper.UserMapper;
 import com.pulse.entity.Post;
 import com.pulse.service.AgentService;
+import com.pulse.config.SchemaCapabilities;
+import com.pulse.dto.AgentWakeSettings;
+import com.pulse.service.support.WakeScheduleCalculator;
 import com.pulse.util.AesUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.HashMap;
@@ -51,9 +56,38 @@ public class AgentServiceImpl implements AgentService {
     private final UserMapper userMapper;
     private final PostMapper postMapper;
     private final AesUtil aesUtil;
+    private final SchemaCapabilities schemaCapabilities;
+    private final WakeScheduleCalculator wakeScheduleCalculator;
+
+    /**
+     * Rhythm wake-ups per day used when seeding a new agent's schedule; the scheduler
+     * owns the same knob for recomputation.
+     */
+    @Value("${scheduler.agent-loop.target-daily-rhythm-wakes:3}")
+    private int targetDailyRhythmWakes;
+
+    @Value("${scheduler.agent-loop.default-daily-wake-budget:4}")
+    private int defaultDailyWakeBudget;
+
+    /** Daytime window used when a stored bound is missing or unusable. */
+    private static final int DEFAULT_WAKE_HOURS_START = 9;
+    private static final int DEFAULT_WAKE_HOURS_END = 23;
 
     private static final DateTimeFormatter DATE_FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'");
+
+    /**
+     * Local ISO-8601 without a zone suffix, for the wake-rhythm timestamps.
+     *
+     * Deliberately NOT the formatter above. That one appends a literal 'Z', which claims
+     * the value is UTC when it is in fact server-local - harmless for a "created 3 days
+     * ago" label, but next_wake_at is a clock time the owner reads as "my agent wakes at
+     * 21:40", and being eight hours out makes the whole rhythm feature look broken. New
+     * fields therefore state local time honestly, matching how the bounty responses ship
+     * their LocalDateTime values.
+     */
+    private static final DateTimeFormatter LOCAL_DATE_TIME_FORMATTER =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
 
     @Override
     @Transactional
@@ -86,6 +120,7 @@ public class AgentServiceImpl implements AgentService {
         agent.setVersion(0);
 
         agentMapper.insert(agent);
+        assignInitialWakeRhythm(agent);
 
         log.info("Agent created: agentId={}, ownerId={}, name={}", agent.getId(), ownerId, agent.getName());
 
@@ -109,8 +144,9 @@ public class AgentServiceImpl implements AgentService {
 
         // Convert to response
         Page<AgentListItemResponse> responsePage = new Page<>(agentPage.getCurrent(), agentPage.getSize(), agentPage.getTotal());
+        Map<Long, AgentWakeSettings> wakeSettings = loadWakeSettings(agentPage.getRecords());
         List<AgentListItemResponse> responses = agentPage.getRecords().stream()
-                .map(this::buildListItemResponse)
+                .map(agent -> buildListItemResponse(agent, wakeSettings.get(agent.getId())))
                 .collect(Collectors.toList());
         responsePage.setRecords(responses);
 
@@ -167,6 +203,10 @@ public class AgentServiceImpl implements AgentService {
         }
 
         agentMapper.updateById(agent);
+
+        // Separate, capability-guarded statement: the rhythm columns are invisible to
+        // updateById on purpose (see Agent), so an un-migrated database keeps working.
+        applyWakeSettings(agent, request);
 
         log.info("Agent updated: agentId={}, ownerId={}", agentId, ownerId);
 
@@ -265,6 +305,130 @@ public class AgentServiceImpl implements AgentService {
     // ========== Helper Methods ==========
 
     /**
+     * Give a new agent its own routine.
+     *
+     * Random hours rather than one shared default: if every agent were awake 09-23 the
+     * community would still pulse, just on a different beat. Written with an explicit
+     * UPDATE after the insert, because the rhythm columns are deliberately outside the
+     * generated INSERT - a database without the migration must still be able to create
+     * agents.
+     */
+    private void assignInitialWakeRhythm(Agent agent) {
+        if (!schemaCapabilities.isWakeQueueSchema()) {
+            return;
+        }
+        int[] hours = wakeScheduleCalculator.randomActiveHours();
+        LocalDateTime firstWake = wakeScheduleCalculator.initialWake(
+                LocalDateTime.now(), hours[0], hours[1], targetDailyRhythmWakes);
+        try {
+            agentMapper.updateWakeSettings(agent.getId(), hours[0], hours[1],
+                    defaultDailyWakeBudget, firstWake);
+            agent.setWakeHoursStart(hours[0]);
+            agent.setWakeHoursEnd(hours[1]);
+            agent.setDailyWakeBudget(defaultDailyWakeBudget);
+            agent.setNextWakeAt(firstWake);
+        } catch (Exception e) {
+            // An agent without a rhythm still works - the legacy loop or a later edit will
+            // pick it up - so this must not fail the creation the user asked for.
+            log.warn("Could not seed the wake rhythm for agent {}: {}", agent.getId(), e.getMessage());
+        }
+    }
+
+    /**
+     * Apply the owner's rhythm settings.
+     *
+     * Both hour columns are always written together, defaulting the one the request left
+     * out: a window assembled from one new bound and one old one would have the scheduler
+     * computing against hours the owner never chose.
+     *
+     * Changing the active hours re-plans the next wake-up immediately - an owner who moves
+     * an agent to nights should not have to wait out the old schedule.
+     */
+    private void applyWakeSettings(Agent agent, AgentUpdateRequest request) {
+        boolean requested = request.getWakeHoursStart() != null
+                || request.getWakeHoursEnd() != null
+                || request.getDailyWakeBudget() != null;
+        if (!requested) {
+            return;
+        }
+        if (!schemaCapabilities.isWakeQueueSchema()) {
+            // An explicit 409 beats a 500 from an unknown column: the feature is simply
+            // not enabled on this deployment yet.
+            throw new BusinessException(ErrorCode.AGENT_WAKE_SETTINGS_UNAVAILABLE);
+        }
+
+        AgentWakeSettings current = agentMapper.findWakeSettings(agent.getId());
+        int start = resolveHour(request.getWakeHoursStart(),
+                current != null ? current.getWakeHoursStart() : null, DEFAULT_WAKE_HOURS_START);
+        int end = resolveHour(request.getWakeHoursEnd(),
+                current != null ? current.getWakeHoursEnd() : null, DEFAULT_WAKE_HOURS_END);
+        int budget = request.getDailyWakeBudget() != null
+                ? request.getDailyWakeBudget()
+                : (current != null && current.getDailyWakeBudget() != null
+                        ? current.getDailyWakeBudget()
+                        : defaultDailyWakeBudget);
+
+        boolean hoursChanged = request.getWakeHoursStart() != null || request.getWakeHoursEnd() != null;
+        LocalDateTime nextWake = hoursChanged
+                ? wakeScheduleCalculator.initialWake(LocalDateTime.now(), start, end, targetDailyRhythmWakes)
+                : (current != null ? current.getNextWakeAt() : null);
+
+        agentMapper.updateWakeSettings(agent.getId(), start, end, budget, nextWake);
+
+        agent.setWakeHoursStart(start);
+        agent.setWakeHoursEnd(end);
+        agent.setDailyWakeBudget(budget);
+        agent.setNextWakeAt(nextWake);
+        if (current != null) {
+            agent.setWakeCountToday(current.getWakeCountToday());
+            agent.setWakeCountDate(current.getWakeCountDate());
+        }
+    }
+
+    private int resolveHour(Integer requested, Integer stored, int fallback) {
+        if (requested != null) {
+            return requested;
+        }
+        if (stored != null && stored >= 0 && stored <= 23) {
+            return stored;
+        }
+        return fallback;
+    }
+
+    /**
+     * Load the rhythm for display. Absent schema or an absent row simply means the
+     * response carries no rhythm fields, never an error.
+     */
+    private AgentWakeSettings loadWakeSettings(Long agentId) {
+        if (!schemaCapabilities.isWakeQueueSchema()) {
+            return null;
+        }
+        try {
+            return agentMapper.findWakeSettings(agentId);
+        } catch (Exception e) {
+            log.warn("Could not read wake settings for agent {}: {}", agentId, e.getMessage());
+            return null;
+        }
+    }
+
+    private Map<Long, AgentWakeSettings> loadWakeSettings(List<Agent> agents) {
+        if (!schemaCapabilities.isWakeQueueSchema() || agents.isEmpty()) {
+            return Map.of();
+        }
+        try {
+            List<Long> ids = agents.stream().map(Agent::getId).collect(Collectors.toList());
+            Map<Long, AgentWakeSettings> byId = new HashMap<>();
+            for (AgentWakeSettings settings : agentMapper.findWakeSettingsByIds(ids)) {
+                byId.put(settings.getAgentId(), settings);
+            }
+            return byId;
+        } catch (Exception e) {
+            log.warn("Could not read wake settings for a list page: {}", e.getMessage());
+            return Map.of();
+        }
+    }
+
+    /**
      * Validate agent belongs to owner
      */
     private Agent validateAgentOwnership(Long ownerId, Long agentId) {
@@ -289,6 +453,10 @@ public class AgentServiceImpl implements AgentService {
      * Build list item response
      */
     private AgentListItemResponse buildListItemResponse(Agent agent) {
+        return buildListItemResponse(agent, null);
+    }
+
+    private AgentListItemResponse buildListItemResponse(Agent agent, AgentWakeSettings wake) {
         AgentStatus status = AgentStatus.fromCode(agent.getStatus());
 
         return AgentListItemResponse.builder()
@@ -302,6 +470,10 @@ public class AgentServiceImpl implements AgentService {
                 .tokenPercentage(agent.getTokenPercentage())
                 .modelName(agent.getModelName())
                 .lastActiveAt(formatDateTime(agent.getLastActiveAt()))
+                .wakeHoursStart(wake != null ? wake.getWakeHoursStart() : null)
+                .wakeHoursEnd(wake != null ? wake.getWakeHoursEnd() : null)
+                .dailyWakeBudget(wake != null ? wake.getDailyWakeBudget() : null)
+                .nextWakeAt(wake != null ? formatLocalDateTime(wake.getNextWakeAt()) : null)
                 .createdAt(formatDateTime(agent.getCreatedAt()))
                 .build();
     }
@@ -311,6 +483,7 @@ public class AgentServiceImpl implements AgentService {
      */
     private AgentDetailResponse buildDetailResponse(Agent agent, Long ownerId) {
         AgentStatus status = AgentStatus.fromCode(agent.getStatus());
+        AgentWakeSettings wake = loadWakeSettings(agent.getId());
 
         // Get owner name
         User owner = userMapper.selectById(ownerId);
@@ -344,9 +517,26 @@ public class AgentServiceImpl implements AgentService {
                 .ownerId(ownerId)
                 .ownerName(ownerName)
                 .lastActiveAt(formatDateTime(agent.getLastActiveAt()))
+                .wakeHoursStart(wake != null ? wake.getWakeHoursStart() : null)
+                .wakeHoursEnd(wake != null ? wake.getWakeHoursEnd() : null)
+                .dailyWakeBudget(wake != null ? wake.getDailyWakeBudget() : null)
+                .nextWakeAt(wake != null ? formatLocalDateTime(wake.getNextWakeAt()) : null)
+                // Stale counters read as zero: the reset is lazy, and showing yesterday's
+                // number would misreport the owner's remaining budget
+                .wakeCountToday(wake != null ? wake.wakeCountFor(LocalDate.now()) : null)
                 .createdAt(formatDateTime(agent.getCreatedAt()))
                 .updatedAt(formatDateTime(agent.getUpdatedAt()))
                 .build();
+    }
+
+    /**
+     * Format a wake timestamp as local ISO-8601, without pretending it is UTC.
+     */
+    private String formatLocalDateTime(LocalDateTime dateTime) {
+        if (dateTime == null) {
+            return null;
+        }
+        return dateTime.format(LOCAL_DATE_TIME_FORMATTER);
     }
 
     /**

@@ -20,6 +20,73 @@
         LIMIT #{limit}
     </select>
 
+    <!--
+      Candidates for the daily memory reflection: alive agents with at least one real
+      action logged inside the window.
+
+      "Real" excludes the reflection job's own audit rows (action_result
+      REFLECTION_SUCCESS / REFLECTION_FAILED / REFLECTION_SKIPPED). Without that
+      exclusion the job feeds itself: the window is longer than a day, so last night's
+      audit row alone would qualify the agent again tonight, and an agent that acted
+      once would be reflected on - and billed - every night for ever.
+
+      Keyset pagination on id, so a run can walk every candidate instead of starving
+      everyone after the first page. Token exhaustion is re-checked per agent by the
+      scheduler, because used_tokens moves between this query and the call.
+    -->
+    <select id="findAliveAgentsActiveSince" resultType="com.pulse.entity.Agent">
+        SELECT * FROM agents a
+        WHERE a.status = 1
+          AND a.deleted = 0
+          AND a.id &gt; #{afterId}
+          AND EXISTS (
+              SELECT 1 FROM agent_logs al
+              WHERE al.agent_id = a.id
+                AND al.created_at &gt;= #{since}
+                AND (al.action_result IS NULL OR al.action_result NOT LIKE 'REFLECTION%')
+          )
+        ORDER BY a.id ASC
+        LIMIT #{limit}
+    </select>
+
+    <select id="countAliveAgentsActiveSince" resultType="int">
+        SELECT COUNT(*) FROM agents a
+        WHERE a.status = 1
+          AND a.deleted = 0
+          AND EXISTS (
+              SELECT 1 FROM agent_logs al
+              WHERE al.agent_id = a.id
+                AND al.created_at &gt;= #{since}
+                AND (al.action_result IS NULL OR al.action_result NOT LIKE 'REFLECTION%')
+          )
+    </select>
+
+    <!--
+      Rhythm wake candidates. Only the parts an index can serve are here; the active-hours
+      window (which may wrap midnight) and the daily budget are decided in Java.
+
+      next_wake_at IS NULL is a candidate on purpose: an agent created before the
+      migration, or one whose schedule was never computed, must get a first turn.
+    -->
+    <select id="findRhythmWakeCandidates" resultType="com.pulse.entity.Agent">
+        SELECT * FROM agents
+        WHERE status = 1
+          AND deleted = 0
+          AND (is_unlimited = TRUE OR used_tokens &lt; token_threshold)
+          AND (next_wake_at IS NULL OR next_wake_at &lt;= #{now})
+        ORDER BY next_wake_at IS NOT NULL, next_wake_at ASC, id ASC
+        LIMIT #{limit}
+    </select>
+
+    <select id="findAliveAgentsByIds" resultType="com.pulse.entity.Agent">
+        SELECT * FROM agents
+        WHERE status = 1
+          AND deleted = 0
+          AND id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+        ORDER BY id ASC
+    </select>
+
         <!--
       Fallback for databases without the last_dispatched_at column (migration not
       applied). Keeps the loop working at the cost of a full scan + temp table.

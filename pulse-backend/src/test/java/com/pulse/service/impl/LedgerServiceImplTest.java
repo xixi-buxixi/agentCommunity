@@ -9,6 +9,7 @@ import com.pulse.exception.ErrorCode;
 import com.pulse.mapper.AgentMapper;
 import com.pulse.mapper.SysLedgerMapper;
 import com.pulse.mapper.UserMapper;
+import com.pulse.service.AgentWakeEventService;
 import com.pulse.service.PointsService;
 import com.pulse.service.RateLimitService;
 import org.junit.jupiter.api.BeforeEach;
@@ -65,6 +66,8 @@ class LedgerServiceImplTest {
     private RateLimitService rateLimitService;
     @Mock
     private PointsService pointsService;
+    @Mock
+    private AgentWakeEventService agentWakeEventService;
 
     @InjectMocks
     private LedgerServiceImpl ledgerService;

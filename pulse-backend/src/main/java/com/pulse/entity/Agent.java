@@ -5,6 +5,7 @@ import com.pulse.enums.AgentStatus;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 /**
@@ -67,6 +68,69 @@ public class Agent {
     private Boolean isUnlimited;
 
     private LocalDateTime lastActiveAt;
+
+    // ========== Personalised wake-up rhythm (phase 3) ==========
+    //
+    // Every field below is @TableField(exist = false), i.e. invisible to MyBatis Plus's
+    // generated statements, and that is a hard requirement rather than a style choice.
+    //
+    // These columns only exist after the phase-3 migration. A mapped field would be
+    // added to every BaseMapper SELECT/INSERT/UPDATE - selectById, selectPage,
+    // updateById - so on a database that has not been migrated the agent detail page,
+    // the settings update and even the tipping path would fail with "unknown column".
+    // SchemaCapabilities can guard hand-written SQL; it cannot guard generated SQL.
+    //
+    // Automapping still fills these fields from hand-written statements that select the
+    // columns (see AgentMapper), because MyBatis maps a result set by property name and
+    // does not consult @TableField. Writes go through explicit, capability-guarded
+    // UPDATE statements.
+
+    /**
+     * When the agent's own rhythm should wake it next. Null means "not scheduled yet".
+     */
+    @TableField(exist = false)
+    private LocalDateTime nextWakeAt;
+
+    /**
+     * Active hours, [start, end), 0-23. May wrap midnight (22 -> 6), and
+     * {@code start == end} means "active all day" - never "never active", because an
+     * agent that can never wake up would be silently dead.
+     */
+    @TableField(exist = false)
+    private Integer wakeHoursStart;
+
+    @TableField(exist = false)
+    private Integer wakeHoursEnd;
+
+    /**
+     * Hard ceiling on wake-ups per day, rhythm and interaction combined.
+     */
+    @TableField(exist = false)
+    private Integer dailyWakeBudget;
+
+    @TableField(exist = false)
+    private Integer wakeCountToday;
+
+    /**
+     * The day {@link #wakeCountToday} belongs to; a different date means the counter is
+     * stale and resets on the next claim.
+     */
+    @TableField(exist = false)
+    private LocalDate wakeCountDate;
+
+    /**
+     * Wake-ups used today, reading a stale counter as zero.
+     *
+     * The counter is reset lazily (by the next claim), so a row left over from yesterday
+     * still holds yesterday's number. Reporting that to the owner would be a plain lie
+     * about their budget.
+     */
+    public int getWakeCountForDay(LocalDate today) {
+        if (wakeCountDate == null || !wakeCountDate.equals(today) || wakeCountToday == null) {
+            return 0;
+        }
+        return wakeCountToday;
+    }
 
     /**
      * Optimistic lock version - incremented on each update

@@ -87,6 +87,26 @@ pulse-ai-side:
 # visitor would share one rate-limit bucket.
 pulse:
   trusted-proxies: ${TRUSTED_PROXIES:}
+  memory:
+    # Cap of non-deprecated PERSONA_FACT cards per agent. Excess cards are retired on
+    # the write path (status=DEPRECATED, least important and oldest first), which bounds
+    # how many cards stay live per agent - it does NOT bound table size: DEPRECATED rows
+    # are kept for audit, so total row count still grows with agent activity. 0 disables
+    # the sweep.
+    persona-fact-limit: ${MEMORY_PERSONA_FACT_LIMIT:200}
+    # Cap of non-deprecated PERSONA_TRAIT cards per agent (reflection output), retired
+    # by the same importance-first sweep. Also sent to the gateway as max_total_traits.
+    trait-limit: ${MEMORY_TRAIT_LIMIT:30}
+    # How many memories are injected into one decision prompt (traits before facts,
+    # then importance, then recency). Every injected memory costs prompt tokens on
+    # every cycle, so this is the main cost knob of the memory feature. 0 disables
+    # injection entirely.
+    inject-limit: ${MEMORY_INJECT_LIMIT:10}
+    # Upper bound on traits one reflection call may add, also sent as max_new_traits.
+    max-new-traits: ${MEMORY_MAX_NEW_TRAITS:5}
+    # Upper bound on behaviour lines sent to the reflection endpoint, so a very busy
+    # agent cannot produce an unbounded prompt.
+    behavior-limit: ${MEMORY_BEHAVIOR_LIMIT:40}
 
 hot-news:
   # Empty default, not a placeholder value: a missing ingest token must not stop the
@@ -99,12 +119,76 @@ hot-news:
 scheduler:
   agent-loop:
     enabled: true
-    interval: 43200000  # 12 hours in milliseconds (12 * 60 * 60 * 1000)
-    batch-size: 10    # Number of agents to process per cycle
+    # Wake-up mechanism: legacy | queue
+    #   legacy - one global batch every `interval` (pre-phase-3 behaviour, the fallback)
+    #   queue  - per-agent rhythm + interaction-triggered wake-ups, driven by a 5-minute tick
+    # Defaults to legacy so an upgrade changes nothing until it is switched on deliberately;
+    # an unknown value, or a database without the wake-queue schema, also falls back to
+    # legacy with a warning. Exactly one mode does work at a time.
+    mode: ${AGENT_LOOP_MODE:legacy}
+    interval: 43200000  # 12 hours in milliseconds (12 * 60 * 60 * 1000) - legacy mode only
+    batch-size: 10    # Number of agents to process per cycle - legacy mode only
+
+    # ---------- queue mode ----------
+    # NOTE ON CLOCKS (queue mode): every timestamp the QUEUE-mode SQL writes or compares -
+    # the debounce window, the daily-budget day boundary, next_wake_at, processed_at - comes
+    # from the JVM clock, never from the database's NOW()/CURDATE(). The datasource's
+    # serverTimezone must therefore match the JVM timezone, or those values read back
+    # shifted (a mismatch does not corrupt the budget, but it makes the stored times
+    # misleading).
+    #
+    # Legacy mode is untouched on purpose: its markDispatched still stamps with the database
+    # NOW(), because leaving the fallback path bit-for-bit as it shipped is the whole point
+    # of having a fallback. Consequence: at the moment of a legacy->queue switch the first
+    # debounce comparison can be off by the JVM/DB clock skew (seconds), which at a 15-minute
+    # interval is acceptable.
+    #
+    # Tick period. Sets the latency floor for answering an interaction; the per-agent
+    # debounce and daily budget - not this - are what bound the cost.
+    tick-interval: ${AGENT_WAKE_TICK_INTERVAL:300000}  # 5 minutes
+    # Minimum gap between two wake-ups of the same agent, whatever the reason. Claimed
+    # atomically together with the daily budget, so it holds across instances.
+    min-wake-interval-minutes: ${AGENT_MIN_WAKE_INTERVAL:15}
+    # Agents woken per tick, per reason (a ceiling on one tick's cost, not a daily cap)
+    event-batch-size: ${AGENT_EVENT_BATCH_SIZE:20}
+    rhythm-batch-size: ${AGENT_RHYTHM_BATCH_SIZE:20}
+    # Interactions answered by a single wake-up: five replies are one conversation
+    max-events-per-wake: ${AGENT_MAX_EVENTS_PER_WAKE:10}
+    # Pending interactions older than this are retired unanswered, so a backlog built up
+    # while an agent was out of budget cannot become a wake-up storm later
+    event-expiry-hours: ${AGENT_EVENT_EXPIRY_HOURS:24}
+    # Rhythm wake-ups per day before jitter; also seeds a new agent's first schedule
+    target-daily-rhythm-wakes: ${AGENT_TARGET_DAILY_WAKES:3}
+    # Budget assumed for agent rows that predate the migration (owners can change theirs)
+    default-daily-wake-budget: ${AGENT_DEFAULT_WAKE_BUDGET:4}
 
   # Ranking Scheduler Configuration
   ranking:
     enabled: true
+
+  # Daily persona-trait distillation (one LLM call per active agent per day).
+  # This scheduler spends the agent owner's tokens, so every bound is explicit.
+  memory-reflection:
+    # OFF by default: this job makes one LLM call per active agent per day and burns
+    # the agent owner's tokens. Enable it explicitly after verifying the cost in a
+    # deployment (same philosophy as defaulting the wake-up rework to legacy mode).
+    enabled: ${MEMORY_REFLECTION_ENABLED:false}
+    # 03:40 - low traffic and clear of the 04:20 counter reconciliation
+    cron: ${MEMORY_REFLECTION_CRON:0 40 3 * * *}
+    # Page size of the candidate cursor. The run walks every candidate page by page, so
+    # this is NOT a total limit - agents past the first page are not starved.
+    batch-size: ${MEMORY_REFLECTION_BATCH_SIZE:50}
+    # Hard ceiling on reflection CALLS per run (runaway-cost brake). Agents skipped for
+    # idempotence / token exhaustion / empty behaviour pack cost nothing and do not count
+    # against it. Hitting the ceiling is logged with how many candidates went unexamined;
+    # 0 means no ceiling.
+    max-agents-per-run: ${MEMORY_REFLECTION_MAX_AGENTS:500}
+    # Activity window to reflect on; slightly over a day so an agent that acted just
+    # before the previous run is not skipped twice
+    window-hours: ${MEMORY_REFLECTION_WINDOW_HOURS:26}
+    # Charged when the gateway reports no usage - a call that reached the model is
+    # never free (same rule as the agent loop)
+    min-token-charge: ${MEMORY_REFLECTION_MIN_TOKEN_CHARGE:200}
 
 # Actuator: health endpoint only, used by the deploy pipeline to verify a restart
 management:

@@ -13,10 +13,16 @@ import ast
 import json
 import logging
 import re
-from typing import Optional
+from typing import Iterable, Optional
 
 from app.exceptions.errors import JSONParseError
-from app.models.response import ActionDecision, AgentAction
+from app.models.response import (
+    ActionDecision,
+    AgentAction,
+    NewTrait,
+    ReflectionResult,
+    UpdatedTrait,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +57,29 @@ class JSONParser:
             logger.warning("LLM 返回空内容")
             return ActionDecision(action="ignore")
 
+        parsed = self._extract_json_object(raw_content)
+
+        if parsed is None:
+            logger.error(
+                f"JSON 提取失败 - 在响应中未找到 JSON 对象：\n"
+                f"---原始输出---\n{raw_content}\n---结束---"
+            )
+            raise JSONParseError(
+                raw_content=raw_content,
+                parse_error="未找到 JSON 对象或解析成功",
+                response_time_ms=response_time_ms,
+            )
+
+        # 步骤 4：从解析的 JSON 创建 ActionDecision
+        return self._create_decision(parsed, raw_content)
+
+    def _extract_json_object(self, raw_content: str) -> Optional[dict]:
+        """
+        从可能夹带 markdown、前后文、单引号或被截断的输出里提取一个 JSON 对象。
+
+        决策与反思两条链路共用同一套提取/修复逻辑：模型的畸形输出方式与它在回答
+        什么问题无关，两边各写一套只会让其中一套逐渐落后。
+        """
         logger.debug(f"解析 LLM 响应，长度={len(raw_content)}")
 
         # 步骤 1 和 2：一次性尝试提取和解析
@@ -99,19 +128,234 @@ class JSONParser:
             logger.warning("LLM 返回了 JSON 数组而非对象，按无动作处理")
             parsed = None
 
-        if parsed is None or not isinstance(parsed, dict):
+        if not isinstance(parsed, dict):
+            return None
+
+        return parsed
+
+    def parse_reflection(
+        self,
+        raw_content: str,
+        allowed_trait_ids: Optional[Iterable[int]] = None,
+        max_new_traits: int = 5,
+        max_total_traits: int = 30,
+        existing_trait_count: int = 0,
+        response_time_ms: Optional[int] = None,
+    ) -> ReflectionResult:
+        """
+        将反思输出解析为 ReflectionResult（复用与决策相同的提取/修复框架）。
+
+        安全约束：
+        - 提取失败抛 JSONParseError，由路由降级为 success=false + 空列表；
+        - updated_traits / deprecated_trait_ids 的 id 必须出现在 allowed_trait_ids
+          里（即后端本次传入的 existing_traits），模型编造的 id 直接丢弃——
+          否则后端会拿一个未经校验的主键去 UPDATE 别人的记忆卡片；
+        - 单条格式非法只丢该条，不让整次反思白跑；
+        - 条数超过 limits 时截断，而不是原样交给后端。
+        """
+        allowed = {int(i) for i in (allowed_trait_ids or [])}
+
+        if not raw_content or not raw_content.strip():
+            logger.warning("反思调用返回空内容")
+            raise JSONParseError(
+                raw_content=raw_content,
+                parse_error="反思响应为空",
+                response_time_ms=response_time_ms,
+            )
+
+        parsed = self._extract_json_object(raw_content)
+        if parsed is None:
             logger.error(
-                f"JSON 提取失败 - 在响应中未找到 JSON 对象：\n"
+                "反思 JSON 提取失败 - 未找到 JSON 对象：\n"
                 f"---原始输出---\n{raw_content}\n---结束---"
             )
             raise JSONParseError(
                 raw_content=raw_content,
-                parse_error="未找到 JSON 对象或解析成功",
+                parse_error="未找到 JSON 对象",
                 response_time_ms=response_time_ms,
             )
 
-        # 步骤 4：从解析的 JSON 创建 ActionDecision
-        return self._create_decision(parsed, raw_content)
+        self._require_reflection_shape(parsed, raw_content, response_time_ms)
+
+        deprecated_ids = self._coerce_trait_ids(parsed.get("deprecated_trait_ids"), allowed)
+        deprecated_set = set(deprecated_ids)
+
+        updated = self._coerce_updated_traits(parsed.get("updated_traits"), allowed, deprecated_set)
+        new_traits = self._coerce_new_traits(parsed.get("new_traits"))
+
+        # 总量上限：废弃的卡片会腾出位置，所以按"废弃后的存量"计算剩余额度。
+        surviving = max(existing_trait_count - len(deprecated_ids), 0)
+        room_left = max(max_total_traits - surviving, 0)
+        allowance = max(min(max_new_traits, room_left), 0)
+        if len(new_traits) > allowance:
+            logger.warning(
+                "反思返回 %d 条新特质，超出额度 %d（max_new=%d, 总量上限=%d），已截断",
+                len(new_traits),
+                allowance,
+                max_new_traits,
+                max_total_traits,
+            )
+            new_traits = new_traits[:allowance]
+
+        return ReflectionResult(
+            new_traits=new_traits,
+            updated_traits=updated,
+            deprecated_trait_ids=deprecated_ids,
+        )
+
+    # 反思输出的三个契约键
+    REFLECTION_KEYS = ("new_traits", "updated_traits", "deprecated_trait_ids")
+
+    def _require_reflection_shape(
+        self,
+        parsed: dict,
+        raw_content: str,
+        response_time_ms: Optional[int] = None,
+    ) -> None:
+        """
+        在把任何键默认成 [] 之前先校验形状，键存在性与类型都要查。
+
+        为什么必须两者都查：
+        - `{"reason":"我无法反思"}` 三个键全无——若默认成三个空列表，后端拿到的是与
+          "确实没什么可提炼"完全无法区分的"空成功"：照常计费、记 REFLECTION_SUCCESS、
+          当日再也不会重试。
+        - `{"new_traits":"none"}` / `{"updated_traits":null}` 键在但类型不对——下游的
+          `isinstance(value, list)` 守卫会安静地把它当空列表，于是同一个"伪装成功"
+          从另一条路回来了。类型不符同样判形状失败。
+
+        存在且类型正确的键有至少一个时，模型确实回答了这个问题，其余键允许省略。
+        """
+        present = [key for key in self.REFLECTION_KEYS if key in parsed]
+
+        if not present:
+            self._raise_reflection_shape_error(
+                raw_content,
+                f"反思输出缺少 {'/'.join(self.REFLECTION_KEYS)}",
+                "反思输出缺少全部三个契约键",
+                response_time_ms,
+            )
+
+        malformed = [key for key in present if not isinstance(parsed.get(key), list)]
+        if malformed:
+            self._raise_reflection_shape_error(
+                raw_content,
+                f"反思输出的 {'/'.join(malformed)} 不是数组",
+                f"反思输出的 {'/'.join(malformed)} 不是数组（类型不符）",
+                response_time_ms,
+            )
+
+    def _raise_reflection_shape_error(
+        self,
+        raw_content: str,
+        parse_error: str,
+        log_reason: str,
+        response_time_ms: Optional[int],
+    ) -> None:
+        logger.error(
+            f"{log_reason}，按解析失败处理：\n"
+            f"---原始输出---\n{raw_content}\n---结束---"
+        )
+        raise JSONParseError(
+            raw_content=raw_content,
+            parse_error=parse_error,
+            response_time_ms=response_time_ms,
+        )
+
+    def _coerce_trait_ids(self, value: object, allowed: set) -> list:
+        """把 deprecated_trait_ids 规范化为去重、已校验的 id 列表。"""
+        if not isinstance(value, list):
+            return []
+        result: list = []
+        seen = set()
+        for item in value:
+            trait_id = self._coerce_int(item)
+            if trait_id is None or trait_id < 1:
+                continue
+            if trait_id not in allowed:
+                logger.warning("丢弃未在 existing_traits 中出现的 deprecated id=%s", trait_id)
+                continue
+            if trait_id in seen:
+                continue
+            seen.add(trait_id)
+            result.append(trait_id)
+        return result
+
+    def _coerce_updated_traits(
+        self,
+        value: object,
+        allowed: set,
+        deprecated: set,
+    ) -> list:
+        if not isinstance(value, list):
+            return []
+        result: list = []
+        seen = set()
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            trait_id = self._coerce_int(item.get("id"))
+            if trait_id is None or trait_id < 1 or trait_id not in allowed:
+                logger.warning("丢弃无效的 updated_traits.id=%s", item.get("id"))
+                continue
+            if trait_id in deprecated:
+                # 同一条卡片既要修订又要废弃：以废弃为准，修订丢弃。
+                logger.warning("id=%s 同时出现在废弃与修订列表，按废弃处理", trait_id)
+                continue
+            if trait_id in seen:
+                continue
+            content = self._coerce_text(item.get("content"), self.MAX_TRAIT_CONTENT_LENGTH)
+            if not content:
+                logger.warning("丢弃缺少 content 的 updated_traits.id=%s", trait_id)
+                continue
+            seen.add(trait_id)
+            result.append(
+                UpdatedTrait(
+                    id=trait_id,
+                    content=content,
+                    # Explicit None (never "" and never dropped): the backend treats a
+                    # missing evidence on a revision as "clear the old evidence",
+                    # because evidence describing the previous wording would document
+                    # the revised card incorrectly. A blank string is normalised to
+                    # None so both spellings of "not provided" reach it identically.
+                    evidence=self._coerce_evidence(item.get("evidence")),
+                    importance_score=self._coerce_score(item.get("importance_score")),
+                    confidence_score=self._coerce_score(item.get("confidence_score")),
+                )
+            )
+        return result
+
+    def _coerce_evidence(self, value: object) -> Optional[str]:
+        """Normalize evidence: absent, null or blank all become None."""
+        text = self._coerce_text(value, self.MAX_TRAIT_CONTENT_LENGTH)
+        return text or None
+
+    def _coerce_new_traits(self, value: object) -> list:
+        if not isinstance(value, list):
+            return []
+        result: list = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            content = self._coerce_text(item.get("content"), self.MAX_TRAIT_CONTENT_LENGTH)
+            if not content:
+                logger.warning("丢弃缺少 content 的 new_traits 条目")
+                continue
+            result.append(
+                NewTrait(
+                    content=content,
+                    evidence=self._coerce_evidence(item.get("evidence")),
+                    importance_score=self._coerce_score(item.get("importance_score")),
+                    confidence_score=self._coerce_score(item.get("confidence_score")),
+                )
+            )
+        return result
+
+    def _coerce_score(self, value: object, default: int = 50) -> int:
+        """把评分夹到 0-100；缺失或非法时取中位默认值而不是让整条被丢弃。"""
+        score = self._coerce_int(value)
+        if score is None:
+            return default
+        return max(0, min(100, score))
 
     def _attempt_repair(self, malformed: str) -> str:
         r"""
@@ -306,6 +550,8 @@ class JSONParser:
     MAX_TEXT_LENGTH = 500
     MAX_TITLE_LENGTH = 100
     MAX_DESCRIPTION_LENGTH = 1000
+    # NewTrait/UpdatedTrait 的 content/evidence 上限
+    MAX_TRAIT_CONTENT_LENGTH = 500
 
     def _coerce_text(self, value: object, max_length: int = MAX_TEXT_LENGTH) -> Optional[str]:
         """

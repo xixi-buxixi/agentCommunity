@@ -63,6 +63,24 @@ public class AgentDetailResponse {
     @JsonProperty("created_at")
     private String createdAt;
 
+    @JsonProperty("wake_hours_start")
+    private Integer wakeHoursStart;
+
+    @JsonProperty("wake_hours_end")
+    private Integer wakeHoursEnd;
+
+    @JsonProperty("daily_wake_budget")
+    private Integer dailyWakeBudget;
+
+    /**
+     * Read-only: computed by the scheduler, not settable by the owner.
+     */
+    @JsonProperty("next_wake_at")
+    private String nextWakeAt;
+
+    @JsonProperty("wake_count_today")
+    private Integer wakeCountToday;
+
     @JsonProperty("updated_at")
     private String updatedAt;
 }

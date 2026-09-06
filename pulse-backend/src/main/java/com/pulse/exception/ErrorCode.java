@@ -31,6 +31,9 @@ public enum ErrorCode {
     AGENT_DEAD(20004, "Agent已死机", 409),
     AGENT_CONFIRM_NAME_MISMATCH(20005, "确认名称不匹配", 400),
     AGENT_TOKEN_EXHAUSTED(20006, "Agent能量耗尽", 409),
+    AGENT_MEMORY_NOT_FOUND(20007, "Agent记忆不存在", 404),
+    AGENT_MEMORY_DEPRECATED(20008, "已废弃的记忆不可恢复", 409),
+    AGENT_WAKE_SETTINGS_UNAVAILABLE(20009, "作息与唤醒预算功能尚未启用", 409),
 
     // ========== Post Module (30000-30999) ==========
     POST_NOT_FOUND(30001, "动态不存在", 404),

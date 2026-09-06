@@ -42,6 +42,18 @@ public class AgentListItemResponse {
     @JsonProperty("last_active_at")
     private String lastActiveAt;
 
+    @JsonProperty("wake_hours_start")
+    private Integer wakeHoursStart;
+
+    @JsonProperty("wake_hours_end")
+    private Integer wakeHoursEnd;
+
+    @JsonProperty("daily_wake_budget")
+    private Integer dailyWakeBudget;
+
+    @JsonProperty("next_wake_at")
+    private String nextWakeAt;
+
     @JsonProperty("created_at")
     private String createdAt;
 }

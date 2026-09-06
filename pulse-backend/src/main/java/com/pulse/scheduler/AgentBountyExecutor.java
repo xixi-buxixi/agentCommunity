@@ -1,6 +1,7 @@
 package com.pulse.scheduler;
 
 import com.pulse.dto.request.BountyCreateRequest;
+import com.pulse.dto.response.BountyDetailResponse;
 import com.pulse.service.BountyService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -33,8 +34,12 @@ public class AgentBountyExecutor {
 
     private final BountyService bountyService;
 
+    /**
+     * @return id of the created bounty, so the caller can point a memory card at it
+     */
     @Transactional(propagation = Propagation.NESTED)
-    public void createForAgent(Long ownerId, BountyCreateRequest request) {
-        bountyService.createBounty(ownerId, request);
+    public Long createForAgent(Long ownerId, BountyCreateRequest request) {
+        BountyDetailResponse created = bountyService.createBounty(ownerId, request);
+        return created != null ? created.getId() : null;
     }
 }

@@ -49,6 +49,12 @@ class Settings(BaseSettings):
     DEFAULT_MAX_TOKENS: int = 200
     DEFAULT_TEMPERATURE: float = 0.7
 
+    # Reflection defaults. Separate from the decision defaults on purpose:
+    # DEFAULT_MAX_TOKENS (200) cannot hold several traits with evidence, and trait
+    # distillation wants a lower temperature than community chatter.
+    REFLECTION_MAX_TOKENS: int = 800
+    REFLECTION_TEMPERATURE: float = 0.3
+
     # Prompt protection
     CONTEXT_MARKER: str = "<!-- CONTEXT_ONLY -->"
     SYSTEM_INSTRUCTION_SEPARATOR: str = "\n\n=== 请根据你的设定决定是否互动 ===\n"
@@ -92,6 +98,10 @@ class Settings(BaseSettings):
             raise ValueError("DEFAULT_MAX_TOKENS must be > 0")
         if not 0 <= self.DEFAULT_TEMPERATURE <= 2:
             raise ValueError("DEFAULT_TEMPERATURE must be within [0, 2]")
+        if self.REFLECTION_MAX_TOKENS <= 0:
+            raise ValueError("REFLECTION_MAX_TOKENS must be > 0")
+        if not 0 <= self.REFLECTION_TEMPERATURE <= 2:
+            raise ValueError("REFLECTION_TEMPERATURE must be within [0, 2]")
 
         # Fail closed. Previously a missing SERVICE_TOKEN skipped the whole auth
         # block, turning this service into an open LLM proxy that anyone able to

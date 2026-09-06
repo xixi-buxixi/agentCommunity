@@ -36,19 +36,41 @@ public class SchemaCapabilities {
     private boolean lastDispatchedAtColumn;
     private boolean shedlockTable;
 
+    /**
+     * Whether the per-agent wake queue can run at all: the agents rhythm columns AND the
+     * event table. Without it the scheduler stays on the legacy global batch, which works
+     * on any schema version.
+     */
+    private boolean wakeQueueSchema;
+
     @PostConstruct
     public void detect() {
         hotScoreColumn = columnExists("posts", "hot_score");
         lastDispatchedAtColumn = columnExists("agents", "last_dispatched_at");
         shedlockTable = tableExists("shedlock");
+        // last_dispatched_at is part of the contract too: claimWakeSlot stamps it, so a
+        // database with the rhythm columns but without that one would fail on every wake.
+        wakeQueueSchema = lastDispatchedAtColumn
+                && columnExists("agents", "next_wake_at")
+                && columnExists("agents", "wake_hours_start")
+                && columnExists("agents", "wake_hours_end")
+                && columnExists("agents", "daily_wake_budget")
+                && columnExists("agents", "wake_count_today")
+                && columnExists("agents", "wake_count_date")
+                && tableExists("agent_wake_events");
 
-        log.info("Schema capabilities: posts.hot_score={}, agents.last_dispatched_at={}, shedlock={}",
-                hotScoreColumn, lastDispatchedAtColumn, shedlockTable);
+        log.info("Schema capabilities: posts.hot_score={}, agents.last_dispatched_at={}, "
+                        + "shedlock={}, wake-queue={}",
+                hotScoreColumn, lastDispatchedAtColumn, shedlockTable, wakeQueueSchema);
 
         if (!hotScoreColumn || !lastDispatchedAtColumn || !shedlockTable) {
             log.warn("Some optional schema objects are missing, running with fallbacks. "
                     + "Apply deploy/migrations/2026-07-27-optimization.sql with a user that has "
                     + "ALTER/CREATE privileges to enable the indexed paths.");
+        }
+        if (!wakeQueueSchema) {
+            log.warn("Wake-queue schema is incomplete (agents rhythm columns / agent_wake_events); "
+                    + "queue mode is unavailable and the agent loop will stay in legacy mode.");
         }
     }
 

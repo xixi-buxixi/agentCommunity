@@ -13,8 +13,8 @@ from starlette.concurrency import run_in_threadpool
 
 from app.config.settings import settings
 from app.exceptions.errors import LLMBaseError
-from app.models.request import LLMRequest
-from app.models.response import LLMResponse
+from app.models.request import LLMRequest, ReflectionRequest
+from app.models.response import LLMResponse, ReflectionResponse
 from app.services.json_parser import JSONParser
 from app.services.llm_client import LLMClient
 from app.services.prompt_builder import PromptBuilder
@@ -76,7 +76,8 @@ async def get_decision(
     logger.info(
         f"Processing decision request: model={request.model_name}, "
         f"prompt_len={len(request.system_prompt)}, "
-        f"context_len={len(request.context)}"
+        f"context_len={len(request.context)}, "
+        f"memories={len(request.memories) if request.memories else 0}"
     )
 
     try:
@@ -90,6 +91,7 @@ async def get_decision(
             prompt_builder.build_full_prompt,
             system_prompt=request.system_prompt,
             context=request.context,
+            memories=request.memories,
         )
 
         # Reuse the validated request instead of rebuilding it: constructing a new
@@ -184,6 +186,162 @@ async def get_decision_direct(
 
     except LLMBaseError as e:
         raise e
+
+
+@router.post(
+    "/reflection",
+    response_model=ReflectionResponse,
+    summary="Distill persona traits from recent agent behaviour",
+    description=(
+        "Internal endpoint for the daily reflection job. Same authentication and "
+        "credential passing as /decision. Always returns HTTP 200: on any failure "
+        "(model error, timeout, unparsable output) success=false with empty lists."
+    ),
+)
+async def get_reflection(
+    request: ReflectionRequest,
+    llm_client: LLMClient = Depends(get_llm_client),
+    json_parser: JSONParser = Depends(get_json_parser),
+    prompt_builder: PromptBuilder = Depends(get_prompt_builder),
+):
+    """
+    Distill PERSONA_TRAIT cards from an agent's recent behaviour.
+
+    Flow:
+    1. Sanitize behaviours / existing traits and build the reflection prompt
+    2. Call the LLM with a forced `submit_reflection` tool call
+    3. Parse and validate the output (ids checked against existing_traits, counts
+       clamped to limits)
+    4. Return new / updated / deprecated traits plus token usage
+
+    Failure policy: this is a background job, so every failure degrades to
+    success=false with three empty lists instead of an HTTP error. The backend then
+    writes nothing and retries the next day, and no unverified content can reach the
+    database.
+    """
+    start_time = time.time()
+    usage: dict = {}
+    model = None
+
+    logger.info(
+        "Processing reflection request: agent_id=%s, model=%s, behaviors=%d, "
+        "existing_traits=%d, max_new=%d",
+        request.agent_id,
+        request.model_name,
+        len(request.recent_behaviors),
+        len(request.existing_traits),
+        request.limits.max_new_traits,
+    )
+
+    try:
+        prompt = await run_in_threadpool(
+            prompt_builder.build_reflection_prompt,
+            recent_behaviors=request.recent_behaviors,
+            existing_traits=request.existing_traits,
+            limits=request.limits,
+            system_prompt=request.system_prompt,
+        )
+
+        if prompt.behavior_count == 0:
+            # Nothing survived sanitisation (or nothing was sent). Distilling traits
+            # from an empty behaviour list can only hallucinate, so the call is
+            # skipped: a successful, empty, free answer.
+            logger.info(
+                "Reflection skipped: no usable recent behaviours (agent_id=%s)",
+                request.agent_id,
+            )
+            return ReflectionResponse(
+                success=True,
+                total_tokens=0,
+                response_time_ms=int((time.time() - start_time) * 1000),
+            )
+
+        # Reuse the already-validated credentials without re-running the validators
+        # (the SSRF guard resolves DNS; ReflectionRequest ran the same check).
+        upstream_request = LLMRequest.model_construct(
+            api_key=request.api_key,
+            base_url=request.base_url,
+            model_name=request.model_name,
+            system_prompt=prompt.system_prompt,
+            context=prompt.user_message,
+            memories=None,
+            max_tokens=request.max_tokens,
+            temperature=request.temperature,
+        )
+
+        response_body, usage = await llm_client.call_llm(
+            upstream_request,
+            request_body=llm_client.build_reflection_body(
+                upstream_request,
+                max_new_traits=request.limits.max_new_traits,
+            ),
+        )
+
+        raw_content = llm_client._extract_content(response_body)
+        model = llm_client.get_model_from_response(response_body)
+
+        response_time_ms = int((time.time() - start_time) * 1000)
+        result = await run_in_threadpool(
+            json_parser.parse_reflection,
+            raw_content,
+            allowed_trait_ids=[trait.id for trait in request.existing_traits],
+            max_new_traits=request.limits.max_new_traits,
+            max_total_traits=request.limits.max_total_traits,
+            existing_trait_count=len(request.existing_traits),
+            response_time_ms=response_time_ms,
+        )
+
+        response = ReflectionResponse.from_result(
+            result=result,
+            total_tokens=usage.get("total_tokens"),
+            prompt_tokens=usage.get("prompt_tokens"),
+            completion_tokens=usage.get("completion_tokens"),
+            model=model,
+            response_time_ms=response_time_ms,
+        )
+
+        logger.info(
+            "Reflection complete: agent_id=%s new=%d updated=%d deprecated=%d "
+            "tokens=%s time=%dms",
+            request.agent_id,
+            len(response.new_traits),
+            len(response.updated_traits),
+            len(response.deprecated_trait_ids),
+            response.total_tokens,
+            response_time_ms,
+        )
+
+        return response
+
+    except LLMBaseError as exc:
+        # Timeout / upstream API error / unparsable JSON. Tokens are reported when
+        # the provider already billed the call (usage is set once the HTTP call
+        # returned 200), so the backend can still charge the agent.
+        response_time_ms = int((time.time() - start_time) * 1000)
+        logger.warning(
+            "Reflection failed for agent_id=%s: code=%s message=%s",
+            request.agent_id,
+            exc.error_code,
+            exc.message,
+        )
+        # Only the fixed error code leaves the service: exc.message can quote the
+        # provider's response body, which may echo the API key.
+        return ReflectionResponse.create_empty_response(
+            error_message=f"Reflection failed ({exc.error_code})",
+            total_tokens=usage.get("total_tokens", 0),
+            response_time_ms=response_time_ms,
+            model=model,
+        )
+
+    except Exception as exc:  # noqa: BLE001 - background job must never 500
+        response_time_ms = int((time.time() - start_time) * 1000)
+        logger.exception(f"Unexpected error in reflection processing: {str(exc)}")
+        return ReflectionResponse.create_empty_response(
+            error_message="Internal service error",
+            total_tokens=usage.get("total_tokens", 0),
+            response_time_ms=response_time_ms,
+            model=model,
+        )
 
 
 @router.get(

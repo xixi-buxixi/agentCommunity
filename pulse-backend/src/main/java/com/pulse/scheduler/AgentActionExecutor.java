@@ -1,6 +1,7 @@
 package com.pulse.scheduler;
 
 import com.pulse.dto.AgentActionDecision;
+import com.pulse.dto.AgentActionOutcome;
 import com.pulse.dto.request.BountyCreateRequest;
 import com.pulse.entity.Agent;
 import com.pulse.entity.AgentLog;
@@ -17,12 +18,15 @@ import com.pulse.mapper.CommentMapper;
 import com.pulse.mapper.DislikeMapper;
 import com.pulse.mapper.LikeMapper;
 import com.pulse.mapper.PostMapper;
+import com.pulse.service.AgentWakeEventService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Transactional side of the agent loop.
@@ -40,6 +44,11 @@ import java.util.List;
 @RequiredArgsConstructor
 public class AgentActionExecutor {
 
+    /** Source kinds carried by {@link AgentActionOutcome} into the memory card. */
+    static final String SOURCE_TYPE_POST = "POST";
+    static final String SOURCE_TYPE_COMMENT = "COMMENT";
+    static final String SOURCE_TYPE_BOUNTY_TASK = "BOUNTY_TASK";
+
     private final AgentMapper agentMapper;
     private final PostMapper postMapper;
     private final CommentMapper commentMapper;
@@ -47,6 +56,7 @@ public class AgentActionExecutor {
     private final LikeMapper likeMapper;
     private final DislikeMapper dislikeMapper;
     private final AgentBountyExecutor agentBountyExecutor;
+    private final AgentWakeEventService agentWakeEventService;
 
     /**
      * Apply one decision batch: execute the actions, write the audit log, charge
@@ -55,18 +65,40 @@ public class AgentActionExecutor {
      * @param tokensCharged effective token charge for this cycle (never 0, see M6:
      *                      a missing usage field used to make the cycle free and let
      *                      an agent live forever)
+     * @param repliableAgainPostIds posts this wake-up was triggered by. The duplicate-reply
+     *                              guard is lifted for exactly these: an agent woken up
+     *                              *because* somebody replied under its post has to be able
+     *                              to answer there, even though it has commented on that
+     *                              post before. Everywhere else the guard stands.
+     * @return one outcome per decision, carrying the ids of the rows just created.
+     *         The caller uses them to write memory cards AFTER this transaction has
+     *         committed - a card must never reference a row that got rolled back.
      */
     @Transactional
-    public void applyDecisions(Agent agent, List<AgentActionDecision> decisions, long tokensCharged) {
+    public List<AgentActionOutcome> applyDecisions(Agent agent, List<AgentActionDecision> decisions,
+                                                  long tokensCharged,
+                                                  Set<Long> repliableAgainPostIds) {
+        List<AgentActionOutcome> outcomes = new ArrayList<>(decisions.size());
         for (int i = 0; i < decisions.size(); i++) {
             AgentActionDecision decision = decisions.get(i);
-            boolean actionSuccess = executeAction(agent, decision);
+            AgentActionOutcome outcome = executeAction(agent, decision, repliableAgainPostIds);
+            outcomes.add(outcome);
             long loggedTokens = i == 0 ? tokensCharged : 0;
-            logAgentAction(agent, decision, loggedTokens, actionSuccess);
+            logAgentAction(agent, decision, loggedTokens, outcome.isSuccess());
         }
 
         chargeTokensInternal(agent, tokensCharged);
         checkDeath(agent);
+        return outcomes;
+    }
+
+    /**
+     * Overload for callers with no triggering interaction (the legacy batch, tests).
+     */
+    @Transactional
+    public List<AgentActionOutcome> applyDecisions(Agent agent, List<AgentActionDecision> decisions,
+                                                  long tokensCharged) {
+        return applyDecisions(agent, decisions, tokensCharged, Set.of());
     }
 
     /**
@@ -78,6 +110,42 @@ public class AgentActionExecutor {
     public void chargeTokensOnly(Agent agent, long tokensCharged, String reason) {
         chargeTokensInternal(agent, tokensCharged);
         logAgentError(agent, reason, tokensCharged);
+        checkDeath(agent);
+    }
+
+    /** Audit labels for the reflection job. Also the marker that excludes these rows
+     * from counting as agent behaviour - see AgentMapper#findAliveAgentsActiveSince. */
+    public static final String REFLECTION_SUCCESS = "REFLECTION_SUCCESS";
+    public static final String REFLECTION_FAILED = "REFLECTION_FAILED";
+    public static final String REFLECTION_SKIPPED = "REFLECTION_SKIPPED";
+
+    /**
+     * Charge the tokens a reflection call consumed.
+     *
+     * Same semantics as {@link #chargeTokensOnly} - charge, log, re-evaluate death -
+     * but the audit row is not an error row: reflection is a normal, successful thing
+     * for an agent to spend tokens on, and labelling every nightly distillation
+     * "ERROR:" would make the activity log useless for the owner.
+     *
+     * A failed reflection is charged too when the gateway reported usage: the upstream
+     * model may have run and billed the user regardless of what came back. A run the
+     * gateway explicitly reported as free (0 tokens, no model call) is logged as
+     * {@value #REFLECTION_SKIPPED} and charges nothing.
+     *
+     * @param resultLabel one of the REFLECTION_* constants; it is what the exclusion
+     *                    filters and the owner's activity log both read
+     */
+    @Transactional
+    public void chargeReflectionTokens(Agent agent, long tokensCharged, String resultLabel, String note) {
+        AgentLog logEntry = new AgentLog();
+        logEntry.setAgentId(agent.getId());
+        logEntry.setActionType(ActionType.IGNORE.getCode());
+        logEntry.setTokensConsumed((int) Math.max(tokensCharged, 0));
+        logEntry.setActionResult(resultLabel);
+        logEntry.setActionContent(note);
+        agentLogMapper.insert(logEntry);
+
+        chargeTokensInternal(agent, tokensCharged);
         checkDeath(agent);
     }
 
@@ -120,12 +188,13 @@ public class AgentActionExecutor {
     /**
      * Execute agent's decided action
      */
-    private boolean executeAction(Agent agent, AgentActionDecision decision) {
+    private AgentActionOutcome executeAction(Agent agent, AgentActionDecision decision,
+                                            Set<Long> repliableAgainPostIds) {
         switch (decision.getAction()) {
             case POST:
                 return executePostAction(agent, decision);
             case REPLY:
-                return executeReplyAction(agent, decision);
+                return executeReplyAction(agent, decision, repliableAgainPostIds);
             case LIKE:
                 return executeReaction(agent, decision, true);
             case DISLIKE:
@@ -133,16 +202,20 @@ public class AgentActionExecutor {
             case CREATE_BOUNTY:
                 return executeCreateBountyAction(agent, decision);
             case IGNORE:
-                return true; // No action needed
+                // Nothing happened, so nothing to remember - success without a source
+                return AgentActionOutcome.builder()
+                        .action(ActionType.IGNORE)
+                        .success(true)
+                        .build();
             default:
-                return false;
+                return AgentActionOutcome.failed(decision.getAction(), decision.getTargetPostId());
         }
     }
 
     /**
      * Execute POST action - Agent creates new post
      */
-    private boolean executePostAction(Agent agent, AgentActionDecision decision) {
+    private AgentActionOutcome executePostAction(Agent agent, AgentActionDecision decision) {
         Post post = new Post();
         post.setAuthorId(agent.getId());
         post.setAuthorType(AuthorType.AGENT.getCode());
@@ -155,31 +228,45 @@ public class AgentActionExecutor {
 
         log.info("Agent posted new content: agentId={}, postId={}", agent.getId(), post.getId());
 
-        return true;
+        return AgentActionOutcome.builder()
+                .action(ActionType.POST)
+                .success(true)
+                .sourceType(SOURCE_TYPE_POST)
+                .sourceId(post.getId())
+                .selfContent(post.getContent())
+                .build();
     }
 
     /**
      * Execute REPLY action - Agent comments on a post
      */
-    private boolean executeReplyAction(Agent agent, AgentActionDecision decision) {
+    private AgentActionOutcome executeReplyAction(Agent agent, AgentActionDecision decision,
+                                                 Set<Long> repliableAgainPostIds) {
         if (decision.getTargetPostId() == null) {
             log.warn("Agent {} reply action missing target post ID", agent.getId());
-            return false;
+            return AgentActionOutcome.failed(ActionType.REPLY, null);
         }
 
         // Verify target post exists
         Post targetPost = postMapper.selectById(decision.getTargetPostId());
         if (targetPost == null) {
             log.warn("Target post not found: postId={}", decision.getTargetPostId());
-            return false;
+            return AgentActionOutcome.failed(ActionType.REPLY, decision.getTargetPostId());
         }
 
-        // Check if agent has already commented on this post (avoid duplicate replies)
+        // Check if agent has already commented on this post (avoid duplicate replies).
+        //
+        // Lifted for the posts this wake-up was triggered by: an agent woken up because
+        // somebody replied under its own post had already commented there by definition,
+        // so the guard would have made it structurally unable to answer - it would wake up,
+        // read the reply, and be silently blocked from responding to it.
+        boolean triggeredHere = repliableAgainPostIds != null
+                && repliableAgainPostIds.contains(decision.getTargetPostId());
         int existingComments = commentMapper.countAgentCommentsOnPost(agent.getId(), decision.getTargetPostId());
-        if (existingComments > 0) {
+        if (existingComments > 0 && !triggeredHere) {
             log.info("Agent {} has already commented on post {}, skipping duplicate reply",
                     agent.getId(), decision.getTargetPostId());
-            return false; // Skip duplicate comment
+            return AgentActionOutcome.failed(ActionType.REPLY, decision.getTargetPostId());
         }
 
         Comment comment = new Comment();
@@ -196,7 +283,26 @@ public class AgentActionExecutor {
         log.info("Agent commented on post: agentId={}, postId={}, commentId={}",
                 agent.getId(), decision.getTargetPostId(), comment.getId());
 
-        return true;
+        // Agents talk to each other too. Without this an agent-to-agent reply was a
+        // dead end: only humans could ever trigger a wake-up, so two agents could never
+        // hold a conversation. The chain is bounded by the same debounce and daily budget
+        // as any other wake-up, and the service drops self-interactions.
+        if (AuthorType.AGENT.getCode().equalsIgnoreCase(targetPost.getAuthorType())) {
+            agentWakeEventService.recordCommentOnAgentPost(targetPost.getAuthorId(), targetPost.getId(),
+                    comment.getId(), AuthorType.AGENT.getCode(), agent.getId());
+        }
+
+        return AgentActionOutcome.builder()
+                .action(ActionType.REPLY)
+                .success(true)
+                .sourceType(SOURCE_TYPE_COMMENT)
+                .sourceId(comment.getId())
+                .targetPostId(targetPost.getId())
+                .targetAuthorType(targetPost.getAuthorType())
+                .targetAuthorId(targetPost.getAuthorId())
+                .selfContent(comment.getContent())
+                .targetSummary(targetPost.getContent())
+                .build();
     }
 
     /**
@@ -207,18 +313,19 @@ public class AgentActionExecutor {
      *
      * @param positive true for LIKE, false for DISLIKE
      */
-    private boolean executeReaction(Agent agent, AgentActionDecision decision, boolean positive) {
+    private AgentActionOutcome executeReaction(Agent agent, AgentActionDecision decision, boolean positive) {
         String label = positive ? "like" : "dislike";
+        ActionType actionType = positive ? ActionType.LIKE : ActionType.DISLIKE;
         Long postId = decision.getTargetPostId();
         if (postId == null) {
             log.warn("Agent {} {} action missing target post ID", agent.getId(), label);
-            return false;
+            return AgentActionOutcome.failed(actionType, null);
         }
 
         Post targetPost = postMapper.selectById(postId);
         if (targetPost == null) {
             log.warn("Target post not found for {}: postId={}", label, postId);
-            return false;
+            return AgentActionOutcome.failed(actionType, postId);
         }
 
         String agentType = AuthorType.AGENT.getCode();
@@ -228,7 +335,7 @@ public class AgentActionExecutor {
                 : dislikeMapper.existsByAuthorAndPost(agentType, agent.getId(), postId);
         if (alreadyReacted) {
             log.info("Agent {} has already {}d post {}, skipping duplicate", agent.getId(), label, postId);
-            return false;
+            return AgentActionOutcome.failed(actionType, postId);
         }
 
         // A post can be either liked or disliked by the same agent, never both
@@ -265,13 +372,25 @@ public class AgentActionExecutor {
         }
 
         log.info("Agent {}d post: agentId={}, postId={}", label, agent.getId(), postId);
-        return true;
+
+        // The reaction row id is of no use to anyone; the post is what the memory card
+        // is about and what the UI links to, so it is the source of record here.
+        return AgentActionOutcome.builder()
+                .action(actionType)
+                .success(true)
+                .sourceType(SOURCE_TYPE_POST)
+                .sourceId(postId)
+                .targetPostId(postId)
+                .targetAuthorType(targetPost.getAuthorType())
+                .targetAuthorId(targetPost.getAuthorId())
+                .targetSummary(targetPost.getContent())
+                .build();
     }
 
     /**
      * Execute CREATE_BOUNTY action - Agent publishes a bounty funded by owner.
      */
-    private boolean executeCreateBountyAction(Agent agent, AgentActionDecision decision) {
+    private AgentActionOutcome executeCreateBountyAction(Agent agent, AgentActionDecision decision) {
         try {
             BountyCreateRequest request = new BountyCreateRequest();
             request.setAgentId(agent.getId());
@@ -280,12 +399,20 @@ public class AgentActionExecutor {
             request.setRewardPoints(decision.getRewardPoints());
             request.setDeadlineHours(decision.getDeadlineHours());
             // Separate transaction: see AgentBountyExecutor
-            agentBountyExecutor.createForAgent(agent.getOwnerId(), request);
-            log.info("Agent created bounty: agentId={}, title={}", agent.getId(), decision.getTitle());
-            return true;
+            Long bountyId = agentBountyExecutor.createForAgent(agent.getOwnerId(), request);
+            log.info("Agent created bounty: agentId={}, bountyId={}, title={}",
+                    agent.getId(), bountyId, decision.getTitle());
+            return AgentActionOutcome.builder()
+                    .action(ActionType.CREATE_BOUNTY)
+                    .success(true)
+                    .sourceType(SOURCE_TYPE_BOUNTY_TASK)
+                    .sourceId(bountyId)
+                    .selfContent(decision.getTitle())
+                    .targetSummary(decision.getDescription())
+                    .build();
         } catch (Exception e) {
             log.warn("Agent create bounty failed: agentId={}, error={}", agent.getId(), e.getMessage());
-            return false;
+            return AgentActionOutcome.failed(ActionType.CREATE_BOUNTY, null);
         }
     }
 

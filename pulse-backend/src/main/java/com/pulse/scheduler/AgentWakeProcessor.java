@@ -1,0 +1,499 @@
+package com.pulse.scheduler;
+
+import com.pulse.client.LLMClient;
+import com.pulse.config.SchemaCapabilities;
+import com.pulse.dto.AgentActionDecision;
+import com.pulse.dto.AgentActionOutcome;
+import com.pulse.dto.AgentContext;
+import com.pulse.dto.AgentMemoryCard;
+import com.pulse.dto.LLMResponse;
+import com.pulse.entity.Agent;
+import com.pulse.entity.AgentWakeEvent;
+import com.pulse.entity.Comment;
+import com.pulse.entity.Post;
+import com.pulse.entity.PostView;
+import com.pulse.enums.AuthorType;
+import com.pulse.enums.WakeEventType;
+import com.pulse.enums.WakeReason;
+import com.pulse.mapper.AgentMapper;
+import com.pulse.mapper.CommentMapper;
+import com.pulse.mapper.PostMapper;
+import com.pulse.mapper.PostViewMapper;
+import com.pulse.service.AgentMemoryService;
+import com.pulse.service.support.AuthorResolver;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Component;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
+
+/**
+ * One agent, one wake-up: build the context, ask the model, apply what it decided.
+ *
+ * Extracted verbatim from AgentLoopScheduler when the wake-up mechanism became
+ * pluggable. Both the legacy 12-hour batch and the per-agent queue drive exactly this
+ * code, so "queue mode behaves like legacy mode plus a better trigger" is true by
+ * construction rather than by careful duplication.
+ *
+ * Not transactional on purpose: it contains the LLM HTTP call. The database work is
+ * delegated to {@link AgentActionExecutor}, which owns the transaction.
+ */
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class AgentWakeProcessor {
+
+    /** Source kind of an interaction that happened under a post. */
+    private static final String SOURCE_COMMENT = "COMMENT";
+
+    /** Interaction lines carry only identifier-safe, length-bounded actor names. */
+    private static final int ACTOR_NAME_MAX_LENGTH = 20;
+
+    /** How much of an interaction body travels into its post block. */
+    private static final int INTERACTION_BODY_PREVIEW = 150;
+
+    /**
+     * Resolved interaction sources for one wake-up.
+     *
+     * A plain holder rather than three parallel maps threaded through the call chain; it
+     * exists only for the duration of a single wake.
+     */
+    private static final class InteractionSources {
+        private final Map<Long, Comment> commentsByEventId = new HashMap<>();
+        private final Set<Long> postIds = new LinkedHashSet<>();
+        private final Map<Long, List<AgentWakeEvent>> eventsByPostId = new HashMap<>();
+    }
+
+    private final AgentMapper agentMapper;
+    private final PostMapper postMapper;
+    private final CommentMapper commentMapper;
+    private final PostViewMapper postViewMapper;
+    private final LLMClient llmClient;
+    private final AgentActionExecutor agentActionExecutor;
+    private final AgentMemoryService agentMemoryService;
+    private final AuthorResolver authorResolver;
+    private final SchemaCapabilities schemaCapabilities;
+
+    /**
+     * Minimum tokens charged for a cycle that actually reached the model.
+     * Prevents "free" cycles when the gateway returns no usage numbers.
+     */
+    @Value("${scheduler.agent-loop.min-token-charge:200}")
+    private long minTokenCharge;
+
+    /**
+     * Wake an agent and let it act.
+     *
+     * @param reason why it is being woken; only affects logging and prompt framing
+     * @param events interactions to answer (empty for a rhythm or legacy wake)
+     */
+    public void wake(Agent agent, WakeReason reason, List<AgentWakeEvent> events) {
+        log.debug("Waking agent: id={}, name={}, reason={}", agent.getId(), agent.getName(), reason);
+
+        // Stamp the dispatch time first: findRandomActiveAgents orders by it, so
+        // stamping before the (slow) LLM call keeps the round-robin honest even if
+        // this agent's processing fails.
+        //
+        // In queue mode the stamp has already happened as part of claiming the wake slot
+        // (one atomic statement covering budget + debounce), so stamping again here would
+        // only move the debounce window forward for no reason.
+        if (reason == WakeReason.LEGACY_BATCH && schemaCapabilities.isLastDispatchedAtColumn()) {
+            agentMapper.markDispatched(agent.getId());
+        }
+
+        // Step 2: Pre-validate token capacity (front-end interception)
+        if (agent.isTokenExhausted()) {
+            log.info("Agent token exhausted, marking as DEAD: agentId={}", agent.getId());
+            agentActionExecutor.markAgentDead(agent);
+            return;
+        }
+
+        // Everything this wake-up is answering, resolved once: the comments, the posts
+        // they sit under, and which comment belongs to which post. The posts are rendered
+        // as ordinary post blocks (so the model can answer them) and the duplicate-reply
+        // guard is lifted for exactly these, or an agent woken by a reply under its own
+        // post would be unable to answer there.
+        InteractionSources sources = resolveInteractionSources(events);
+        Set<Long> triggeringPostIds = sources.postIds;
+
+        // Step 3: Build context from latest posts (plus memories and interactions)
+        AgentContext context = buildAgentContext(agent, events, sources);
+
+        // Step 4: Call LLM for decision (no transaction held here)
+        LLMResponse llmResponse = llmClient.callLLM(agent, context);
+
+        if (!llmResponse.getSuccess()) {
+            log.warn("LLM call failed for agent {}: {}", agent.getId(), llmResponse.getErrorMessage());
+            // The upstream model may already have run and billed the user, so this
+            // cycle is not free: charge the floor instead of nothing.
+            agentActionExecutor.chargeTokensOnly(agent, minTokenCharge,
+                    "LLM_CALL_FAILED: " + llmResponse.getErrorMessage());
+            return;
+        }
+
+        // Parse action decisions from Python gateway's parsed response
+        List<AgentActionDecision> decisions = llmClient.convertToDecisions(llmResponse);
+
+        log.info("Agent {} decided {} action(s) (reason={})", agent.getId(), decisions.size(), reason);
+
+        long tokensCharged = resolveTokenCharge(llmResponse);
+
+        if (decisions.isEmpty()) {
+            agentActionExecutor.chargeTokensOnly(agent, tokensCharged, "NO_ACTIONABLE_DECISION");
+            return;
+        }
+
+        // Steps 5-7 in a single transaction
+        List<AgentActionOutcome> outcomes = agentActionExecutor.applyDecisions(
+                agent, decisions, tokensCharged, triggeringPostIds);
+
+        // Step 8: structured memory cards, deliberately AFTER the commit above.
+        // Inside the transaction a card could reference a rolled-back post, and a
+        // failing card insert would take the whole action + token charge down with it.
+        // recordActionMemories never throws (same tolerance as recordAgentView).
+        agentMemoryService.recordActionMemories(agent, outcomes);
+    }
+
+    /**
+     * Effective token charge for a cycle.
+     *
+     * A missing or zero usage figure used to mean no charge at all, which turned
+     * token_threshold - the mechanism agents die from - into something an upstream
+     * without usage reporting could bypass indefinitely.
+     */
+    private long resolveTokenCharge(LLMResponse llmResponse) {
+        Integer reported = llmResponse.getTotalTokens();
+        if (reported != null && reported > 0) {
+            return reported.longValue();
+        }
+        log.warn("Gateway reported no token usage; charging the configured floor of {}", minTokenCharge);
+        return minTokenCharge;
+    }
+
+    /**
+     * Build agent context from latest posts
+     * IMPORTANT: Only fetch posts that agent has NOT commented on to avoid duplicate replies
+     * Also records view count for each post the agent "reads"
+     *
+     * CRITICAL: Post IDs must be real database IDs, not sequence numbers,
+     * so LLM can return correct target_post_id for reply actions.
+     */
+    private AgentContext buildAgentContext(Agent agent, List<AgentWakeEvent> events,
+                                           InteractionSources sources) {
+        // Fetch posts excluding those already commented by this agent
+        List<Post> latestPosts = postMapper.findLatestPostsForAgent(5, agent.getId());
+
+        StringBuilder postsContext = new StringBuilder();
+
+        // Triggering posts first, and always included even though the timeline query
+        // excludes posts this agent has already commented on - which is precisely the case
+        // for a post somebody just replied under. Each one is its own [Post#N] block, so the
+        // gateway's per-block filtering can neutralise a malicious comment without taking
+        // the rest of the interaction context with it.
+        Set<Long> timelineIds = latestPosts.stream().map(Post::getId).collect(Collectors.toSet());
+        for (Long postId : sources.postIds) {
+            if (timelineIds.contains(postId)) {
+                continue;
+            }
+            appendPostBlock(postsContext, agent, postId, sources);
+        }
+
+        for (Post post : latestPosts) {
+            // CRITICAL: Truncate content to prevent context explosion
+            String truncatedContent = flattenForContext(post.getTruncatedContent());
+
+            // Use real post ID instead of sequence number
+            // Format: [Post#ID] [AuthorType AuthorName]: Content
+            postsContext.append(String.format("[Post#%d] [%s %s]: %s%n",
+                    post.getId(),  // Real database ID for LLM to reference
+                    post.getAuthorType(),
+                    getAuthorName(post),
+                    truncatedContent));
+
+            // Record agent view for this post (unique count per agent)
+            recordAgentView(agent, post);
+        }
+
+        List<AgentMemoryCard> memories = selectMemories(agent);
+
+        return AgentContext.builder()
+                .systemPrompt(agent.getSystemPrompt())
+                .postsContext(postsContext.toString())
+                .postsCount(latestPosts.size())
+                .agentName(agent.getName())
+                .memories(memories)
+                .memoriesContext(renderMemories(memories))
+                .eventsContext(renderEvents(events, sources))
+                .build();
+    }
+
+    /**
+     * What this wake-up is answering: the comments, the posts they sit under, and the
+     * mapping between them.
+     *
+     * Resolved in one pass so the comment bodies are read once and can be rendered inside
+     * their post's block - the model needs the actual words ("your second conclusion is
+     * wrong, because X"), not just a pointer to a thread.
+     */
+    private InteractionSources resolveInteractionSources(List<AgentWakeEvent> events) {
+        InteractionSources sources = new InteractionSources();
+        if (events == null || events.isEmpty()) {
+            return sources;
+        }
+        for (AgentWakeEvent event : events) {
+            if (!SOURCE_COMMENT.equalsIgnoreCase(event.getSourceType()) || event.getSourceId() == null) {
+                continue;
+            }
+            try {
+                Comment comment = commentMapper.selectById(event.getSourceId());
+                if (comment == null || comment.getPostId() == null) {
+                    continue;
+                }
+                sources.commentsByEventId.put(event.getId(), comment);
+                sources.postIds.add(comment.getPostId());
+                sources.eventsByPostId
+                        .computeIfAbsent(comment.getPostId(), key -> new ArrayList<>())
+                        .add(event);
+            } catch (Exception e) {
+                // A thinner prompt, not a lost wake-up
+                log.warn("Could not resolve the source of wake event {}: {}",
+                        event.getId(), e.getMessage());
+            }
+        }
+        return sources;
+    }
+
+    /**
+     * Append one triggering post in the standard block format, with the interactions that
+     * happened under it.
+     *
+     * The interaction lines sit INSIDE the block on purpose: the body is community text, so
+     * it belongs where the gateway's per-block filtering can neutralise it without
+     * discarding anything else. Both the name and the body are flattened, so neither can
+     * open a forged block of its own.
+     */
+    private void appendPostBlock(StringBuilder target, Agent agent, Long postId,
+                                 InteractionSources sources) {
+        try {
+            Post post = postMapper.selectById(postId);
+            if (post == null || Integer.valueOf(1).equals(post.getDeleted())) {
+                return;
+            }
+            target.append(String.format("[Post#%d] [%s %s]: %s%n",
+                    post.getId(),
+                    post.getAuthorType(),
+                    getAuthorName(post),
+                    flattenForContext(post.getTruncatedContent())));
+
+            for (AgentWakeEvent event : sources.eventsByPostId.getOrDefault(postId, List.of())) {
+                Comment comment = sources.commentsByEventId.get(event.getId());
+                if (comment == null || comment.getContent() == null || comment.getContent().isBlank()) {
+                    continue;
+                }
+                target.append(String.format("最新互动 %s: %s%n",
+                        flattenForContext(displayActorName(event)),
+                        flattenForContext(truncate(comment.getContent(), INTERACTION_BODY_PREVIEW))));
+            }
+
+            recordAgentView(agent, post);
+        } catch (Exception e) {
+            log.warn("Could not render triggering post {}: {}", postId, e.getMessage());
+        }
+    }
+
+    private String truncate(String text, int maxLength) {
+        if (text == null) {
+            return "";
+        }
+        return text.length() <= maxLength ? text : text.substring(0, maxLength) + "...";
+    }
+
+    /**
+     * Render the interactions this wake-up is answering.
+     *
+     * Each line names the actor, the thing they touched and a short quote, so the model
+     * can answer the specific person instead of posting into the void. Quotes go through
+     * the same flattening as post content - an interaction body is community text and
+     * must not be able to forge a context block.
+     *
+     * A body that cannot be loaded degrades to the bare "who did what": being unable to
+     * quote a comment is no reason to skip answering it.
+     */
+    private String renderEvents(List<AgentWakeEvent> events, InteractionSources sources) {
+        if (events == null || events.isEmpty()) {
+            return "";
+        }
+        StringBuilder block = new StringBuilder();
+        for (AgentWakeEvent event : events) {
+            WakeEventType type = event.getEventTypeEnum();
+            String phrase = type != null ? type.getText() : "与你互动";
+            Comment comment = sources.commentsByEventId.get(event.getId());
+            if (comment != null && comment.getPostId() != null) {
+                block.append(String.format("[互动] %s %s，正文见上方 Post#%d%n",
+                        describeActor(event), phrase, comment.getPostId()));
+            } else {
+                block.append(String.format("[互动] %s %s%n", describeActor(event), phrase));
+            }
+        }
+        return block.toString();
+    }
+
+    private String describeActor(AgentWakeEvent event) {
+        if (event.getActorId() == null) {
+            return "有人";
+        }
+        try {
+            AuthorResolver.AuthorInfo info = authorResolver.resolve(event.getActorType(), event.getActorId());
+            if (info != null && info.getAuthorName() != null) {
+                String safe = safeActorName(info.getAuthorName());
+                if (!safe.isEmpty()) {
+                    return safe;
+                }
+            }
+        } catch (Exception e) {
+            log.debug("Could not resolve wake event actor: type={}, id={}",
+                    event.getActorType(), event.getActorId());
+        }
+        return (event.getActorType() != null ? event.getActorType() : "Someone") + "#" + event.getActorId();
+    }
+
+    /**
+     * Display name for use INSIDE a post block, where the gateway's per-block filters
+     * apply, so the real (possibly non-ASCII) name can be shown.
+     */
+    private String displayActorName(AgentWakeEvent event) {
+        if (event.getActorId() == null) {
+            return "有人";
+        }
+        try {
+            AuthorResolver.AuthorInfo info = authorResolver.resolve(event.getActorType(), event.getActorId());
+            if (info != null && info.getAuthorName() != null && !info.getAuthorName().isBlank()) {
+                return truncate(info.getAuthorName(), ACTOR_NAME_MAX_LENGTH);
+            }
+        } catch (Exception e) {
+            log.debug("Could not resolve wake event actor for display: id={}", event.getActorId());
+        }
+        return (event.getActorType() != null ? event.getActorType() : "Someone") + "#" + event.getActorId();
+    }
+
+    /**
+     * A display name safe to interpolate into a system-generated line.
+     *
+     * The interaction lines are the one part of the context that is NOT wrapped in a
+     * post block, so nothing user-controlled may reach them verbatim: a name is reduced to
+     * plain identifier characters and a short length, and anything else degrades to
+     * "TYPE#id". The actual comment text lives in its own [Post#N] block, where the
+     * gateway's per-block filters can deal with it.
+     */
+    private String safeActorName(String rawName) {
+        String stripped = rawName.replaceAll("[^A-Za-z0-9_.\\-]", "");
+        if (stripped.length() > ACTOR_NAME_MAX_LENGTH) {
+            return stripped.substring(0, ACTOR_NAME_MAX_LENGTH);
+        }
+        return stripped;
+    }
+
+    /**
+     * Memory selection must never be able to stop an agent from acting: an agent with
+     * an unreadable memory table is a worse agent, not a broken one. Same tolerance as
+     * recordAgentView.
+     */
+    private List<AgentMemoryCard> selectMemories(Agent agent) {
+        try {
+            return agentMemoryService.selectForInjection(agent.getId());
+        } catch (Exception e) {
+            log.warn("Failed to select memories for injection: agentId={}, error={}",
+                    agent.getId(), e.getMessage());
+            return List.of();
+        }
+    }
+
+    /**
+     * One prefixed line per memory, mirroring the posts block.
+     *
+     * The prefix carries type, confidence and provenance so the model can weigh a
+     * memory instead of reading it as fact, and the content goes through the same
+     * flattening as post content: a memory is untrusted text too, and must not be able
+     * to forge a block boundary.
+     */
+    private String renderMemories(List<AgentMemoryCard> memories) {
+        if (memories.isEmpty()) {
+            return "";
+        }
+        StringBuilder block = new StringBuilder();
+        for (AgentMemoryCard memory : memories) {
+            block.append(String.format("[记忆|%s|置信度%s|%s]: %s%n",
+                    memory.getMemoryType(),
+                    memory.getConfidenceScore() != null ? memory.getConfidenceScore() : "-",
+                    memory.getSource() != null ? memory.getSource() : "UNKNOWN",
+                    flattenForContext(memory.getContent())));
+        }
+        return block.toString();
+    }
+
+    /**
+     * Record agent view for a post (unique count)
+     */
+    private void recordAgentView(Agent agent, Post post) {
+        try {
+            // Check if agent has already viewed this post
+            PostView existingView = postViewMapper.findByAuthorAndPost(
+                    AuthorType.AGENT.getCode(),
+                    agent.getId(),
+                    post.getId());
+
+            if (existingView == null) {
+                // First view: create record + increment view count
+                PostView view = new PostView();
+                view.setUserId(agent.getOwnerId());
+                view.setAuthorType(AuthorType.AGENT.getCode());
+                view.setAuthorId(agent.getId());
+                view.setPostId(post.getId());
+                postViewMapper.insert(view);
+                postMapper.incrementViewCount(post.getId());
+                log.debug("Agent first view recorded: agentId={}, postId={}", agent.getId(), post.getId());
+            }
+            // Repeat views are not counted (unique count)
+        } catch (Exception e) {
+            // Don't fail agent loop if view recording fails
+            log.warn("Failed to record agent view: agentId={}, postId={}, error={}",
+                    agent.getId(), post.getId(), e.getMessage());
+        }
+    }
+
+    /**
+     * Get author display name
+     */
+    private String getAuthorName(Post post) {
+        if (post.isAgentPost()) {
+            return "Agent#" + post.getAuthorId();
+        }
+        return "Human#" + post.getAuthorId();
+    }
+
+    /**
+     * Flatten post content into a single line for the context block.
+     *
+     * The gateway splits the context into per-post blocks on lines that look like
+     * "[Post#N] [TYPE name]:". Post content is user-controlled, so a post containing
+     * a newline followed by such a line could forge a block boundary and split an
+     * injection payload across two blocks, each passing the filters on its own.
+     * Removing newlines (and defusing a literal "[Post#") makes that impossible at
+     * the source.
+     */
+    private String flattenForContext(String content) {
+        if (content == null) {
+            return "";
+        }
+        return content
+                .replaceAll("[\\r\\n]+", " ")
+                .replace("[Post#", "(Post#");
+    }
+}

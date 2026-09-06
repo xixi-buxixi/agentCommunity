@@ -352,3 +352,138 @@ class LLMResponse(BaseModel):
         "extra": "forbid",
         "populate_by_name": True,
     }
+
+
+# ========== Reflection (PERSONA_TRAIT distillation) ==========
+
+
+class NewTrait(BaseModel):
+    """A trait the model wants to add. `evidence` must point at recent behaviour."""
+
+    content: str = Field(..., description="Trait statement", max_length=500)
+    evidence: Optional[str] = Field(
+        default=None,
+        description="Why this trait was concluded (behaviour summary)",
+        max_length=500,
+    )
+    importance_score: int = Field(default=50, description="Importance 0-100", ge=0, le=100)
+    confidence_score: int = Field(default=50, description="Confidence 0-100", ge=0, le=100)
+
+    model_config = {
+        "extra": "forbid",
+        "str_strip_whitespace": True,
+    }
+
+
+class UpdatedTrait(BaseModel):
+    """
+    A revision of an existing trait card. `id` is always one of the ids the backend
+    sent in `existing_traits`; ids the model invented are dropped by the parser, so
+    the backend never receives an unverified reference.
+
+    `evidence` is optional but requested in the prompt: a revised statement whose
+    stored evidence still describes the old wording is a card that documents itself
+    incorrectly, which is exactly the kind of drift the memory panel cannot spot.
+    """
+
+    id: int = Field(..., description="agent_memories.id being revised", ge=1)
+    content: str = Field(..., description="Revised trait statement", max_length=500)
+    evidence: Optional[str] = Field(
+        default=None,
+        description="Refreshed evidence for the revised wording",
+        max_length=500,
+    )
+    importance_score: int = Field(default=50, description="Importance 0-100", ge=0, le=100)
+    confidence_score: int = Field(default=50, description="Confidence 0-100", ge=0, le=100)
+
+    model_config = {
+        "extra": "forbid",
+        "str_strip_whitespace": True,
+    }
+
+
+class ReflectionResult(BaseModel):
+    """Parsed, validated reflection output (parser -> router boundary)."""
+
+    new_traits: list[NewTrait] = Field(default_factory=list)
+    updated_traits: list[UpdatedTrait] = Field(default_factory=list)
+    deprecated_trait_ids: list[int] = Field(default_factory=list)
+
+    model_config = {
+        "extra": "forbid",
+    }
+
+
+class ReflectionResponse(BaseModel):
+    """
+    Response to the Java backend for POST /v1/llm/reflection.
+
+    Envelope mirrors LLMResponse: `success` plus `error_message` decide whether the
+    backend writes anything, and `total_tokens` is charged either way (the provider
+    billed the call even when its output was unusable).
+
+    Failure contract: model error / timeout / unparsable JSON all return HTTP 200
+    with success=false and three empty lists. Reflection is a background job; a
+    non-200 would make the scheduler treat a well-understood degradation as an
+    outage, and empty lists guarantee no unverified content reaches the database.
+    """
+
+    success: bool = Field(default=True, description="Whether the reflection succeeded")
+    new_traits: list[NewTrait] = Field(default_factory=list)
+    updated_traits: list[UpdatedTrait] = Field(default_factory=list)
+    deprecated_trait_ids: list[int] = Field(default_factory=list)
+
+    total_tokens: Optional[int] = Field(default=None, description="Total tokens consumed", ge=0)
+    prompt_tokens: Optional[int] = Field(default=None, ge=0)
+    completion_tokens: Optional[int] = Field(default=None, ge=0)
+
+    model: Optional[str] = Field(default=None, description="Model used for this call")
+    response_time_ms: Optional[int] = Field(default=None, ge=0)
+    error_message: Optional[str] = Field(default=None, description="Error message if failed")
+
+    @classmethod
+    def create_empty_response(
+        cls,
+        error_message: Optional[str] = None,
+        total_tokens: Optional[int] = None,
+        response_time_ms: Optional[int] = None,
+        model: Optional[str] = None,
+    ) -> "ReflectionResponse":
+        """Safe fallback: nothing distilled, nothing for the backend to write."""
+        return cls(
+            success=False,
+            new_traits=[],
+            updated_traits=[],
+            deprecated_trait_ids=[],
+            total_tokens=total_tokens if total_tokens is not None else 0,
+            response_time_ms=response_time_ms,
+            model=model,
+            error_message=error_message,
+        )
+
+    @classmethod
+    def from_result(
+        cls,
+        result: ReflectionResult,
+        total_tokens: Optional[int] = None,
+        prompt_tokens: Optional[int] = None,
+        completion_tokens: Optional[int] = None,
+        model: Optional[str] = None,
+        response_time_ms: Optional[int] = None,
+    ) -> "ReflectionResponse":
+        return cls(
+            success=True,
+            new_traits=result.new_traits,
+            updated_traits=result.updated_traits,
+            deprecated_trait_ids=result.deprecated_trait_ids,
+            total_tokens=total_tokens,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            model=model,
+            response_time_ms=response_time_ms,
+        )
+
+    model_config = {
+        "extra": "forbid",
+        "populate_by_name": True,
+    }

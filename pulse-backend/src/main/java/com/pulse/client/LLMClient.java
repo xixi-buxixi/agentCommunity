@@ -4,7 +4,10 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.pulse.dto.AgentContext;
 import com.pulse.dto.AgentActionDecision;
+import com.pulse.dto.AgentMemoryCard;
 import com.pulse.dto.LLMResponse;
+import com.pulse.dto.ReflectionContext;
+import com.pulse.dto.ReflectionResult;
 import com.pulse.entity.Agent;
 import com.pulse.enums.ActionType;
 import com.pulse.util.AesUtil;
@@ -83,23 +86,17 @@ public class LLMClient {
         requestBody.put("base_url", agent.getBaseUrl() != null ? agent.getBaseUrl().trim() : "https://api.openai.com/v1");
         requestBody.put("model_name", agent.getModelName());
         requestBody.put("system_prompt", context.getSystemPrompt());
-        requestBody.put("context", context.getPostsContext());
+        // Interactions travel inside the same context string, see getGatewayContext()
+        requestBody.put("context", context.getGatewayContext());
         requestBody.put("max_tokens", 700);
         requestBody.put("temperature", 0.7);
-
-        // Build headers
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        // Service-to-service authentication. Without this header the gateway's
-        // auth middleware could only ever be fail-open: enabling SERVICE_TOKEN
-        // there used to 401 every call from here.
-        if (serviceToken != null && !serviceToken.isBlank()) {
-            headers.set("X-Service-Token", serviceToken);
-        } else {
-            log.warn("pulse-ai-side.service-token is not configured; the AI gateway will reject this call");
+        // Optional per the contract: the field is omitted entirely when the agent has
+        // no memories yet, so an older gateway build keeps working unchanged.
+        if (context.hasMemories()) {
+            requestBody.put("memories", serializeMemories(context.getMemories()));
         }
 
-        HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestBody, headers);
+        HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestBody, buildHeaders());
 
         // Call Python AI Gateway
         String url = pythonGatewayBaseUrl + "/v1/llm/decision";
@@ -143,6 +140,266 @@ public class LLMClient {
                     .responseTimeMs(responseTime)
                     .build();
         }
+    }
+
+    /**
+     * Service-to-service authentication. Without this header the gateway's auth
+     * middleware could only ever be fail-open: enabling SERVICE_TOKEN there used to
+     * 401 every call from here.
+     */
+    private HttpHeaders buildHeaders() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        if (serviceToken != null && !serviceToken.isBlank()) {
+            headers.set("X-Service-Token", serviceToken);
+        } else {
+            log.warn("pulse-ai-side.service-token is not configured; the AI gateway will reject this call");
+        }
+        return headers;
+    }
+
+    /**
+     * Memory payload per the decision contract: {memory_type, content,
+     * confidence_score, source}. snake_case by hand, like the rest of this request -
+     * the gateway's models are snake_case and there is no shared serializer config.
+     */
+    private List<Map<String, Object>> serializeMemories(List<AgentMemoryCard> memories) {
+        List<Map<String, Object>> payload = new ArrayList<>();
+        for (AgentMemoryCard memory : memories) {
+            if (memory == null || memory.getContent() == null || memory.getContent().isBlank()) {
+                continue;
+            }
+            Map<String, Object> item = new HashMap<>();
+            item.put("memory_type", memory.getMemoryType());
+            item.put("content", memory.getContent());
+            item.put("confidence_score", memory.getConfidenceScore());
+            item.put("source", memory.getSource());
+            payload.add(item);
+        }
+        return payload;
+    }
+
+    /**
+     * Call the reflection endpoint: distil the agent's recent behaviour into persona
+     * traits.
+     *
+     * Same auth, same credential handling and the same failure envelope as
+     * {@link #callLLM}. Every failure is reported as {@code success=false} with empty
+     * lists, so the caller never has to distinguish "gateway down" from "model had
+     * nothing to say" - both mean "change nothing today".
+     */
+    public ReflectionResult callReflection(Agent agent, ReflectionContext context) {
+        String apiKey;
+        try {
+            apiKey = aesUtil.decrypt(agent.getApiKey());
+        } catch (RuntimeException e) {
+            log.error("Failed to decrypt API Key for agent {}", agent.getId());
+            apiKey = null;
+        }
+        if (apiKey == null) {
+            return ReflectionResult.failed("API Key decryption failed");
+        }
+
+        Map<String, Object> requestBody = new HashMap<>();
+        requestBody.put("api_key", apiKey);
+        requestBody.put("base_url", agent.getBaseUrl() != null
+                ? agent.getBaseUrl().trim()
+                : "https://api.openai.com/v1");
+        requestBody.put("model_name", agent.getModelName());
+        requestBody.put("system_prompt", agent.getSystemPrompt());
+        requestBody.put("recent_behaviors", context.getRecentBehaviors() != null
+                ? context.getRecentBehaviors()
+                : List.of());
+        requestBody.put("existing_traits", serializeTraits(context.getExistingTraits()));
+        Map<String, Object> limits = new HashMap<>();
+        limits.put("max_new_traits", context.getMaxNewTraits());
+        limits.put("max_total_traits", context.getMaxTotalTraits());
+        requestBody.put("limits", limits);
+
+        HttpEntity<Map<String, Object>> request = new HttpEntity<>(requestBody, buildHeaders());
+        String url = pythonGatewayBaseUrl + "/v1/llm/reflection";
+
+        try {
+            ResponseEntity<String> response = restTemplate.exchange(
+                    url, HttpMethod.POST, request, String.class);
+
+            if (response.getStatusCode().is2xxSuccessful() && response.getBody() != null) {
+                return parseReflectionResponse(response.getBody());
+            }
+            log.warn("Reflection call failed: agent={}, status={}", agent.getId(), response.getStatusCode());
+            return parseReflectionErrorBody(response.getBody(), response.getStatusCode().value());
+
+        } catch (HttpStatusCodeException e) {
+            // 4xx/5xx, including the gateway's own request validation failures, which
+            // answer with a decision-shaped envelope.
+            log.warn("Reflection call returned {}: agent={}", e.getStatusCode(), agent.getId());
+            return parseReflectionErrorBody(e.getResponseBodyAsString(), e.getStatusCode().value());
+        } catch (RestClientException e) {
+            log.error("Reflection call exception: agent={}, error={}", agent.getId(), e.getMessage());
+            return ReflectionResult.failed(e.getMessage());
+        }
+    }
+
+    private List<Map<String, Object>> serializeTraits(List<ReflectionContext.TraitSnapshot> traits) {
+        List<Map<String, Object>> payload = new ArrayList<>();
+        if (traits == null) {
+            return payload;
+        }
+        for (ReflectionContext.TraitSnapshot trait : traits) {
+            if (trait == null || trait.getId() == null) {
+                continue;
+            }
+            Map<String, Object> item = new HashMap<>();
+            item.put("id", trait.getId());
+            item.put("content", trait.getContent());
+            item.put("importance_score", trait.getImportanceScore());
+            item.put("confidence_score", trait.getConfidenceScore());
+            payload.add(item);
+        }
+        return payload;
+    }
+
+    /**
+     * Parse the reflection envelope.
+     *
+     * Anything unparsable degrades to a failed result rather than an exception: the
+     * caller is a nightly scheduler, and a bad answer must cost at most one day of
+     * distillation, never a stack trace in the middle of a batch. Note that token usage
+     * is read even on failure - the upstream model may well have run and billed.
+     */
+    private ReflectionResult parseReflectionResponse(String responseBody) {
+        try {
+            JsonNode root = objectMapper.readTree(responseBody);
+            Integer totalTokens = readReflectionTokens(root);
+
+            boolean success = root.path("success").asBoolean(true);
+            if (!success) {
+                return failedReflection(
+                        root.path("error_message").asText("reflection reported failure"), totalTokens);
+            }
+
+            // A 2xx body that carries none of the three reflection arrays is not a
+            // reflection answer. The gateway's global validation handler replies in the
+            // DECISION shape ({action: "ignore", ...}), and that used to parse as a
+            // perfectly "successful" reflection that happened to change nothing - a
+            // silent no-op logged as REFLECTION_SUCCESS. An AI side that genuinely has
+            // nothing to change sends an empty array, which still has the shape.
+            if (!hasReflectionShape(root)) {
+                log.warn("Reflection answer has no reflection fields (likely a validation "
+                        + "or decision-shaped envelope); treating as failure");
+                return failedReflection("Reflection response shape unexpected", totalTokens);
+            }
+
+            return ReflectionResult.builder()
+                    .success(true)
+                    .newTraits(parseTraitDrafts(root.path("new_traits")))
+                    .updatedTraits(parseTraitUpdates(root.path("updated_traits")))
+                    .deprecatedTraitIds(parseIds(root.path("deprecated_trait_ids")))
+                    .totalTokens(totalTokens)
+                    .build();
+
+        } catch (Exception e) {
+            log.error("Failed to parse reflection response: {}", e.getMessage());
+            return ReflectionResult.failed("Reflection response could not be parsed");
+        }
+    }
+
+    private boolean hasReflectionShape(JsonNode root) {
+        return root.has("new_traits") || root.has("updated_traits") || root.has("deprecated_trait_ids");
+    }
+
+    /**
+     * Token usage from either the top level or the usage object - the reflection
+     * contract puts it at the top level, the decision envelope nests it, and an error
+     * envelope may use either.
+     */
+    private Integer readReflectionTokens(JsonNode root) {
+        return readInt(root, root.path("usage"), "total_tokens", "totalTokens");
+    }
+
+    private ReflectionResult failedReflection(String errorMessage, Integer totalTokens) {
+        ReflectionResult failed = ReflectionResult.failed(errorMessage);
+        failed.setTotalTokens(totalTokens);
+        return failed;
+    }
+
+    /**
+     * Non-2xx from the reflection endpoint.
+     *
+     * The body is read for usage and a message, but never for traits: a validation
+     * failure answers in the decision shape, and nothing in an error envelope is
+     * trustworthy enough to write to the memory table. Usage is still honoured because
+     * the upstream model may have run and billed before the failure.
+     */
+    private ReflectionResult parseReflectionErrorBody(String body, int httpStatus) {
+        String errorMessage = "Gateway returned HTTP " + httpStatus;
+        Integer totalTokens = null;
+
+        if (body != null && !body.isBlank()) {
+            try {
+                JsonNode root = objectMapper.readTree(body);
+                totalTokens = readReflectionTokens(root);
+                if (root.hasNonNull("error_message")) {
+                    errorMessage = root.get("error_message").asText();
+                } else if (root.hasNonNull("detail")) {
+                    // FastAPI validation errors land in "detail"
+                    errorMessage = root.get("detail").toString();
+                }
+            } catch (Exception parseError) {
+                log.warn("Unable to parse reflection error envelope: {}", parseError.getMessage());
+            }
+        }
+
+        return failedReflection("HTTP " + httpStatus + ": " + errorMessage, totalTokens);
+    }
+
+    private List<ReflectionResult.TraitDraft> parseTraitDrafts(JsonNode node) {
+        List<ReflectionResult.TraitDraft> drafts = new ArrayList<>();
+        if (!node.isArray()) {
+            return drafts;
+        }
+        for (JsonNode item : node) {
+            drafts.add(ReflectionResult.TraitDraft.builder()
+                    .content(item.path("content").asText(null))
+                    .evidence(item.path("evidence").asText(null))
+                    .importanceScore(readInteger(item, "importance_score", "importanceScore"))
+                    .confidenceScore(readInteger(item, "confidence_score", "confidenceScore"))
+                    .build());
+        }
+        return drafts;
+    }
+
+    private List<ReflectionResult.TraitUpdate> parseTraitUpdates(JsonNode node) {
+        List<ReflectionResult.TraitUpdate> updates = new ArrayList<>();
+        if (!node.isArray()) {
+            return updates;
+        }
+        for (JsonNode item : node) {
+            updates.add(ReflectionResult.TraitUpdate.builder()
+                    .id(readLong(item, "id", "id"))
+                    .content(item.path("content").asText(null))
+                    // Optional: absent means "keep the existing evidence"
+                    .evidence(item.hasNonNull("evidence") ? item.get("evidence").asText(null) : null)
+                    .importanceScore(readInteger(item, "importance_score", "importanceScore"))
+                    .confidenceScore(readInteger(item, "confidence_score", "confidenceScore"))
+                    .build());
+        }
+        return updates;
+    }
+
+    private List<Long> parseIds(JsonNode node) {
+        List<Long> ids = new ArrayList<>();
+        if (!node.isArray()) {
+            return ids;
+        }
+        for (JsonNode item : node) {
+            if (item.isNumber() && item.longValue() > 0) {
+                ids.add(item.longValue());
+            } else {
+                log.warn("Reflection returned a non-numeric trait id: {}", item.asText());
+            }
+        }
+        return ids;
     }
 
     /**

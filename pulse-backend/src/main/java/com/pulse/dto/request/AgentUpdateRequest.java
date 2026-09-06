@@ -46,4 +46,34 @@ public class AgentUpdateRequest {
 
     @JsonProperty("is_unlimited")
     private Boolean isUnlimited;
+
+    /**
+     * Active hours, [start, end), 0-23.
+     *
+     * May wrap midnight (22 -> 6), which is how an owner gives an agent a night-owl
+     * routine, and {@code start == end} means "active all day" - never "never active",
+     * because an agent that can never wake up would look broken rather than quiet.
+     *
+     * Sending only one of the two bounds keeps the other as it is; both are always
+     * persisted together.
+     */
+    @Min(value = 0, message = "活跃时段起点为0-23（起点与终点相同表示全天活跃）")
+    @Max(value = 23, message = "活跃时段起点为0-23（起点与终点相同表示全天活跃）")
+    @JsonProperty("wake_hours_start")
+    private Integer wakeHoursStart;
+
+    @Min(value = 0, message = "活跃时段终点为0-23（不含该小时；可跨零点，如22到6）")
+    @Max(value = 23, message = "活跃时段终点为0-23（不含该小时；可跨零点，如22到6）")
+    @JsonProperty("wake_hours_end")
+    private Integer wakeHoursEnd;
+
+    /**
+     * Wake-ups per day, rhythm and interactions combined. This is the owner's cost
+     * ceiling, so it is bounded on both ends: 0 would make the agent permanently silent
+     * without saying so, and anything above hourly is not a routine.
+     */
+    @Min(value = 1, message = "每日唤醒预算为1-24")
+    @Max(value = 24, message = "每日唤醒预算为1-24")
+    @JsonProperty("daily_wake_budget")
+    private Integer dailyWakeBudget;
 }

@@ -77,18 +77,25 @@ class LLMClient:
     async def call_llm(
         self,
         request: LLMRequest,
+        request_body: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
         Call LLM API and return raw response.
 
         Returns: (response_body_dict, usage_info_dict)
 
+        `request_body` lets a caller swap the forced tool definition (the reflection
+        endpoint needs `submit_reflection` instead of `submit_decision`) while still
+        reusing the retry, timeout, error-classification and usage-normalisation
+        logic in this method - the parts that are easy to get subtly wrong twice.
+
         Raises: LLMTimeoutError, LLMAPIError
         """
         start_time = time.time()
 
         # Build request body (OpenAI-compatible format)
-        request_body = self._build_request_body(request)
+        if request_body is None:
+            request_body = self._build_request_body(request)
 
         # Build headers
         headers = self._build_headers(request.api_key)
@@ -294,6 +301,129 @@ class LLMClient:
                 "type": "function",
                 "function": {"name": "submit_decision"}
             }
+        }
+
+    def build_reflection_body(
+        self,
+        request: LLMRequest,
+        max_new_traits: int = 5,
+    ) -> Dict[str, Any]:
+        """
+        Build the OpenAI-compatible body for a reflection call.
+
+        Same shape as the decision body, but the forced tool is `submit_reflection`,
+        whose schema is the trait contract: new / updated / deprecated lists. Forcing
+        a tool call is what keeps the output parseable; the parser still validates
+        every field, because a schema is a request, not a guarantee.
+        """
+        return {
+            "model": request.model_name,
+            "messages": [
+                {"role": "system", "content": request.system_prompt},
+                {"role": "user", "content": request.context},
+            ],
+            "max_tokens": request.max_tokens if request.max_tokens is not None
+            else settings.REFLECTION_MAX_TOKENS,
+            "temperature": request.temperature if request.temperature is not None
+            else settings.REFLECTION_TEMPERATURE,
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "submit_reflection",
+                        "description": (
+                            "Submit distilled persona traits for one agent. "
+                            "Prefer revising or deprecating existing traits over adding "
+                            "near-duplicates. Never turn a single event into a trait."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "new_traits": {
+                                    "type": "array",
+                                    "description": (
+                                        f"Newly distilled traits. Max {max_new_traits}."
+                                    ),
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "content": {
+                                                "type": "string",
+                                                "description": "Stable trait statement (<=80 chars)",
+                                            },
+                                            "evidence": {
+                                                "type": "string",
+                                                "description": "Which recent behaviours support it",
+                                            },
+                                            "importance_score": {
+                                                "type": "integer",
+                                                "description": "0-100",
+                                            },
+                                            "confidence_score": {
+                                                "type": "integer",
+                                                "description": "0-100",
+                                            },
+                                        },
+                                        "required": ["content", "evidence"],
+                                    },
+                                },
+                                "updated_traits": {
+                                    "type": "array",
+                                    "description": (
+                                        "Revisions of existing traits. id MUST come from "
+                                        "the existing trait list."
+                                    ),
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": {
+                                                "type": "integer",
+                                                "description": "Existing trait id",
+                                            },
+                                            "content": {
+                                                "type": "string",
+                                                "description": "Revised trait statement",
+                                            },
+                                            "evidence": {
+                                                "type": "string",
+                                                "description": (
+                                                    "Refreshed evidence matching the revised "
+                                                    "wording (do not reuse the old evidence)"
+                                                ),
+                                            },
+                                            "importance_score": {
+                                                "type": "integer",
+                                                "description": "0-100",
+                                            },
+                                            "confidence_score": {
+                                                "type": "integer",
+                                                "description": "0-100",
+                                            },
+                                        },
+                                        "required": ["id", "content", "evidence"],
+                                    },
+                                },
+                                "deprecated_trait_ids": {
+                                    "type": "array",
+                                    "description": (
+                                        "Ids of existing traits that no longer hold."
+                                    ),
+                                    "items": {"type": "integer"},
+                                },
+                            },
+                            "required": [
+                                "new_traits",
+                                "updated_traits",
+                                "deprecated_trait_ids",
+                            ],
+                        },
+                    },
+                }
+            ],
+            "tool_choice": {
+                "type": "function",
+                "function": {"name": "submit_reflection"},
+            },
         }
 
     def _build_headers(self, api_key: str) -> Dict[str, str]:

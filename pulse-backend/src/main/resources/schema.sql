@@ -176,6 +176,44 @@ CREATE TABLE IF NOT EXISTS agent_logs (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Agent activity logs';
 
 -- ============================================================
+-- Table: agent_memories (Agent Memory Cards)
+-- ============================================================
+-- One row = one memory card an agent carries between wake-ups. Phase 1 only writes
+-- PERSONA_FACT cards straight from executed actions (no LLM involved) and lets the
+-- owner disable/correct them; PERSONA_TRAIT (LLM distillation) and the RELATION /
+-- LESSON types land on the same table later.
+--
+-- Deliberately named without a "wiki" prefix but field-compatible with the wiki
+-- memory design, so page_id/namespace/scope can be put to use without a rewrite.
+CREATE TABLE IF NOT EXISTS agent_memories (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT 'Memory ID',
+    agent_id BIGINT NOT NULL COMMENT 'Owning agent ID',
+    owner_id BIGINT NOT NULL COMMENT 'Owner user ID (denormalized from agents.owner_id for permission filtering)',
+    page_id BIGINT DEFAULT NULL COMMENT 'Reserved: future wiki page ID (always NULL in phase 1)',
+    namespace VARCHAR(100) NOT NULL DEFAULT 'agent:0' COMMENT 'Memory namespace, default agent:{agent_id}; reserved for project/topic scopes',
+    memory_type VARCHAR(32) NOT NULL COMMENT 'PERSONA_FACT / PERSONA_TRAIT (reserved: RELATION, LESSON)',
+    content TEXT NOT NULL COMMENT 'Memory body (sensitive data filtered before write)',
+    evidence TEXT DEFAULT NULL COMMENT 'Evidence summary / traceability note',
+    source_type VARCHAR(32) DEFAULT NULL COMMENT 'POST/COMMENT/BOUNTY_TASK/AGENT_LOG/REFLECTION',
+    source_id BIGINT DEFAULT NULL COMMENT 'Source record ID',
+    scope VARCHAR(32) NOT NULL DEFAULT 'SELF' COMMENT 'Visibility scope (SELF in phase 1)',
+    importance_score INT NOT NULL DEFAULT 50 COMMENT 'Importance 0-100',
+    confidence_score INT NOT NULL DEFAULT 90 COMMENT 'Confidence 0-100',
+    status TINYINT NOT NULL DEFAULT 1 COMMENT 'Status (1: ACTIVE, 0: DISABLED, 2: DEPRECATED)',
+    version INT NOT NULL DEFAULT 1 COMMENT 'Content revision, incremented on user correction',
+    expires_at TIMESTAMP NULL DEFAULT NULL COMMENT 'Optional expiry time',
+    created_by VARCHAR(32) NOT NULL DEFAULT 'SYSTEM' COMMENT 'SYSTEM / REFLECTION / USER_EDIT',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT 'Creation time',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Update time',
+    deleted TINYINT DEFAULT 0 COMMENT 'Soft delete flag',
+
+    FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
+    FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE,
+    INDEX idx_agent_status_type (agent_id, status, memory_type),
+    INDEX idx_owner_id (owner_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Agent memory cards';
+
+-- ============================================================
 -- Table: bounty_tasks (Bounty Guild Tasks)
 -- ============================================================
 CREATE TABLE IF NOT EXISTS bounty_tasks (
@@ -453,6 +491,102 @@ SET @has_key = (SELECT COUNT(*) FROM information_schema.STATISTICS
 SET @ddl = IF(@dupes = 0 AND @has_key = 0,
     'ALTER TABLE agents ADD UNIQUE KEY uk_owner_active_name (owner_id, active_name)',
     'SELECT 1');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- ---------- agents: personalised wake-up rhythm (phase 3) ----------
+-- Replaces "every agent is woken by the same 12h global batch" with a per-agent
+-- schedule. Every column is added through the guarded pattern above and every reader
+-- goes through SchemaCapabilities, so a database without these columns keeps running
+-- the legacy loop instead of failing.
+SET @ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE agents ADD COLUMN next_wake_at DATETIME NULL COMMENT ''Next rhythm wake-up''',
+    'SELECT 1')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agents' AND COLUMN_NAME = 'next_wake_at');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE agents ADD COLUMN wake_hours_start TINYINT NULL COMMENT ''Active hours start (0-23)''',
+    'SELECT 1')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agents' AND COLUMN_NAME = 'wake_hours_start');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE agents ADD COLUMN wake_hours_end TINYINT NULL COMMENT ''Active hours end, exclusive (0-23)''',
+    'SELECT 1')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agents' AND COLUMN_NAME = 'wake_hours_end');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE agents ADD COLUMN daily_wake_budget INT NOT NULL DEFAULT 4 COMMENT ''Max wake-ups per day''',
+    'SELECT 1')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agents' AND COLUMN_NAME = 'daily_wake_budget');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE agents ADD COLUMN wake_count_today INT NOT NULL DEFAULT 0 COMMENT ''Wake-ups used on wake_count_date''',
+    'SELECT 1')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agents' AND COLUMN_NAME = 'wake_count_today');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE agents ADD COLUMN wake_count_date DATE NULL COMMENT ''Day the wake counter belongs to''',
+    'SELECT 1')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agents' AND COLUMN_NAME = 'wake_count_date');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE agents ADD INDEX idx_next_wake (status, deleted, next_wake_at)',
+    'SELECT 1')
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agents' AND INDEX_NAME = 'idx_next_wake');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- ============================================================
+-- Table: agent_wake_events (Interaction-triggered Wake Queue)
+-- ============================================================
+-- One row = "somebody interacted with this agent, it should come back and respond".
+-- The queue exists so an agent can answer a reply within minutes instead of waiting
+-- for the next global batch, without the scheduler having to poll the whole community.
+--
+-- dedup_key is unique on purpose: the enqueue points sit inside existing business
+-- transactions that may be retried, and the same comment must never wake an agent
+-- twice. Enqueuing is best-effort - a failure there may not break the comment or the
+-- tip that triggered it.
+CREATE TABLE IF NOT EXISTS agent_wake_events (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT 'Event ID',
+    agent_id BIGINT NOT NULL COMMENT 'Agent to wake',
+    event_type VARCHAR(32) NOT NULL COMMENT 'REPLIED / COMMENTED / TIPPED',
+    source_type VARCHAR(32) DEFAULT NULL COMMENT 'POST / COMMENT / LEDGER',
+    source_id BIGINT DEFAULT NULL COMMENT 'Source record ID',
+    actor_type VARCHAR(20) DEFAULT NULL COMMENT 'HUMAN / AGENT',
+    actor_id BIGINT DEFAULT NULL COMMENT 'Who interacted',
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING / PROCESSED / SKIPPED / EXPIRED',
+    dedup_key VARCHAR(191) NOT NULL COMMENT 'Idempotency key for one interaction',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT 'Creation time',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'Update time',
+    processed_at TIMESTAMP NULL DEFAULT NULL COMMENT 'When the wake consumed it',
+    deleted TINYINT DEFAULT 0 COMMENT 'Soft delete flag',
+
+    FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
+    UNIQUE KEY uk_dedup_key (dedup_key) COMMENT 'Same interaction enqueues once',
+    INDEX idx_agent_status (agent_id, status, created_at),
+    INDEX idx_status_created (status, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Interaction-triggered agent wake queue';
+
+-- ---------- agent_wake_events: updated_at for an early-created table ----------
+-- The table above now declares updated_at, but a deployment that applied the first version
+-- of this file already has it without the column.
+SET @ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE agent_wake_events ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT ''Update time''',
+    'SELECT 1')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agent_wake_events' AND COLUMN_NAME = 'updated_at');
 PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
 -- ============================================================
