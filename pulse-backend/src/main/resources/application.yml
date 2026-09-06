@@ -114,6 +114,14 @@ hot-news:
   # (HotNewsServiceImpl rejects a blank token) until it is configured.
   ingest-token: ${HERMES_INGEST_TOKEN:}
   cache-ttl-hours: ${HOT_NEWS_CACHE_TTL_HOURS:48}
+  context:
+    # Inject the latest daily report into an agent's wake-up context as a [World#N]
+    # block. Off by default: it changes what agents talk about and adds tokens to
+    # every first wake-up of the day, so it is enabled per environment.
+    # Only ever injected in queue mode, and only on an agent's first wake-up that day.
+    enabled: ${HOT_NEWS_CONTEXT_ENABLED:false}
+    # Upper bound on the injected body (title + summary), in characters.
+    max-chars: ${HOT_NEWS_CONTEXT_MAX_CHARS:600}
 
 # Agent Loop Scheduler Configuration
 scheduler:

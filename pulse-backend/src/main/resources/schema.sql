@@ -168,6 +168,10 @@ CREATE TABLE IF NOT EXISTS agent_logs (
     tokens_consumed INT DEFAULT 0 COMMENT 'Tokens consumed in this action',
     action_result VARCHAR(500) COMMENT 'Action result or error message',
     action_content VARCHAR(500) DEFAULT NULL COMMENT 'Action content preview',
+    -- Why the agent was awake when it did this. NULL on rows written before the
+    -- 2026-09-06 migration and on any write that is not part of a wake-up.
+    wake_reason VARCHAR(16) DEFAULT NULL COMMENT 'WakeReason name (RHYTHM/EVENT/LEGACY_BATCH)',
+    wake_event_types VARCHAR(64) DEFAULT NULL COMMENT 'Distinct wake event types consumed, sorted, comma separated',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT 'Log time',
 
     FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE,
@@ -402,6 +406,34 @@ SET @ddl = (SELECT IF(COUNT(*) = 0,
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'comments' AND INDEX_NAME = 'idx_post_author');
 PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+-- ---------- comments: windowed lookups behind the agent leaderboards ----------
+-- The three statements in AgentRankingMapper all read `comments` through a
+-- created_at window. None of the pre-existing indexes leads with, or even contains,
+-- created_at, so EXPLAIN reported a full table scan for the reply half of the
+-- replied board and a full index scan for the comments half of the active board.
+-- Each of the three below puts created_at last in a composite whose leading columns
+-- are the join or filter key, which is what lets the window be a range scan.
+SET @ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE comments ADD INDEX idx_comments_author_created (author_type, author_id, created_at)',
+    'SELECT 1')
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'comments' AND INDEX_NAME = 'idx_comments_author_created');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE comments ADD INDEX idx_comments_parent_created (parent_comment_id, created_at)',
+    'SELECT 1')
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'comments' AND INDEX_NAME = 'idx_comments_parent_created');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE comments ADD INDEX idx_comments_post_created (post_id, created_at)',
+    'SELECT 1')
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'comments' AND INDEX_NAME = 'idx_comments_post_created');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 -- ---------- bounty_tasks ----------
 SET @ddl = (SELECT IF(COUNT(*) = 0,
     'ALTER TABLE bounty_tasks ADD INDEX idx_agent_created (agent_id, created_at)',
@@ -588,6 +620,45 @@ SET @ddl = (SELECT IF(COUNT(*) = 0,
     FROM information_schema.COLUMNS
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agent_wake_events' AND COLUMN_NAME = 'updated_at');
 PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- ============================================================
+-- Table: notifications (Notification Centre)
+-- ============================================================
+-- One row = "this happened, and exactly one human user should be told".
+--
+-- The row is a SNAPSHOT: title and body are rendered when the event happens and never
+-- re-derived. A comment that is later edited or removed must not rewrite - or erase -
+-- the notification that told somebody it existed. actor_type/actor_id stay as ids
+-- because the display NAME is allowed to change; the read path resolves it in a batch.
+--
+-- Writing is best effort: every producer sits inside an existing business transaction
+-- (a comment, a tip, a bounty settlement) and none of them may fail over a
+-- notification. Reading is not: a missing table is reported as
+-- NOTIFICATIONS_UNAVAILABLE rather than answered with an empty page, because an inbox
+-- that silently looks empty is indistinguishable from working software.
+--
+-- Retention: rows are never pruned by the application today. A 90-day sweep is the
+-- recommended policy once volume justifies it (see deploy/migrations/2026-09-06-notifications.sql).
+CREATE TABLE IF NOT EXISTS notifications (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT 'Notification ID',
+    recipient_user_id BIGINT NOT NULL COMMENT 'The only user allowed to see this row',
+    type VARCHAR(32) NOT NULL COMMENT 'AGENT_REPLIED_POST / HUMAN_REPLIED_COMMENT / AGENT_TIPPED / ...',
+    title VARCHAR(200) NOT NULL COMMENT 'Short headline, rendered at write time',
+    body VARCHAR(500) DEFAULT NULL COMMENT 'Detail snapshot, flattened and truncated',
+    link_type VARCHAR(16) DEFAULT NULL COMMENT 'POST / AGENT / BOUNTY',
+    link_id BIGINT DEFAULT NULL COMMENT 'Target record ID for link_type',
+    actor_type VARCHAR(16) DEFAULT NULL COMMENT 'HUMAN / AGENT',
+    actor_id BIGINT DEFAULT NULL COMMENT 'Who caused this',
+    is_read TINYINT NOT NULL DEFAULT 0 COMMENT 'Read flag',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT 'Creation time',
+    read_at TIMESTAMP NULL DEFAULT NULL COMMENT 'When the recipient read it',
+    deleted TINYINT DEFAULT 0 COMMENT 'Soft delete flag',
+
+    FOREIGN KEY (recipient_user_id) REFERENCES users(id) ON DELETE CASCADE,
+    -- Serves both reads: the unread badge count and the (unread_only) list page, which
+    -- filter on recipient + is_read and order by created_at.
+    INDEX idx_recipient_read_created (recipient_user_id, is_read, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Per-user notification centre';
 
 -- ============================================================
 -- ShedLock: single-run guarantee for @Scheduled jobs

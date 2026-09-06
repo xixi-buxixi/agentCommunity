@@ -13,6 +13,7 @@ import com.pulse.exception.ErrorCode;
 import com.pulse.mapper.*;
 import com.pulse.service.PostService;
 import com.pulse.service.AgentWakeEventService;
+import com.pulse.service.NotificationService;
 import com.pulse.service.support.AuthorResolver;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -41,6 +42,7 @@ public class PostServiceImpl implements PostService {
     private final AgentMapper agentMapper;
     private final AuthorResolver authorResolver;
     private final AgentWakeEventService agentWakeEventService;
+    private final NotificationService notificationService;
 
     private static final DateTimeFormatter DATE_FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
@@ -589,6 +591,7 @@ public class PostServiceImpl implements PostService {
         log.info("Comment created: commentId={}, postId={}, userId={}", comment.getId(), postId, userId);
 
         queueWakeEventForComment(post, parentComment, comment, userId);
+        notifyTargetOfComment(post, parentComment, comment, userId);
 
         return buildCommentResponse(comment);
     }
@@ -614,6 +617,53 @@ public class PostServiceImpl implements PostService {
         if (post.isAgentPost()) {
             agentWakeEventService.recordCommentOnAgentPost(post.getAuthorId(), post.getId(),
                     comment.getId(), actorType, userId);
+        }
+    }
+
+    /**
+     * Tell whoever was talked to - the human author directly, or an agent author's owner.
+     *
+     * This method runs on the HUMAN comment path only (agents comment through
+     * AgentActionExecutor), so the actor is always a person. That is what makes the
+     * AGENT branch worth having: agents answering each other is the community's normal
+     * background traffic and would bury an owner's inbox, while a person walking up to
+     * somebody's agent is exactly the event the owner wants to see.
+     *
+     * The AGENT branch used to be absent, on the stated grounds that the wake event
+     * already reaches the owner. It does not: the wake event makes the AGENT answer, and
+     * the agent's answer is delivered to the person it is replying to - here, the agent
+     * itself. The owner received nothing at all, not twice.
+     *
+     * The owner commenting on their own agent produces nothing: the shared
+     * self-notification guard in NotificationServiceImpl drops it.
+     *
+     * The service swallows its own failures, so this cannot affect the comment.
+     */
+    private void notifyTargetOfComment(Post post, Comment parentComment, Comment comment,
+                                       Long userId) {
+        String actorType = AuthorType.HUMAN.getCode();
+        if (parentComment != null) {
+            if (AuthorType.HUMAN.getCode().equalsIgnoreCase(parentComment.getAuthorType())) {
+                notificationService.notifyReplyToComment(parentComment.getAuthorId(), actorType,
+                        userId, post.getId(), comment.getContent());
+            } else if (AuthorType.AGENT.getCode().equalsIgnoreCase(parentComment.getAuthorType())) {
+                Agent agent = agentMapper.selectById(parentComment.getAuthorId());
+                if (agent != null) {
+                    notificationService.notifyReplyToAgentComment(agent.getOwnerId(), userId,
+                            post.getId(), agent.getName(), comment.getContent());
+                }
+            }
+            return;
+        }
+        if (AuthorType.HUMAN.getCode().equalsIgnoreCase(post.getAuthorType())) {
+            notificationService.notifyCommentOnPost(post.getAuthorId(), actorType, userId,
+                    post.getId(), comment.getContent());
+        } else if (post.isAgentPost()) {
+            Agent agent = agentMapper.selectById(post.getAuthorId());
+            if (agent != null) {
+                notificationService.notifyCommentOnAgentPost(agent.getOwnerId(), userId,
+                        post.getId(), agent.getName(), comment.getContent());
+            }
         }
     }
 

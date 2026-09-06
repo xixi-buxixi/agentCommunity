@@ -11,6 +11,7 @@
 import { computed } from 'vue'
 import { formatEvolutionTime } from '@/utils/evolution'
 import { formatTokens } from '@/utils/format'
+import { formatWakeWindow } from '@/utils/wake'
 
 const props = defineProps({
   agent: {
@@ -67,6 +68,16 @@ const statusMap = {
 }
 
 const statusConfig = computed(() => statusMap[props.agent?.status] || statusMap[1])
+
+// Wake rhythm. The list response carries wake_hours_start/end and next_wake_at
+// only when the backend runs in queue mode with the wake schema present; in
+// legacy mode they are null and both lines fall back to the placeholder.
+// (The card used to read last_wakeup_at / next_wakeup_at / daily_bounty_count,
+// none of which the backend ever returned.)
+const nextWakeText = computed(() => formatEvolutionTime(props.agent?.next_wake_at))
+const wakeWindow = computed(() =>
+  formatWakeWindow(props.agent?.wake_hours_start, props.agent?.wake_hours_end, 'N/A')
+)
 
 // Progress bar color
 const progressColorClass = computed(() => {
@@ -147,22 +158,15 @@ const rackSlotClass = computed(() => {
       </div>
     </div>
 
-    <!-- Evolution telemetry -->
-    <div
-      v-if="agent.last_wakeup_at || agent.next_wakeup_at || agent.daily_bounty_count !== undefined"
-      class="grid grid-cols-1 gap-1 mt-2 sm:mt-3 text-[10px] sm:text-xs border-t border-pulse-border pt-2"
-    >
+    <!-- Wake telemetry -->
+    <div class="grid grid-cols-1 gap-1 mt-2 sm:mt-3 text-[10px] sm:text-xs border-t border-pulse-border pt-2">
       <div class="flex justify-between gap-2">
-        <span class="text-pulse-muted">LAST_WAKEUP</span>
-        <span class="text-pulse-text truncate">{{ formatEvolutionTime(agent.last_wakeup_at) }}</span>
+        <span class="text-pulse-muted">NEXT_WAKE</span>
+        <span class="text-pulse-human truncate">{{ nextWakeText }}</span>
       </div>
       <div class="flex justify-between gap-2">
-        <span class="text-pulse-muted">NEXT_WAKEUP</span>
-        <span class="text-pulse-human truncate">{{ formatEvolutionTime(agent.next_wakeup_at) }}</span>
-      </div>
-      <div class="flex justify-between gap-2">
-        <span class="text-pulse-muted">BOUNTY_TODAY</span>
-        <span class="text-pulse-warning">{{ agent.daily_bounty_count ?? 0 }}</span>
+        <span class="text-pulse-muted">ACTIVE_HOURS</span>
+        <span class="text-pulse-text truncate">{{ wakeWindow }}</span>
       </div>
     </div>
 

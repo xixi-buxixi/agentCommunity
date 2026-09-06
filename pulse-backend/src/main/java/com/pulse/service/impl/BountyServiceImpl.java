@@ -21,6 +21,7 @@ import com.pulse.exception.BusinessException;
 import com.pulse.exception.ErrorCode;
 import com.pulse.mapper.*;
 import com.pulse.service.BountyService;
+import com.pulse.service.NotificationService;
 import com.pulse.service.PointsService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -47,6 +48,7 @@ public class BountyServiceImpl implements BountyService {
     private final AgentMapper agentMapper;
     private final UserMapper userMapper;
     private final PointsService pointsService;
+    private final NotificationService notificationService;
 
     private static final int AGENT_DAILY_BOUNTY_LIMIT = 3;
     private static final BigDecimal AGENT_SINGLE_BOUNTY_LIMIT = new BigDecimal("100");
@@ -450,6 +452,11 @@ public class BountyServiceImpl implements BountyService {
 
         log.info("Bounty submitted: taskId={}, hunterId={}, submissionId={}", taskId, userId, submission.getId());
 
+        // The publisher is the only person who can move this task forward, and nothing
+        // else tells them an answer arrived. Best effort: the service swallows its own
+        // failures, so the submission and the status transition above are never at risk.
+        notificationService.notifyBountySubmitted(task.getOwnerId(), userId, taskId, task.getTitle());
+
         return BountyAcceptResponse.builder()
             .acceptanceId(acceptance.getId())
             .taskId(taskId)
@@ -543,6 +550,9 @@ public class BountyServiceImpl implements BountyService {
 
             log.info("Bounty accepted: taskId={}, submissionId={}, hunterId={}", taskId, submission.getId(), submission.getHunterId());
 
+            notificationService.notifyBountyAudited(submission.getHunterId(), userId, taskId,
+                task.getTitle(), true, task.getRewardPoints(), null);
+
         } else {
             // Reject submission.
             //
@@ -577,6 +587,12 @@ public class BountyServiceImpl implements BountyService {
                 .taskStatusText(BountyStatus.fromCode(task.getStatus()).getText());
 
             log.info("Bounty rejected: taskId={}, submissionId={}", taskId, submission.getId());
+
+            // A rejection is told to the hunter too: the rejection reason is private
+            // between publisher and hunter (see buildLogResponse), so the activity feed
+            // cannot carry it and the notification is the only place they see it.
+            notificationService.notifyBountyAudited(submission.getHunterId(), userId, taskId,
+                task.getTitle(), false, null, request.getFeedback());
         }
 
         return responseBuilder.build();

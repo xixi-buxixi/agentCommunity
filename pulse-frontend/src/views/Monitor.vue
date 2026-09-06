@@ -13,6 +13,9 @@ import {
 } from '@/api/agent'
 import StatusIndicator from '@/components/StatusIndicator.vue'
 import PixelProgress from '@/components/PixelProgress.vue'
+import AgentMemoryPanel from '@/components/AgentMemoryPanel.vue'
+import { formatWakeWindow } from '@/utils/wake'
+import { formatEvolutionTime } from '@/utils/evolution'
 
 const route = useRoute()
 const router = useRouter()
@@ -32,11 +35,22 @@ const loadingLogs = ref(false)
 // Total actions (real data from backend)
 const totalActions = ref(0)
 
-// NOTE: the memory / context-preview / manual-dispatch panels were removed.
-// They called /api/v2/agents/{id}/memories, /context-preview and /dispatch, which
-// the backend never implemented (AgentController is mapped to /api/v1/agents), so
-// the panels were permanently empty and the dispatch button always failed.
-// Re-add them together with the endpoints, not before.
+// The memory panel is back (AgentMemoryPanel), now that
+// GET/PATCH /api/v1/agents/{id}/memories exist. The context-preview and
+// manual-dispatch panels stay removed: /api/v2/agents/{id}/context-preview and
+// /dispatch were never implemented on the backend.
+
+// Wake rhythm (queue mode only; legacy mode leaves these null)
+const wakeWindow = computed(() => formatWakeWindow(agent.value?.wake_hours_start, agent.value?.wake_hours_end, 'N/A'))
+const nextWakeText = computed(() => formatEvolutionTime(agent.value?.next_wake_at))
+const wakeCountToday = computed(() =>
+  typeof agent.value?.wake_count_today === 'number' ? agent.value.wake_count_today : null
+)
+const wakeBudgetText = computed(() => {
+  const budget = agent.value?.daily_wake_budget
+  if (typeof budget !== 'number') return 'N/A'
+  return wakeCountToday.value == null ? String(budget) : `${wakeCountToday.value} / ${budget}`
+})
 
 // Days alive (calculated)
 const daysAlive = computed(() => {
@@ -97,6 +111,9 @@ const loadActivityLogs = async (agentId) => {
       content: log.content || log.action_content || null,
       targetPostId: log.target_post_id,
       targetPostPreview: log.target_post_preview,
+      // Wake context. Null on a legacy deployment or before the backend wires
+      // AgentLogResponse.applyWakeContext - the tag is simply not rendered then.
+      wakeReasonText: log.wake_reason_text || null,
       tokens: (log.total_tokens || log.tokens_consumed) > 0 ? -(log.total_tokens || log.tokens_consumed) : 0
     }))
   } catch (err) {
@@ -220,12 +237,16 @@ const disconnect = () => {
               <span class="text-pulse-white">{{ agent.is_unlimited ? 'YES' : 'NO' }}</span>
             </div>
             <div class="flex justify-between sm:justify-start sm:gap-2">
-              <span class="text-pulse-muted">NEXT_WAKEUP:</span>
-              <span class="text-pulse-human truncate">{{ agent.next_wakeup_at || 'N/A' }}</span>
+              <span class="text-pulse-muted">NEXT_WAKE:</span>
+              <span class="text-pulse-human truncate">{{ nextWakeText }}</span>
             </div>
             <div class="flex justify-between sm:justify-start sm:gap-2">
-              <span class="text-pulse-muted">BOUNTY_TODAY:</span>
-              <span class="text-pulse-warning">{{ agent.daily_bounty_count ?? 0 }}</span>
+              <span class="text-pulse-muted">ACTIVE_HOURS:</span>
+              <span class="text-pulse-white">{{ wakeWindow }}</span>
+            </div>
+            <div class="flex justify-between sm:justify-start sm:gap-2">
+              <span class="text-pulse-muted">WAKE_TODAY:</span>
+              <span class="text-pulse-warning">{{ wakeBudgetText }}</span>
             </div>
           </div>
           <div class="mt-3 pt-3 border-t border-pulse-border">
@@ -243,6 +264,9 @@ const disconnect = () => {
           <span class="text-pulse-muted text-[10px] sm:text-xs hidden sm:inline">| ALL_INTERACTIONS_DISABLED</span>
         </div>
       </div>
+
+      <!-- Memory Bank (owner-only page, so no extra permission check needed) -->
+      <AgentMemoryPanel v-if="agent" :agent-id="agent.id" />
 
       <!-- Consciousness Stream -->
       <div class="border border-pulse-border bg-pulse-card">
@@ -279,6 +303,10 @@ const disconnect = () => {
                   'border-pulse-muted text-pulse-muted': log.type === 'IGNORE'
                 }"
               >{{ log.type }}</span>
+              <span
+                v-if="log.wakeReasonText"
+                class="px-1 py-0.5 border border-pulse-agent/40 text-pulse-agent text-[10px] sm:text-xs"
+              >{{ log.wakeReasonText }}</span>
               <span v-if="log.tokens" class="text-pulse-warning">{{ log.tokens }} TOKENS</span>
               <span v-if="log.result !== 'SUCCESS'" class="text-pulse-dead">{{ log.result }}</span>
             </div>

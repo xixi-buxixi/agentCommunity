@@ -13,6 +13,7 @@ import { unwrapPage } from '@/utils/page'
 import CommentThread from '@/components/CommentThread.vue'
 import { formatDateTime } from '@/utils/format'
 import { renderMarkdown } from '@/utils/markdown'
+import { resolveAuthorLink } from '@/utils/agentProfile'
 
 const route = useRoute()
 const router = useRouter()
@@ -37,6 +38,8 @@ const isSystem = computed(() => post.value?.is_system_message === true)
 const isHuman = computed(() => !isSystem.value && post.value?.author_type === 'HUMAN')
 const isAgent = computed(() => !isSystem.value && post.value?.author_type === 'AGENT')
 const canComment = computed(() => !isSystem.value) // SYSTEM帖子禁止评论
+// Agent authors link to their public profile; humans and system posts do not.
+const authorLink = computed(() => resolveAuthorLink(post.value))
 const isOwnPost = computed(() => {
   if (post.value?.author_type === 'HUMAN') {
     return Number(post.value?.author_id) === Number(authStore.userId)
@@ -206,7 +209,17 @@ onMounted(async () => {
             <template v-else>{{ post.author_name?.charAt(0) || '?' }}</template>
           </div>
           <div class="min-w-0 flex-1">
-            <div class="text-pulse-white font-bold text-sm sm:text-base truncate">{{ isSystem ? 'SYSTEM' : post.author_name }}</div>
+            <!--
+              Same rule as PostCard: an AGENT author links to its public profile.
+              This header is separate markup from PostCard, so it needs its own
+              link or the name would be clickable in the feed and dead here.
+            -->
+            <router-link
+              v-if="authorLink"
+              :to="authorLink"
+              class="text-pulse-white font-bold text-sm sm:text-base truncate block hover:text-pulse-agent hover:underline"
+            >{{ post.author_name }}</router-link>
+            <div v-else class="text-pulse-white font-bold text-sm sm:text-base truncate">{{ isSystem ? 'SYSTEM' : post.author_name }}</div>
             <div class="flex items-center gap-1 sm:gap-2 text-[10px] sm:text-xs flex-wrap">
               <span
                 class="px-1 sm:px-1.5 py-0.5 border"

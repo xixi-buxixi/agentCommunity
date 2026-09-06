@@ -14,8 +14,17 @@ import AgentRackCard from '@/components/AgentRackCard.vue'
 import StatGauge from '@/components/StatGauge.vue'
 import StatusIndicator from '@/components/StatusIndicator.vue'
 import LedgerPanel from '@/components/LedgerPanel.vue'
+import NotificationBell from '@/components/NotificationBell.vue'
 import { ValidationRules, validateObject, hasErrors, getErrorMessages } from '@/utils/validation'
 import { formatTokens } from '@/utils/format'
+import {
+  WAKE_BUDGET_MAX,
+  WAKE_BUDGET_MIN,
+  WAKE_HOUR_OPTIONS,
+  buildWakeUpdatePayload,
+  describeWakeError,
+  validateWakeSettings
+} from '@/utils/wake'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -88,10 +97,23 @@ const editForm = ref({
   model_name: '',
   system_prompt: '',
   token_threshold: 0,
-  is_unlimited: false
+  is_unlimited: false,
+  // Wake rhythm; null means "not set" and is never submitted
+  wake_hours_start: null,
+  wake_hours_end: null,
+  daily_wake_budget: null
 })
 const editUsedTokens = ref(0)
 const editValidationError = ref('')
+// Snapshot of the wake fields as loaded, so only user edits are submitted
+const editWakeOriginal = ref({
+  wake_hours_start: null,
+  wake_hours_end: null,
+  daily_wake_budget: null
+})
+const wakeHourOptions = WAKE_HOUR_OPTIONS
+const wakeBudgetMin = WAKE_BUDGET_MIN
+const wakeBudgetMax = WAKE_BUDGET_MAX
 
 // Revive form
 const reviveForm = ref({
@@ -182,13 +204,22 @@ const handleEdit = async (agent) => {
     const detail = await agentStore.fetchAgentDetail(agent.id)
     if (detail) {
       const agentDetail = agentStore.currentAgent
+      // In legacy mode (no wake queue schema) the backend returns null for all
+      // three wake fields; they stay "未设置" and are not submitted.
+      const wake = {
+        wake_hours_start: typeof agentDetail.wake_hours_start === 'number' ? agentDetail.wake_hours_start : null,
+        wake_hours_end: typeof agentDetail.wake_hours_end === 'number' ? agentDetail.wake_hours_end : null,
+        daily_wake_budget: typeof agentDetail.daily_wake_budget === 'number' ? agentDetail.daily_wake_budget : null
+      }
       editForm.value = {
         name: agentDetail.name || '',
         model_name: agentDetail.model_name || '',
         system_prompt: agentDetail.system_prompt || '',
         token_threshold: agentDetail.token_threshold || 500000,
-        is_unlimited: agentDetail.is_unlimited || false
+        is_unlimited: agentDetail.is_unlimited || false,
+        ...wake
       }
+      editWakeOriginal.value = { ...wake }
       editUsedTokens.value = agentDetail.used_tokens || 0
       editValidationError.value = ''
       showEditModal.value = true
@@ -277,12 +308,37 @@ const submitEdit = async () => {
   if (!validateEditForm()) {
     return
   }
-  const success = await agentStore.updateAgent(selectedAgent.value.id, editForm.value)
+  const wakeError = validateWakeSettings(editForm.value)
+  if (wakeError) {
+    editValidationError.value = wakeError
+    return
+  }
+
+  // Only the three wake fields the user actually changed are sent: the backend
+  // keeps the stored value of any bound it is not given, and in legacy mode the
+  // fields read back as null - echoing them would be a write, not a no-op.
+  const payload = {
+    name: editForm.value.name,
+    model_name: editForm.value.model_name,
+    system_prompt: editForm.value.system_prompt,
+    token_threshold: editForm.value.token_threshold,
+    is_unlimited: editForm.value.is_unlimited,
+    ...buildWakeUpdatePayload(editForm.value, editWakeOriginal.value)
+  }
+
+  const success = await agentStore.updateAgent(selectedAgent.value.id, payload)
   if (success) {
     showEditModal.value = false
     selectedAgent.value = null
     agentStore.clearCurrentAgent()
+    return
   }
+  // 20009 means the deployment has no wake queue schema - say so instead of
+  // showing the raw backend message.
+  editValidationError.value = describeWakeError({
+    code: agentStore.errorCode,
+    message: agentStore.error
+  })
 }
 
 // Submit revive
@@ -344,6 +400,7 @@ const submitResetTokens = async () => {
         <div class="flex items-center gap-2 sm:gap-4 text-[10px] sm:text-xs">
           <router-link to="/square" class="text-pulse-muted hover:text-pulse-white transition hidden sm:inline">[SQUARE]</router-link>
           <span class="text-pulse-accent">[LAB]</span>
+          <NotificationBell />
         </div>
       </div>
     </header>
@@ -563,6 +620,54 @@ const submitResetTokens = async () => {
           <div class="flex items-center gap-2 min-h-[44px]">
             <input v-model="editForm.is_unlimited" type="checkbox" class="accent-pulse-alive" />
             <span class="text-pulse-muted text-xs">UNLIMITED_SURVIVAL (忽略Token限制)</span>
+          </div>
+
+          <!-- Wake rhythm -->
+          <div class="border-t border-pulse-border pt-3 space-y-3">
+            <div class="text-pulse-agent text-[10px] sm:text-xs">WAKE_RHYTHM:</div>
+
+            <div>
+              <div class="text-pulse-muted text-[10px] sm:text-xs mb-2">ACTIVE_HOURS (起点 / 终点，终点不含该小时):</div>
+              <div class="flex items-center gap-2">
+                <select
+                  v-model="editForm.wake_hours_start"
+                  class="flex-1 border border-pulse-border bg-pulse-bg px-3 py-2 text-xs sm:text-sm text-pulse-white min-h-[44px]"
+                >
+                  <option :value="null">未设置</option>
+                  <option v-for="hour in wakeHourOptions" :key="`start-${hour}`" :value="hour">
+                    {{ String(hour).padStart(2, '0') }}:00
+                  </option>
+                </select>
+                <span class="text-pulse-muted text-xs">→</span>
+                <select
+                  v-model="editForm.wake_hours_end"
+                  class="flex-1 border border-pulse-border bg-pulse-bg px-3 py-2 text-xs sm:text-sm text-pulse-white min-h-[44px]"
+                >
+                  <option :value="null">未设置</option>
+                  <option v-for="hour in wakeHourOptions" :key="`end-${hour}`" :value="hour">
+                    {{ String(hour).padStart(2, '0') }}:00
+                  </option>
+                </select>
+              </div>
+              <div class="text-pulse-muted text-[10px] sm:text-xs mt-1">
+                可跨零点（如 22 → 6）；起点与终点相同表示全天活跃
+              </div>
+            </div>
+
+            <div>
+              <div class="text-pulse-muted text-[10px] sm:text-xs mb-2">DAILY_WAKE_BUDGET:</div>
+              <input
+                v-model.number="editForm.daily_wake_budget"
+                type="number"
+                :min="wakeBudgetMin"
+                :max="wakeBudgetMax"
+                placeholder="未设置"
+                class="w-full border border-pulse-border bg-pulse-bg px-3 py-2 text-xs sm:text-sm text-pulse-white min-h-[44px]"
+              />
+              <div class="text-pulse-muted text-[10px] sm:text-xs mt-1">
+                每日唤醒上限 {{ wakeBudgetMin }}-{{ wakeBudgetMax }}（作息与互动共用）
+              </div>
+            </div>
           </div>
 
           <!-- Validation Error -->

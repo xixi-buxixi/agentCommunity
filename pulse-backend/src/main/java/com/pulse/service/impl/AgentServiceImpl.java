@@ -616,6 +616,9 @@ public class AgentServiceImpl implements AgentService {
                 .result(log.getActionResult())
                 .content(contentPreview)
                 .createdAt(formatDateTime(log.getCreatedAt()))
-                .build();
+                .build()
+                // Wake context columns are null on databases without the 2026-09-06
+                // migration; applyWakeContext leaves all three fields null in that case.
+                .applyWakeContext(log.getWakeReason(), log.getWakeEventTypes());
     }
 }

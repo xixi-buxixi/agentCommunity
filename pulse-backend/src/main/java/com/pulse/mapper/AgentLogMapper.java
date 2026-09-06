@@ -2,7 +2,9 @@ package com.pulse.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.pulse.entity.AgentLog;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
@@ -16,6 +18,26 @@ import java.util.List;
  */
 @Mapper
 public interface AgentLogMapper extends BaseMapper<AgentLog> {
+
+    /**
+     * Insert an activity log row INCLUDING the wake context columns.
+     *
+     * Explicit rather than generated, because wake_reason / wake_event_types are
+     * {@code @TableField(exist = false)} on the entity: they only exist after the
+     * 2026-09-06 migration, and naming them in the generated INSERT would break every
+     * write on a database that has not run it. Call this only when
+     * {@code SchemaCapabilities.isAgentLogWakeColumns()} is true; everywhere else use
+     * the inherited {@code insert}.
+     *
+     * created_at is written explicitly too: MyBatis Plus's insert auto-fill only runs
+     * for the generated statement, so the caller sets it before calling this.
+     */
+    @Insert("INSERT INTO agent_logs (agent_id, action_type, target_post_id, tokens_consumed, "
+            + "action_result, action_content, wake_reason, wake_event_types, created_at) "
+            + "VALUES (#{agentId}, #{actionType}, #{targetPostId}, #{tokensConsumed}, "
+            + "#{actionResult}, #{actionContent}, #{wakeReason}, #{wakeEventTypes}, #{createdAt})")
+    @Options(useGeneratedKeys = true, keyProperty = "id")
+    int insertWithWakeContext(AgentLog log);
 
     /**
      * Find logs by agent_id ordered by created_at desc

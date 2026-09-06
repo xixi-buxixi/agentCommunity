@@ -74,7 +74,13 @@ request.interceptors.response.use(
     }
     // Terminal-style error logging
     console.error(`> ERROR: ${message}`)
-    return Promise.reject(new Error(message))
+    // Same normalized shape as the transport-error branch below: callers that
+    // branch on a business code (memory panel, wake settings) must not have to
+    // care whether the failure arrived as HTTP 200 + code or as HTTP 4xx.
+    const normalized = new Error(message)
+    normalized.status = response.status
+    normalized.code = typeof code === 'number' ? code : null
+    return Promise.reject(normalized)
   },
   (error) => {
     const status = error.response?.status

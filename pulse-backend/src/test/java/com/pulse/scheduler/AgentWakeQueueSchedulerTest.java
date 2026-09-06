@@ -2,6 +2,7 @@ package com.pulse.scheduler;
 
 import com.pulse.config.SchemaCapabilities;
 import com.pulse.dto.AgentWakeSettings;
+import com.pulse.dto.WakeLogContext;
 import com.pulse.entity.Agent;
 import com.pulse.entity.AgentWakeEvent;
 import com.pulse.enums.WakeReason;
@@ -20,6 +21,7 @@ import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
@@ -137,7 +139,7 @@ class AgentWakeQueueSchedulerTest {
 
         scheduler.tick();
 
-        verify(agentWakeProcessor, never()).wake(any(Agent.class), eq(WakeReason.RHYTHM), any());
+        verify(agentWakeProcessor, never()).wake(any(Agent.class), eq(WakeReason.RHYTHM), any(), anyBoolean());
         verify(agentMapper, never()).claimWakeSlot(anyLong(), any(), any(), any(), anyInt());
 
         ArgumentCaptor<LocalDateTime> scheduled = ArgumentCaptor.forClass(LocalDateTime.class);
@@ -157,7 +159,7 @@ class AgentWakeQueueSchedulerTest {
 
         scheduler.tick();
 
-        verify(agentWakeProcessor).wake(any(Agent.class), eq(WakeReason.RHYTHM), eq(List.of()));
+        verify(agentWakeProcessor).wake(any(Agent.class), eq(WakeReason.RHYTHM), eq(List.of()), anyBoolean());
     }
 
     /**
@@ -203,7 +205,7 @@ class AgentWakeQueueSchedulerTest {
         scheduler.tick();
 
         ArgumentCaptor<List<AgentWakeEvent>> captor = eventListCaptor();
-        verify(agentWakeProcessor).wake(any(Agent.class), eq(WakeReason.EVENT), captor.capture());
+        verify(agentWakeProcessor).wake(any(Agent.class), eq(WakeReason.EVENT), captor.capture(), anyBoolean());
         assertThat(captor.getValue()).hasSize(3);
         // claimed one at a time, so a concurrent tick's partial win is knowable
         verify(agentWakeEventMapper).markProcessed(eq(List.of(1L)), any(LocalDateTime.class));
@@ -224,7 +226,7 @@ class AgentWakeQueueSchedulerTest {
 
         scheduler.tick();
 
-        verify(agentWakeProcessor, never()).wake(any(Agent.class), eq(WakeReason.EVENT), any());
+        verify(agentWakeProcessor, never()).wake(any(Agent.class), eq(WakeReason.EVENT), any(), anyBoolean());
         verify(agentWakeEventMapper, never()).markProcessed(any(), any(LocalDateTime.class));
     }
 
@@ -256,7 +258,7 @@ class AgentWakeQueueSchedulerTest {
 
         scheduler.tick();
 
-        verify(agentWakeProcessor, never()).wake(any(Agent.class), eq(WakeReason.EVENT), any());
+        verify(agentWakeProcessor, never()).wake(any(Agent.class), eq(WakeReason.EVENT), any(), anyBoolean());
     }
 
     /**
@@ -267,14 +269,75 @@ class AgentWakeQueueSchedulerTest {
     void eventsAreConsumedBeforeTheModelCallAndNotReturnedOnFailure() {
         givenPendingEvents(event(1L));
         org.mockito.Mockito.doThrow(new RuntimeException("gateway exploded"))
-                .when(agentWakeProcessor).wake(any(Agent.class), eq(WakeReason.EVENT), any());
+                .when(agentWakeProcessor).wake(any(Agent.class), eq(WakeReason.EVENT), any(), anyBoolean());
 
         scheduler.tick();
 
         org.mockito.InOrder order = org.mockito.Mockito.inOrder(agentWakeEventMapper, agentWakeProcessor);
         order.verify(agentWakeEventMapper).markProcessed(any(), any(LocalDateTime.class));
-        order.verify(agentWakeProcessor).wake(any(Agent.class), eq(WakeReason.EVENT), any());
-        verify(agentActionExecutor).logAgentError(any(Agent.class), any(), eq(0L));
+        order.verify(agentWakeProcessor).wake(any(Agent.class), eq(WakeReason.EVENT), any(), anyBoolean());
+        verify(agentActionExecutor).logAgentError(any(Agent.class), any(), eq(0L),
+                any(WakeLogContext.class));
+    }
+
+    /**
+     * The error row a failed wake-up leaves behind is read before any other row when
+     * someone asks why an agent went quiet, so it has to say which wake-up it belongs
+     * to. It previously used the three-argument overload, which writes wake_reason
+     * NULL - the one attribute the reader needed.
+     */
+    @Test
+    void aFailedEventWakeWritesItsErrorRowWithTheWakeReasonAndEventTypes() {
+        givenPendingEvents(event(1L), tippedEvent(2L));
+        org.mockito.Mockito.doThrow(new RuntimeException("gateway exploded"))
+                .when(agentWakeProcessor).wake(any(Agent.class), eq(WakeReason.EVENT), any(), anyBoolean());
+
+        scheduler.tick();
+
+        ArgumentCaptor<WakeLogContext> context = ArgumentCaptor.forClass(WakeLogContext.class);
+        verify(agentActionExecutor).logAgentError(any(Agent.class), any(), eq(0L), context.capture());
+        assertThat(context.getValue()).isNotNull();
+        assertThat(context.getValue().getReason()).isEqualTo("EVENT");
+        // The types this wake-up actually consumed, de-duplicated and sorted
+        assertThat(context.getValue().getEventTypes()).isEqualTo("REPLIED,TIPPED");
+    }
+
+    /**
+     * A failure before the events are consumed still knows what it was woken for: the
+     * events offered by the queue are the best attribution available at that point.
+     */
+    @Test
+    void anEventWakeThatFailsBeforeConsumingStillRecordsTheOfferedTypes() {
+        givenPendingEvents(event(1L));
+        // The claim runs after the queue has handed the events over but before they are
+        // consumed, and it is not wrapped in a recovery path of its own.
+        when(agentMapper.claimWakeSlot(anyLong(), any(LocalDateTime.class), any(LocalDate.class),
+                any(LocalDateTime.class), anyInt())).thenThrow(new RuntimeException("deadlock"));
+
+        scheduler.tick();
+
+        ArgumentCaptor<WakeLogContext> context = ArgumentCaptor.forClass(WakeLogContext.class);
+        verify(agentActionExecutor).logAgentError(any(Agent.class), any(), eq(0L), context.capture());
+        assertThat(context.getValue().getReason()).isEqualTo("EVENT");
+        assertThat(context.getValue().getEventTypes()).isEqualTo("REPLIED");
+    }
+
+    /**
+     * A rhythm wake answers no interaction, so it records the reason and no types -
+     * rather than no reason at all.
+     */
+    @Test
+    void aFailedRhythmWakeWritesItsErrorRowWithTheWakeReason() {
+        givenRhythmCandidate();
+        org.mockito.Mockito.doThrow(new RuntimeException("gateway exploded"))
+                .when(agentWakeProcessor).wake(any(Agent.class), eq(WakeReason.RHYTHM), any(), anyBoolean());
+
+        scheduler.tick();
+
+        ArgumentCaptor<WakeLogContext> context = ArgumentCaptor.forClass(WakeLogContext.class);
+        verify(agentActionExecutor).logAgentError(any(Agent.class), any(), eq(0L), context.capture());
+        assertThat(context.getValue().getReason()).isEqualTo("RHYTHM");
+        assertThat(context.getValue().getEventTypes()).isNull();
     }
 
     /**
@@ -303,7 +366,7 @@ class AgentWakeQueueSchedulerTest {
         scheduler.tick();
 
         ArgumentCaptor<List<AgentWakeEvent>> captor = eventListCaptor();
-        verify(agentWakeProcessor).wake(any(Agent.class), eq(WakeReason.EVENT), captor.capture());
+        verify(agentWakeProcessor).wake(any(Agent.class), eq(WakeReason.EVENT), captor.capture(), anyBoolean());
         assertThat(captor.getValue()).extracting(AgentWakeEvent::getId).containsExactly(1L, 3L);
     }
 
@@ -321,7 +384,7 @@ class AgentWakeQueueSchedulerTest {
         scheduler.tick();
 
         verify(agentMapper).releaseWakeSlot(eq(AGENT_ID), any(LocalDate.class));
-        verify(agentWakeProcessor, never()).wake(any(Agent.class), eq(WakeReason.EVENT), any());
+        verify(agentWakeProcessor, never()).wake(any(Agent.class), eq(WakeReason.EVENT), any(), anyBoolean());
     }
 
     @Test
@@ -382,7 +445,7 @@ class AgentWakeQueueSchedulerTest {
 
         // the used/limit numbers come from this read, which only happens on refusal
         verify(agentMapper).findWakeSettings(AGENT_ID);
-        verify(agentWakeProcessor, never()).wake(any(Agent.class), eq(WakeReason.EVENT), any());
+        verify(agentWakeProcessor, never()).wake(any(Agent.class), eq(WakeReason.EVENT), any(), anyBoolean());
     }
 
     /**
@@ -397,7 +460,7 @@ class AgentWakeQueueSchedulerTest {
 
         scheduler.tick();
 
-        verify(agentWakeProcessor, never()).wake(any(Agent.class), eq(WakeReason.EVENT), any());
+        verify(agentWakeProcessor, never()).wake(any(Agent.class), eq(WakeReason.EVENT), any(), anyBoolean());
         verify(agentWakeEventMapper, never()).markProcessed(any(), any(LocalDateTime.class));
     }
 
@@ -425,7 +488,7 @@ class AgentWakeQueueSchedulerTest {
 
         scheduler.tick();
 
-        verify(agentWakeProcessor).wake(any(Agent.class), eq(WakeReason.RHYTHM), eq(List.of()));
+        verify(agentWakeProcessor).wake(any(Agent.class), eq(WakeReason.RHYTHM), eq(List.of()), anyBoolean());
         // rescheduled BEFORE the call, so a crash cannot leave next_wake_at in the past
         verify(agentMapper).updateNextWakeAt(eq(AGENT_ID), any(LocalDateTime.class));
     }
@@ -445,7 +508,7 @@ class AgentWakeQueueSchedulerTest {
 
         scheduler.tick();
 
-        verify(agentWakeProcessor, never()).wake(any(Agent.class), eq(WakeReason.RHYTHM), any());
+        verify(agentWakeProcessor, never()).wake(any(Agent.class), eq(WakeReason.RHYTHM), any(), anyBoolean());
         verify(agentMapper).updateNextWakeAt(eq(AGENT_ID), any(LocalDateTime.class));
         verify(agentMapper, never()).claimWakeSlot(anyLong(), any(), any(), any(), anyInt());
     }
@@ -460,7 +523,7 @@ class AgentWakeQueueSchedulerTest {
 
         scheduler.tick();
 
-        verify(agentWakeProcessor, never()).wake(any(Agent.class), eq(WakeReason.RHYTHM), any());
+        verify(agentWakeProcessor, never()).wake(any(Agent.class), eq(WakeReason.RHYTHM), any(), anyBoolean());
         verify(agentMapper).updateNextWakeAt(eq(AGENT_ID), any(LocalDateTime.class));
     }
 
@@ -477,9 +540,86 @@ class AgentWakeQueueSchedulerTest {
 
         scheduler.tick();
 
-        verify(agentWakeProcessor).wake(any(Agent.class), eq(WakeReason.EVENT), any());
-        verify(agentWakeProcessor).wake(any(Agent.class), eq(WakeReason.RHYTHM), eq(List.of()));
+        verify(agentWakeProcessor).wake(any(Agent.class), eq(WakeReason.EVENT), any(), anyBoolean());
+        verify(agentWakeProcessor).wake(any(Agent.class), eq(WakeReason.RHYTHM), eq(List.of()), anyBoolean());
         verify(agentMapper, times(2)).claimWakeSlot(anyLong(), any(), any(), any(), anyInt());
+    }
+
+    // ========== First wake of the day ==========
+
+    /**
+     * "First wake-up of the day" is read from the database AFTER the claim, never from the
+     * Agent object: the counter is incremented inside the claim statement, so the object in
+     * hand carries the pre-increment (and across midnight, a stale) value. Post-claim, the
+     * counter reading 1 is exactly what "first today" means.
+     */
+    @Test
+    void theFirstWakeOfTheDayIsReadBackAfterTheClaim() {
+        givenPendingEvents(event(1L));
+        when(agentMapper.findWakeSettings(AGENT_ID)).thenReturn(wakeSettings(1));
+
+        scheduler.tick();
+
+        verify(agentWakeProcessor).wake(any(Agent.class), eq(WakeReason.EVENT), any(), eq(true));
+    }
+
+    @Test
+    void aSecondWakeOnTheSameDayIsNotTheFirst() {
+        givenPendingEvents(event(1L));
+        when(agentMapper.findWakeSettings(AGENT_ID)).thenReturn(wakeSettings(2));
+
+        scheduler.tick();
+
+        verify(agentWakeProcessor).wake(any(Agent.class), eq(WakeReason.EVENT), any(), eq(false));
+    }
+
+    /**
+     * A counter left over from yesterday reads as zero, so the claim that just ran made it
+     * 1 - but this row still says the old date. Whatever the number, a stale date can never
+     * answer "first TODAY" with yes.
+     */
+    @Test
+    void aCounterFromAnotherDayIsNotTodaysFirst() {
+        givenPendingEvents(event(1L));
+        AgentWakeSettings stale = wakeSettings(1);
+        stale.setWakeCountDate(LocalDate.now().minusDays(1));
+        when(agentMapper.findWakeSettings(AGENT_ID)).thenReturn(stale);
+
+        scheduler.tick();
+
+        verify(agentWakeProcessor).wake(any(Agent.class), eq(WakeReason.EVENT), any(), eq(false));
+    }
+
+    /** The rhythm path decides it the same way. */
+    @Test
+    void aRhythmWakeAlsoKnowsWhetherItIsTheFirstOfTheDay() {
+        when(agentMapper.findRhythmWakeCandidates(any(LocalDateTime.class), anyInt()))
+                .thenReturn(List.of(agent(alwaysActiveHours())));
+        when(agentMapper.findWakeSettings(AGENT_ID)).thenReturn(wakeSettings(1));
+
+        scheduler.tick();
+
+        verify(agentWakeProcessor).wake(any(Agent.class), eq(WakeReason.RHYTHM), eq(List.of()), eq(true));
+    }
+
+    /** An unreadable counter answers "not the first": one skipped world block, no failure. */
+    @Test
+    void anUnreadableCounterFallsBackToNotTheFirst() {
+        givenPendingEvents(event(1L));
+        when(agentMapper.findWakeSettings(AGENT_ID)).thenThrow(new RuntimeException("db down"));
+
+        scheduler.tick();
+
+        verify(agentWakeProcessor).wake(any(Agent.class), eq(WakeReason.EVENT), any(), eq(false));
+    }
+
+    private AgentWakeSettings wakeSettings(int wakeCountToday) {
+        return AgentWakeSettings.builder()
+                .agentId(AGENT_ID)
+                .dailyWakeBudget(4)
+                .wakeCountToday(wakeCountToday)
+                .wakeCountDate(LocalDate.now())
+                .build();
     }
 
     // ========== Fixtures ==========
@@ -489,6 +629,11 @@ class AgentWakeQueueSchedulerTest {
         when(agentMapper.findAliveAgentsByIds(List.of(AGENT_ID)))
                 .thenReturn(List.of(agent(alwaysActiveHours())));
         when(agentWakeEventMapper.findPendingByAgent(eq(AGENT_ID), anyInt())).thenReturn(List.of(events));
+    }
+
+    private void givenRhythmCandidate() {
+        when(agentMapper.findRhythmWakeCandidates(any(LocalDateTime.class), anyInt()))
+                .thenReturn(List.of(agent(alwaysActiveHours())));
     }
 
     @SuppressWarnings("unchecked")
@@ -529,6 +674,13 @@ class AgentWakeQueueSchedulerTest {
         event.setActorId(7L);
         event.setStatus("PENDING");
         event.setCreatedAt(LocalDateTime.now().minusMinutes(5));
+        return event;
+    }
+
+    /** A second event of a different kind, so a merged wake-up has two types to record. */
+    private AgentWakeEvent tippedEvent(Long id) {
+        AgentWakeEvent event = event(id);
+        event.setEventType("TIPPED");
         return event;
     }
 }

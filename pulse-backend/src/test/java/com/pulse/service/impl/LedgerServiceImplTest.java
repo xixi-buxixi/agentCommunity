@@ -10,6 +10,11 @@ import com.pulse.mapper.AgentMapper;
 import com.pulse.mapper.SysLedgerMapper;
 import com.pulse.mapper.UserMapper;
 import com.pulse.service.AgentWakeEventService;
+import com.pulse.config.SchemaCapabilities;
+import com.pulse.entity.Notification;
+import com.pulse.mapper.NotificationMapper;
+import com.pulse.service.NotificationService;
+import com.pulse.service.support.AuthorResolver;
 import com.pulse.service.PointsService;
 import com.pulse.service.RateLimitService;
 import org.junit.jupiter.api.BeforeEach;
@@ -30,14 +35,17 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -68,6 +76,8 @@ class LedgerServiceImplTest {
     private PointsService pointsService;
     @Mock
     private AgentWakeEventService agentWakeEventService;
+    @Mock
+    private NotificationService notificationService;
 
     @InjectMocks
     private LedgerServiceImpl ledgerService;
@@ -116,6 +126,74 @@ class LedgerServiceImplTest {
         // updateById would rewrite pending_bounty from a stale read
         verify(userMapper, never()).updateById(any());
         // One row for the sender, one for the receiver
+        verify(sysLedgerMapper, org.mockito.Mockito.times(2)).insert(any(SysLedger.class));
+    }
+
+    // ========== Notification producer ==========
+
+    /**
+     * The agent wakes up and answers on its own; its OWNER is a different person, and
+     * without this the only trace they get is an unexplained ledger row.
+     */
+    @Test
+    void tippingNotifiesTheAgentOwnerWithTheAmountAndTheNote() {
+        when(userMapper.selectById(TIPPER_ID)).thenReturn(user(TIPPER_ID, "100.00"));
+        when(userMapper.selectById(OWNER_ID)).thenReturn(user(OWNER_ID, "50.00"));
+        when(agentMapper.selectById(AGENT_ID)).thenReturn(agent(OWNER_ID));
+        when(userMapper.deductAvailablePointsAtomic(eq(TIPPER_ID), any())).thenReturn(1);
+        when(userMapper.addPointsAtomic(eq(OWNER_ID), any())).thenReturn(1);
+
+        TipRequest request = tip("10.00");
+        request.setMessage("写得好");
+        ledgerService.tipAgent(TIPPER_ID, AGENT_ID, request);
+
+        verify(notificationService).notifyAgentTipped(OWNER_ID, AGENT_ID, "nova", TIPPER_ID,
+                new BigDecimal("10.00"), "写得好");
+    }
+
+    /**
+     * Tipping your own agent is refused before any money moves, so the owner can never
+     * be told about their own tip.
+     */
+    @Test
+    void tippingYourOwnAgentNotifiesNobody() {
+        when(userMapper.selectById(TIPPER_ID)).thenReturn(user(TIPPER_ID, "100.00"));
+        when(agentMapper.selectById(AGENT_ID)).thenReturn(agent(TIPPER_ID));
+
+        assertThatThrownBy(() -> ledgerService.tipAgent(TIPPER_ID, AGENT_ID, tip("10.00")))
+                .isInstanceOf(BusinessException.class);
+
+        verifyNoInteractions(notificationService);
+    }
+
+    /**
+     * End to end with the REAL notification service and a database that rejects the
+     * insert: the points must still move and both ledger rows must still be written.
+     */
+    @Test
+    void aFailingNotificationWriteDoesNotBreakTheTip() {
+        NotificationMapper failingMapper = mock(NotificationMapper.class);
+        when(failingMapper.insert(any(Notification.class)))
+                .thenThrow(new RuntimeException("notifications is gone"));
+        SchemaCapabilities capabilities = mock(SchemaCapabilities.class);
+        when(capabilities.isNotificationsTable()).thenReturn(true);
+
+        LedgerServiceImpl withRealNotifications = new LedgerServiceImpl(
+                sysLedgerMapper, userMapper, agentMapper, rateLimitService, pointsService,
+                agentWakeEventService,
+                new NotificationServiceImpl(failingMapper, capabilities,
+                        new AuthorResolver(userMapper, agentMapper)));
+
+        when(userMapper.selectById(TIPPER_ID)).thenReturn(user(TIPPER_ID, "100.00"));
+        when(userMapper.selectById(OWNER_ID)).thenReturn(user(OWNER_ID, "50.00"));
+        when(agentMapper.selectById(AGENT_ID)).thenReturn(agent(OWNER_ID));
+        when(userMapper.deductAvailablePointsAtomic(eq(TIPPER_ID), any())).thenReturn(1);
+        when(userMapper.addPointsAtomic(eq(OWNER_ID), any())).thenReturn(1);
+
+        assertThatCode(() -> withRealNotifications.tipAgent(TIPPER_ID, AGENT_ID, tip("10.00")))
+                .doesNotThrowAnyException();
+
+        verify(userMapper).addPointsAtomic(OWNER_ID, new BigDecimal("10.00"));
         verify(sysLedgerMapper, org.mockito.Mockito.times(2)).insert(any(SysLedger.class));
     }
 

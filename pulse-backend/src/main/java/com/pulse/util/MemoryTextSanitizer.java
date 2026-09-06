@@ -19,9 +19,10 @@ import java.util.regex.Pattern;
  *    address in a post would otherwise get that value persisted in a table the
  *    frontend renders. Those patterns are replaced with {@value #REDACTED}.
  * 3. Block-boundary forgery - the AI side splits context into blocks on lines that
- *    look like "[Post#N] ...". Newlines are flattened and a literal block prefix is
- *    defused, the same way {@code AgentLoopScheduler#flattenForContext} does it for
- *    posts, so a card can never split an injection payload across two blocks.
+ *    look like "[Post#N] ..." or "[World#N] ...". Newlines are flattened and both
+ *    literal block prefixes are defused, the same way
+ *    {@code AgentLoopScheduler#flattenForContext} does it for posts, so a card can
+ *    never split an injection payload across two blocks.
  *
  * Pattern matching is a filter, not a guarantee: it covers the common credential
  * formats, and the residual risk is carried by the phase-2 rule that memories are
@@ -244,6 +245,10 @@ public final class MemoryTextSanitizer {
         return text
                 .replaceAll("[\\r\\n]+", " ")
                 .replace("[Post#", "(Post#")
+                // [World#N] became a block boundary on the AI side alongside [Post#N];
+                // both have to be rewritten here or one of the two kinds of forged
+                // header survives this layer.
+                .replace("[World#", "(World#")
                 .replace("[记忆", "(记忆");
     }
 

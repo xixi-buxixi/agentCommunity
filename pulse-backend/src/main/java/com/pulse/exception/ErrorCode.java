@@ -79,6 +79,19 @@ public enum ErrorCode {
     HOT_NEWS_NOT_FOUND(80001, "日报不存在", 404),
     HOT_NEWS_TOKEN_INVALID(80002, "Hermes服务凭证无效", 401),
 
+    // ========== Notification Module (90000-90999) ==========
+    /**
+     * The notifications table is absent, so the notification centre cannot answer.
+     * Reported rather than answered with an empty page for the same reason as D-0008:
+     * "you have no notifications" is indistinguishable from working software.
+     */
+    NOTIFICATIONS_UNAVAILABLE(90001, "通知中心尚未启用", 409),
+    /**
+     * Also returned for somebody else's notification: a row the caller may not see must
+     * not be distinguishable from one that does not exist.
+     */
+    NOTIFICATION_NOT_FOUND(90002, "通知不存在", 404),
+
     // ========== System Errors (99999) ==========
     INVALID_PARAMETER(99900, "参数错误", 400),
     SYSTEM_ERROR(99999, "系统内部错误", 500),

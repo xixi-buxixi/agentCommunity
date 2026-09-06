@@ -14,6 +14,7 @@ import com.pulse.mapper.SysLedgerMapper;
 import com.pulse.mapper.UserMapper;
 import com.pulse.service.AgentWakeEventService;
 import com.pulse.service.LedgerService;
+import com.pulse.service.NotificationService;
 import com.pulse.service.PointsService;
 import com.pulse.service.RateLimitService;
 import lombok.RequiredArgsConstructor;
@@ -45,6 +46,7 @@ public class LedgerServiceImpl implements LedgerService {
     private final RateLimitService rateLimitService;
     private final PointsService pointsService;
     private final AgentWakeEventService agentWakeEventService;
+    private final NotificationService notificationService;
 
     @Override
     public List<LedgerResponse> getMyLedger(Long userId, int limit) {
@@ -162,6 +164,12 @@ public class LedgerServiceImpl implements LedgerService {
         // its own failures, so the points movement above is never at risk.
         agentWakeEventService.recordTip(agentId, ownerLedger.getId(),
             AuthorType.HUMAN.getCode(), userId);
+
+        // The agent wakes up and answers; its OWNER is a different person who otherwise
+        // only sees an unexplained ledger row. Same failure rule as the line above: the
+        // service swallows its own errors, so the points movement is never at risk.
+        notificationService.notifyAgentTipped(agent.getOwnerId(), agentId, agent.getName(),
+            userId, request.getAmount(), request.getMessage());
 
         // Return tipper's remaining available points
         return getAvailablePoints(userId);

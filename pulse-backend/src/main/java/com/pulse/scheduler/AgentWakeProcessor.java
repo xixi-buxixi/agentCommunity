@@ -1,12 +1,15 @@
 package com.pulse.scheduler;
 
 import com.pulse.client.LLMClient;
+import com.pulse.config.HotNewsProperties;
 import com.pulse.config.SchemaCapabilities;
 import com.pulse.dto.AgentActionDecision;
 import com.pulse.dto.AgentActionOutcome;
 import com.pulse.dto.AgentContext;
 import com.pulse.dto.AgentMemoryCard;
 import com.pulse.dto.LLMResponse;
+import com.pulse.dto.WakeLogContext;
+import com.pulse.dto.response.HotNewsReportResponse;
 import com.pulse.entity.Agent;
 import com.pulse.entity.AgentWakeEvent;
 import com.pulse.entity.Comment;
@@ -20,6 +23,7 @@ import com.pulse.mapper.CommentMapper;
 import com.pulse.mapper.PostMapper;
 import com.pulse.mapper.PostViewMapper;
 import com.pulse.service.AgentMemoryService;
+import com.pulse.service.HotNewsService;
 import com.pulse.service.support.AuthorResolver;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -60,6 +64,15 @@ public class AgentWakeProcessor {
     private static final int INTERACTION_BODY_PREVIEW = 150;
 
     /**
+     * Report date rendered inside the world block's header, where a "]" or a newline
+     * would let the value forge a block boundary. Ingested values are dates
+     * ("2026-09-06"), so anything outside this alphabet collapses to an underscore -
+     * the same stance as the actor names in the interaction lines.
+     */
+    private static final java.util.regex.Pattern UNSAFE_HEADER_META =
+            java.util.regex.Pattern.compile("[^0-9A-Za-z_:.\\-]+");
+
+    /**
      * Resolved interaction sources for one wake-up.
      *
      * A plain holder rather than three parallel maps threaded through the call chain; it
@@ -80,6 +93,8 @@ public class AgentWakeProcessor {
     private final AgentMemoryService agentMemoryService;
     private final AuthorResolver authorResolver;
     private final SchemaCapabilities schemaCapabilities;
+    private final HotNewsService hotNewsService;
+    private final HotNewsProperties hotNewsProperties;
 
     /**
      * Minimum tokens charged for a cycle that actually reached the model.
@@ -95,7 +110,27 @@ public class AgentWakeProcessor {
      * @param events interactions to answer (empty for a rhythm or legacy wake)
      */
     public void wake(Agent agent, WakeReason reason, List<AgentWakeEvent> events) {
+        wake(agent, reason, events, false);
+    }
+
+    /**
+     * Wake an agent and let it act.
+     *
+     * @param reason         why it is being woken; only affects logging and prompt framing
+     * @param events         interactions to answer (empty for a rhythm or legacy wake)
+     * @param firstWakeToday whether this is the agent's first wake-up of the day. Decided
+     *                       by the queue scheduler, which is the only place that can know
+     *                       it: the daily counter is incremented inside the atomic slot
+     *                       claim, so the Agent object read before the claim still carries
+     *                       yesterday's - or a stale - number. The legacy batch never sets
+     *                       it, which is also what keeps the world block out of legacy mode.
+     */
+    public void wake(Agent agent, WakeReason reason, List<AgentWakeEvent> events,
+                     boolean firstWakeToday) {
         log.debug("Waking agent: id={}, name={}, reason={}", agent.getId(), agent.getName(), reason);
+
+        // Why this agent is awake, recorded on every audit row this cycle writes.
+        WakeLogContext wakeContext = WakeLogContext.of(reason, events);
 
         // Stamp the dispatch time first: findRandomActiveAgents orders by it, so
         // stamping before the (slow) LLM call keeps the round-robin honest even if
@@ -124,7 +159,7 @@ public class AgentWakeProcessor {
         Set<Long> triggeringPostIds = sources.postIds;
 
         // Step 3: Build context from latest posts (plus memories and interactions)
-        AgentContext context = buildAgentContext(agent, events, sources);
+        AgentContext context = buildAgentContext(agent, events, sources, reason, firstWakeToday);
 
         // Step 4: Call LLM for decision (no transaction held here)
         LLMResponse llmResponse = llmClient.callLLM(agent, context);
@@ -134,7 +169,7 @@ public class AgentWakeProcessor {
             // The upstream model may already have run and billed the user, so this
             // cycle is not free: charge the floor instead of nothing.
             agentActionExecutor.chargeTokensOnly(agent, minTokenCharge,
-                    "LLM_CALL_FAILED: " + llmResponse.getErrorMessage());
+                    "LLM_CALL_FAILED: " + llmResponse.getErrorMessage(), wakeContext);
             return;
         }
 
@@ -146,13 +181,14 @@ public class AgentWakeProcessor {
         long tokensCharged = resolveTokenCharge(llmResponse);
 
         if (decisions.isEmpty()) {
-            agentActionExecutor.chargeTokensOnly(agent, tokensCharged, "NO_ACTIONABLE_DECISION");
+            agentActionExecutor.chargeTokensOnly(agent, tokensCharged, "NO_ACTIONABLE_DECISION",
+                    wakeContext);
             return;
         }
 
         // Steps 5-7 in a single transaction
         List<AgentActionOutcome> outcomes = agentActionExecutor.applyDecisions(
-                agent, decisions, tokensCharged, triggeringPostIds);
+                agent, decisions, tokensCharged, triggeringPostIds, wakeContext);
 
         // Step 8: structured memory cards, deliberately AFTER the commit above.
         // Inside the transaction a card could reference a rolled-back post, and a
@@ -186,7 +222,8 @@ public class AgentWakeProcessor {
      * so LLM can return correct target_post_id for reply actions.
      */
     private AgentContext buildAgentContext(Agent agent, List<AgentWakeEvent> events,
-                                           InteractionSources sources) {
+                                           InteractionSources sources, WakeReason reason,
+                                           boolean firstWakeToday) {
         // Fetch posts excluding those already commented by this agent
         List<Post> latestPosts = postMapper.findLatestPostsForAgent(5, agent.getId());
 
@@ -220,6 +257,11 @@ public class AgentWakeProcessor {
             // Record agent view for this post (unique count per agent)
             recordAgentView(agent, post);
         }
+
+        // The world block goes AFTER the posts, as its own block: it is a system push, not
+        // something anyone said in the community, and the gateway must be able to
+        // neutralise it without touching a single post.
+        appendWorldBlock(postsContext, reason, firstWakeToday);
 
         List<AgentMemoryCard> memories = selectMemories(agent);
 
@@ -306,6 +348,85 @@ public class AgentWakeProcessor {
         } catch (Exception e) {
             log.warn("Could not render triggering post {}: {}", postId, e.getMessage());
         }
+    }
+
+    /**
+     * Append today's report as one [World#N] block, when all three conditions hold.
+     *
+     * 1. The feature is switched on. Off by default: it changes what every agent talks
+     *    about and costs tokens on each injection.
+     * 2. This is a queue-mode wake-up. The legacy batch wakes the same agents over and
+     *    over on a fixed interval with no per-agent day counter, so "first wake-up of the
+     *    day" has no meaning there and the block would be injected on every batch.
+     * 3. It is this agent's first wake-up today. The report is a daily thing; repeating it
+     *    on every wake-up would spend tokens re-telling an agent what it already read.
+     *
+     * A missing report, or an unreachable one, is not a reason to skip a wake-up: it is
+     * logged and the agent wakes up with the community timeline alone.
+     */
+    private void appendWorldBlock(StringBuilder target, WakeReason reason, boolean firstWakeToday) {
+        HotNewsProperties.Context config = hotNewsProperties.getContext();
+        if (config == null || !config.isEnabled()) {
+            return;
+        }
+        // firstWakeToday can only be true in queue mode (the legacy batch never sets it),
+        // but the reason is checked as well so the rule survives a future caller.
+        if (reason == WakeReason.LEGACY_BATCH || !firstWakeToday) {
+            return;
+        }
+        try {
+            HotNewsReportResponse report = hotNewsService.getLatest();
+            if (report == null) {
+                return;
+            }
+            String body = flattenForContext(joinReportBody(report));
+            if (body.isBlank()) {
+                log.warn("Daily report has no title or summary to inject: reportId={}",
+                        report.getReportId());
+                return;
+            }
+            int maxChars = config.getMaxChars() > 0 ? config.getMaxChars() : 600;
+            if (body.length() > maxChars) {
+                body = body.substring(0, maxChars);
+            }
+            target.append(String.format("[World#%s] [SYSTEM 今日日报 %s]: %s%n",
+                    report.getReportId() != null ? report.getReportId() : 0,
+                    safeHeaderMeta(report.getReportDate()),
+                    body));
+        } catch (Exception e) {
+            // No report today, or the cache and the database are both unavailable. An
+            // agent without the news is a slightly less informed agent, not a broken one.
+            log.warn("Could not inject the daily report into the wake context: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * The report body as "<title>。<summary>", skipping the separator when one half is
+     * missing so a report without a summary does not end in a dangling full stop.
+     */
+    private String joinReportBody(HotNewsReportResponse report) {
+        String title = report.getTitle() != null ? report.getTitle().trim() : "";
+        String summary = report.getSummary() != null ? report.getSummary().trim() : "";
+        if (title.isEmpty()) {
+            return summary;
+        }
+        if (summary.isEmpty()) {
+            return title;
+        }
+        return title + "。" + summary;
+    }
+
+    /**
+     * A value safe to interpolate into a block header. Same stance as
+     * {@link #safeActorName}: the header is system-generated scaffolding, so nothing that
+     * reaches it may contain a bracket, a colon-free separator or a newline.
+     */
+    private String safeHeaderMeta(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return "-";
+        }
+        String cleaned = UNSAFE_HEADER_META.matcher(raw.trim()).replaceAll("_");
+        return cleaned.isEmpty() ? "-" : truncate(cleaned, 32);
     }
 
     private String truncate(String text, int maxLength) {
@@ -494,6 +615,9 @@ public class AgentWakeProcessor {
         }
         return content
                 .replaceAll("[\\r\\n]+", " ")
-                .replace("[Post#", "(Post#");
+                .replace("[Post#", "(Post#")
+                // Same reason, for the world block header the gateway also treats as a
+                // boundary: no piece of untrusted text may be able to open one.
+                .replace("[World#", "(World#");
     }
 }

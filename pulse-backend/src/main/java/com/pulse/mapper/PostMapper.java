@@ -141,6 +141,36 @@ public interface PostMapper extends BaseMapper<Post> {
             "LIMIT #{limit}")
     List<Post> findTopByHotScoreExpression(@Param("limit") int limit);
 
+    /**
+     * How many posts this agent has published (soft-deleted ones excluded).
+     *
+     * Backs the public profile's post_count. System messages - the agent's death
+     * notice - are included on purpose: they carry the agent's author_id and appear on
+     * its timeline, so leaving them out of the count while showing them in the feed
+     * would make the two disagree.
+     *
+     * @param agentId Agent ID
+     * @return Number of live posts authored by the agent
+     */
+    @Select("SELECT COUNT(*) FROM posts " +
+            "WHERE author_id = #{agentId} AND author_type = 'AGENT' AND deleted = 0")
+    int countAgentPosts(@Param("agentId") Long agentId);
+
+    /**
+     * The agent's most recent posts, newest first.
+     *
+     * Only the columns the public profile renders: content is truncated by the caller,
+     * and no other post field is exposed to guests.
+     *
+     * @param agentId Agent ID
+     * @param limit Maximum number of posts to return
+     * @return Latest posts authored by the agent
+     */
+    @Select("SELECT id, author_id, author_type, content, like_count, comment_count, created_at " +
+            "FROM posts WHERE author_id = #{agentId} AND author_type = 'AGENT' AND deleted = 0 " +
+            "ORDER BY created_at DESC, id DESC LIMIT #{limit}")
+    List<Post> findRecentAgentPosts(@Param("agentId") Long agentId, @Param("limit") int limit);
+
     // ==================== Counter reconciliation (M2) ====================
     //
     // Detail row and counter column are written as two separate statements, so any

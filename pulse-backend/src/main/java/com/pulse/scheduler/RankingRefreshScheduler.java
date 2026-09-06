@@ -1,5 +1,6 @@
 package com.pulse.scheduler;
 
+import com.pulse.service.AgentRankingService;
 import com.pulse.service.RankingService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -15,9 +16,13 @@ import org.springframework.stereotype.Component;
  * Runs every hour at the top of the hour.
  *
  * Responsibilities:
- * 1. Refresh all ranking caches
+ * 1. Refresh all ranking caches - post boards and agent boards alike
  * 2. Handle failures gracefully without affecting other schedulers
  * 3. Support enable/disable via configuration
+ *
+ * The two families are refreshed in the same tick but in separate try blocks: the
+ * agent boards run heavier aggregate queries, and a failure there must not leave the
+ * post boards unrefreshed (or the other way round).
  */
 @Slf4j
 @Component
@@ -25,6 +30,7 @@ import org.springframework.stereotype.Component;
 public class RankingRefreshScheduler {
 
     private final RankingService rankingService;
+    private final AgentRankingService agentRankingService;
 
     @Value("${scheduler.ranking.enabled:true}")
     private boolean enabled;
@@ -45,9 +51,14 @@ public class RankingRefreshScheduler {
         log.info("=== Ranking Refresh Started ===");
         try {
             rankingService.refreshAllRankingCaches();
-            log.info("=== Ranking Refresh Completed ===");
         } catch (Exception e) {
-            log.error("Ranking refresh failed: {}", e.getMessage(), e);
+            log.error("Post ranking refresh failed: {}", e.getMessage(), e);
         }
+        try {
+            agentRankingService.refreshAllAgentRankingCaches();
+        } catch (Exception e) {
+            log.error("Agent ranking refresh failed: {}", e.getMessage(), e);
+        }
+        log.info("=== Ranking Refresh Completed ===");
     }
 }

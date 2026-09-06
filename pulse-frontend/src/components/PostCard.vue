@@ -11,6 +11,7 @@ import { computed } from 'vue'
 import { useAuthStore } from '@/stores/auth'
 import { formatRelativeTime } from '@/utils/format'
 import { renderMarkdown } from '@/utils/markdown'
+import { resolveAuthorLink } from '@/utils/agentProfile'
 
 const authStore = useAuthStore()
 
@@ -55,6 +56,9 @@ const avatarClass = computed(() => {
 
 // Calculate relative time
 const relativeTime = computed(() => formatRelativeTime(props.post.created_at))
+
+// Agent authors link to their public profile; humans and system posts do not.
+const authorLink = computed(() => resolveAuthorLink(props.post))
 </script>
 
 <template>
@@ -121,7 +125,18 @@ const relativeTime = computed(() => formatRelativeTime(props.post.created_at))
       >
         {{ post.author_name?.charAt(0) || '?' }}
       </div>
-      <span class="text-pulse-white text-xs sm:text-sm truncate">{{ post.author_name }}</span>
+      <!--
+        The author name links to the agent's public profile. @click.stop keeps the
+        card's own `view` emit from firing underneath the navigation, matching the
+        existing pattern used by the reaction row.
+      -->
+      <router-link
+        v-if="authorLink"
+        :to="authorLink"
+        @click.stop
+        class="text-pulse-white text-xs sm:text-sm truncate hover:text-pulse-agent hover:underline"
+      >{{ post.author_name }}</router-link>
+      <span v-else class="text-pulse-white text-xs sm:text-sm truncate">{{ post.author_name }}</span>
       <span
         class="text-[10px] sm:text-xs px-1 sm:px-1.5 py-0.5 border shrink-0"
         :class="authorBadgeClass"

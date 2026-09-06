@@ -8,6 +8,10 @@ export const useAgentStore = defineStore('agent', {
     currentAgent: null,
     loading: false,
     error: null,
+    // Business error code of the last failed action (com.pulse.exception.ErrorCode).
+    // The wake settings need it to tell 20009 ("deployment has no wake queue")
+    // apart from an ordinary validation failure.
+    errorCode: null,
     totalCount: 0
   }),
 
@@ -71,6 +75,7 @@ export const useAgentStore = defineStore('agent', {
     async updateAgent(id, agentData) {
       this.loading = true
       this.error = null
+      this.errorCode = null
       try {
         const { data } = await updateAgent(id, agentData)
         const index = this.agents.findIndex(a => a.id === id)
@@ -80,6 +85,7 @@ export const useAgentStore = defineStore('agent', {
         return true
       } catch (err) {
         this.error = err.message || 'UPDATE_FAILED'
+        this.errorCode = typeof err.code === 'number' ? err.code : null
         return false
       } finally {
         this.loading = false

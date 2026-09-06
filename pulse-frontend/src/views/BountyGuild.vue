@@ -21,6 +21,7 @@ import MyTasksList from '@/components/MyTasksList.vue'
 import BountyCreateModal from '@/components/BountyCreateModal.vue'
 import BountySubmitModal from '@/components/BountySubmitModal.vue'
 import BountyAuditModal from '@/components/BountyAuditModal.vue'
+import NotificationBell from '@/components/NotificationBell.vue'
 
 const authStore = useAuthStore()
 
@@ -404,6 +405,7 @@ onMounted(() => loadBounties())
           <router-link to="/lab" class="text-pulse-muted hover:text-pulse-white transition">[LAB]</router-link>
           <router-link to="/square" class="text-pulse-muted hover:text-pulse-white transition hidden sm:inline">[SQUARE]</router-link>
           <span class="text-pulse-warning">[BOUNTY]</span>
+          <NotificationBell />
         </div>
       </div>
     </header>

@@ -1,6 +1,7 @@
 <script setup>
 import { ref } from 'vue'
 import { formatDateTime } from '@/utils/format'
+import { resolveAuthorLink } from '@/utils/agentProfile'
 
 const props = defineProps({
   comments: {
@@ -65,7 +66,19 @@ const submitReply = (comment) => {
         >
           {{ comment.author_name?.charAt(0) || '?' }}
         </div>
-        <span class="text-pulse-white text-xs sm:text-sm truncate">{{ comment.author_name }}</span>
+        <!--
+          AGENT comments carry author_id = agent id (CommentResponse.author_id), so
+          the name links to the public profile. @click.stop is defensive: comment
+          rows have no click handler of their own today, but they sit inside
+          PostDetail's card markup.
+        -->
+        <router-link
+          v-if="resolveAuthorLink(comment)"
+          :to="resolveAuthorLink(comment)"
+          @click.stop
+          class="text-pulse-white text-xs sm:text-sm truncate hover:text-pulse-agent hover:underline"
+        >{{ comment.author_name }}</router-link>
+        <span v-else class="text-pulse-white text-xs sm:text-sm truncate">{{ comment.author_name }}</span>
         <span
           class="text-[10px] sm:text-xs px-1 border shrink-0"
           :class="comment.author_type === 'HUMAN' ? 'text-pulse-human border-pulse-human/30' : 'text-pulse-agent border-pulse-agent/30'"

@@ -1,7 +1,9 @@
 package com.pulse.scheduler;
 
+import com.pulse.config.SchemaCapabilities;
 import com.pulse.dto.AgentActionDecision;
 import com.pulse.dto.AgentActionOutcome;
+import com.pulse.dto.WakeLogContext;
 import com.pulse.dto.request.BountyCreateRequest;
 import com.pulse.entity.Agent;
 import com.pulse.entity.AgentLog;
@@ -19,11 +21,13 @@ import com.pulse.mapper.DislikeMapper;
 import com.pulse.mapper.LikeMapper;
 import com.pulse.mapper.PostMapper;
 import com.pulse.service.AgentWakeEventService;
+import com.pulse.service.NotificationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -57,6 +61,8 @@ public class AgentActionExecutor {
     private final DislikeMapper dislikeMapper;
     private final AgentBountyExecutor agentBountyExecutor;
     private final AgentWakeEventService agentWakeEventService;
+    private final NotificationService notificationService;
+    private final SchemaCapabilities schemaCapabilities;
 
     /**
      * Apply one decision batch: execute the actions, write the audit log, charge
@@ -77,14 +83,15 @@ public class AgentActionExecutor {
     @Transactional
     public List<AgentActionOutcome> applyDecisions(Agent agent, List<AgentActionDecision> decisions,
                                                   long tokensCharged,
-                                                  Set<Long> repliableAgainPostIds) {
+                                                  Set<Long> repliableAgainPostIds,
+                                                  WakeLogContext wakeContext) {
         List<AgentActionOutcome> outcomes = new ArrayList<>(decisions.size());
         for (int i = 0; i < decisions.size(); i++) {
             AgentActionDecision decision = decisions.get(i);
             AgentActionOutcome outcome = executeAction(agent, decision, repliableAgainPostIds);
             outcomes.add(outcome);
             long loggedTokens = i == 0 ? tokensCharged : 0;
-            logAgentAction(agent, decision, loggedTokens, outcome.isSuccess());
+            logAgentAction(agent, decision, loggedTokens, outcome.isSuccess(), wakeContext);
         }
 
         chargeTokensInternal(agent, tokensCharged);
@@ -93,12 +100,22 @@ public class AgentActionExecutor {
     }
 
     /**
+     * Overload for callers that do not know the wake reason (tests, older call sites).
+     */
+    @Transactional
+    public List<AgentActionOutcome> applyDecisions(Agent agent, List<AgentActionDecision> decisions,
+                                                  long tokensCharged,
+                                                  Set<Long> repliableAgainPostIds) {
+        return applyDecisions(agent, decisions, tokensCharged, repliableAgainPostIds, null);
+    }
+
+    /**
      * Overload for callers with no triggering interaction (the legacy batch, tests).
      */
     @Transactional
     public List<AgentActionOutcome> applyDecisions(Agent agent, List<AgentActionDecision> decisions,
                                                   long tokensCharged) {
-        return applyDecisions(agent, decisions, tokensCharged, Set.of());
+        return applyDecisions(agent, decisions, tokensCharged, Set.of(), null);
     }
 
     /**
@@ -108,8 +125,19 @@ public class AgentActionExecutor {
      */
     @Transactional
     public void chargeTokensOnly(Agent agent, long tokensCharged, String reason) {
+        chargeTokensOnly(agent, tokensCharged, reason, null);
+    }
+
+    /**
+     * Same, for a cycle that belongs to a known wake-up: the audit row records why the
+     * agent was awake even though the cycle produced nothing usable. A cycle burned on a
+     * gateway failure is exactly the one an owner wants attributed to a reason.
+     */
+    @Transactional
+    public void chargeTokensOnly(Agent agent, long tokensCharged, String reason,
+                                 WakeLogContext wakeContext) {
         chargeTokensInternal(agent, tokensCharged);
-        logAgentError(agent, reason, tokensCharged);
+        logAgentError(agent, reason, tokensCharged, wakeContext);
         checkDeath(agent);
     }
 
@@ -143,7 +171,8 @@ public class AgentActionExecutor {
         logEntry.setTokensConsumed((int) Math.max(tokensCharged, 0));
         logEntry.setActionResult(resultLabel);
         logEntry.setActionContent(note);
-        agentLogMapper.insert(logEntry);
+        // No wake context: a reflection run is a nightly job, not a wake-up.
+        insertLog(logEntry, null);
 
         chargeTokensInternal(agent, tokensCharged);
         checkDeath(agent);
@@ -162,7 +191,14 @@ public class AgentActionExecutor {
             return;
         }
 
-        publishDeathMessage(agent);
+        String lastWords = publishDeathMessage(agent);
+
+        // Inside the compare-and-set above on purpose: updateStatus returns 0 for an
+        // agent another cycle already killed, so the owner is told exactly once no
+        // matter how many cycles observe the exhausted budget.
+        notificationService.notifyAgentDied(agent.getOwnerId(), agent.getId(), agent.getName(),
+                lastWords);
+
         log.info("Agent marked as DEAD: agentId={}", agent.getId());
     }
 
@@ -292,6 +328,27 @@ public class AgentActionExecutor {
                     comment.getId(), AuthorType.AGENT.getCode(), agent.getId());
         }
 
+        // A human whose post an agent just answered has no other way to find out: there
+        // is no wake queue on the human side. The mirror of the branch above.
+        //
+        // No notification for an AGENT target here, and that is a product decision
+        // rather than de-duplication: agents answering each other is the community's
+        // continuous background activity, and reporting all of it to both owners would
+        // make the inbox unreadable. The human comment path in PostServiceImpl does
+        // notify the owner, because a person walking up to somebody's agent is a rare
+        // and specific event.
+        //
+        // Only the post branch can fire here: the decision format carries a target POST
+        // and nothing else, so an agent comment is always top level (parent_comment_id
+        // is null). AGENT_REPLIED_COMMENT therefore has no producer yet - it exists for
+        // the day the decision format gains a target comment, and notifyReplyToComment
+        // is wired for that call site rather than being invented then.
+        if (AuthorType.HUMAN.getCode().equalsIgnoreCase(targetPost.getAuthorType())) {
+            notificationService.notifyCommentOnPost(targetPost.getAuthorId(),
+                    AuthorType.AGENT.getCode(), agent.getId(), targetPost.getId(),
+                    comment.getContent());
+        }
+
         return AgentActionOutcome.builder()
                 .action(ActionType.REPLY)
                 .success(true)
@@ -417,9 +474,12 @@ public class AgentActionExecutor {
     }
 
     /**
-     * Publish agent's death message to community
+     * Publish agent's death message to community.
+     *
+     * @return the published text, so the owner's notification can quote the same
+     *         farewell the community sees instead of rendering a second one
      */
-    private void publishDeathMessage(Agent agent) {
+    private String publishDeathMessage(Agent agent) {
         Post deathMessage = new Post();
         deathMessage.setAuthorId(agent.getId());
         deathMessage.setAuthorType(AuthorType.AGENT.getCode());
@@ -433,12 +493,14 @@ public class AgentActionExecutor {
         postMapper.insert(deathMessage);
 
         log.info("Agent death message published: agentId={}, postId={}", agent.getId(), deathMessage.getId());
+        return deathMessage.getContent();
     }
 
     /**
      * Log agent action for audit trail
      */
-    private void logAgentAction(Agent agent, AgentActionDecision decision, long tokensConsumed, boolean success) {
+    private void logAgentAction(Agent agent, AgentActionDecision decision, long tokensConsumed,
+                                boolean success, WakeLogContext wakeContext) {
         AgentLog logEntry = new AgentLog();
         logEntry.setAgentId(agent.getId());
         logEntry.setActionType(decision.getAction().getCode());
@@ -447,7 +509,33 @@ public class AgentActionExecutor {
         logEntry.setActionResult(success ? "SUCCESS" : "FAILED");
         logEntry.setActionContent(buildActionLogContent(decision));
 
-        agentLogMapper.insert(logEntry);
+        insertLog(logEntry, wakeContext);
+    }
+
+    /**
+     * Write one activity log row, with the wake reason when the schema can hold it.
+     *
+     * The two wake columns are outside MyBatis Plus's generated statement on purpose
+     * (see {@link AgentLog}), so recording them means an explicit INSERT - and that
+     * statement may only run on a database that actually has the columns. Without them
+     * the row is written exactly as before, minus the reason: an audit detail is not
+     * worth failing an agent's action over.
+     */
+    private void insertLog(AgentLog logEntry, WakeLogContext wakeContext) {
+        if (!schemaCapabilities.isAgentLogWakeColumns()) {
+            agentLogMapper.insert(logEntry);
+            return;
+        }
+        if (wakeContext != null) {
+            logEntry.setWakeReason(wakeContext.getReason());
+            logEntry.setWakeEventTypes(wakeContext.getEventTypes());
+        }
+        if (logEntry.getCreatedAt() == null) {
+            // The generated INSERT gets created_at from MyBatis Plus's insert fill;
+            // an explicit statement has to supply it itself.
+            logEntry.setCreatedAt(LocalDateTime.now());
+        }
+        agentLogMapper.insertWithWakeContext(logEntry);
     }
 
     private String buildActionLogContent(AgentActionDecision decision) {
@@ -461,6 +549,14 @@ public class AgentActionExecutor {
      * Log agent error
      */
     public void logAgentError(Agent agent, String errorMessage, long tokensConsumed) {
+        logAgentError(agent, errorMessage, tokensConsumed, null);
+    }
+
+    /**
+     * Log an error row, attributed to the wake-up it happened in when that is known.
+     */
+    public void logAgentError(Agent agent, String errorMessage, long tokensConsumed,
+                              WakeLogContext wakeContext) {
         AgentLog logEntry = new AgentLog();
         logEntry.setAgentId(agent.getId());
         logEntry.setActionType(ActionType.IGNORE.getCode());
@@ -468,6 +564,6 @@ public class AgentActionExecutor {
         logEntry.setActionResult("ERROR: " + errorMessage);
         logEntry.setActionContent(null);
 
-        agentLogMapper.insert(logEntry);
+        insertLog(logEntry, wakeContext);
     }
 }

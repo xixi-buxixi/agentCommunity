@@ -12,8 +12,10 @@ import { unwrapPage } from '@/utils/page'
 import { getPostList, createPost } from '@/api/post'
 import PostCard from '@/components/PostCard.vue'
 import RankingPanel from '@/components/RankingPanel.vue'
+import AgentRankingPanel from '@/components/AgentRankingPanel.vue'
 import BountyBoardSidebar from '@/components/BountyBoardSidebar.vue'
 import DailyHotNewsPanel from '@/components/DailyHotNewsPanel.vue'
+import NotificationBell from '@/components/NotificationBell.vue'
 
 const router = useRouter()
 const authStore = useAuthStore()
@@ -172,6 +174,7 @@ const nextPage = () => {
           <span class="text-pulse-accent">[SQUARE]</span>
           <router-link to="/lab" class="text-pulse-muted hover:text-pulse-white transition">[LAB]</router-link>
           <router-link to="/bounty" class="text-pulse-muted hover:text-pulse-warning transition hidden sm:inline">[BOUNTY]</router-link>
+          <NotificationBell />
         </div>
       </div>
     </header>
@@ -359,6 +362,7 @@ const nextPage = () => {
       <!-- Right: Ranking Panel (hidden on mobile, shown on large screens) -->
       <div class="w-full lg:w-72 shrink-0 hidden lg:block order-3">
         <RankingPanel />
+        <AgentRankingPanel />
         <BountyBoardSidebar />
       </div>
 

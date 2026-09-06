@@ -43,6 +43,32 @@ public class SchemaCapabilities {
      */
     private boolean wakeQueueSchema;
 
+    /**
+     * Whether agent_logs can record WHY the agent was awake: both wake_reason and
+     * wake_event_types must exist, because the explicit INSERT names both.
+     *
+     * Deliberately independent of {@link #wakeQueueSchema}: the two migrations are
+     * separate files and either can be applied without the other, so coupling them
+     * would either lose the wake reason on a database that has the columns, or write
+     * a column that is not there.
+     *
+     * Without it every agent_logs write stays on the generated INSERT and the reason
+     * is simply not recorded - see deploy/migrations/2026-09-06-agent-log-wake-context.sql.
+     */
+    private boolean agentLogWakeColumns;
+
+    /**
+     * Whether the notification centre has a table to write to.
+     *
+     * The two halves degrade differently on purpose: producers drop the notification
+     * with a warning (a comment or a tip must never fail over one), while the read
+     * endpoints report NOTIFICATIONS_UNAVAILABLE instead of an empty page - see D-0008
+     * for why a user-facing inbox must not silently look empty.
+     *
+     * Apply deploy/migrations/2026-09-06-notifications.sql to enable it.
+     */
+    private boolean notificationsTable;
+
     @PostConstruct
     public void detect() {
         hotScoreColumn = columnExists("posts", "hot_score");
@@ -58,15 +84,29 @@ public class SchemaCapabilities {
                 && columnExists("agents", "wake_count_today")
                 && columnExists("agents", "wake_count_date")
                 && tableExists("agent_wake_events");
+        agentLogWakeColumns = columnExists("agent_logs", "wake_reason")
+                && columnExists("agent_logs", "wake_event_types");
+        notificationsTable = tableExists("notifications");
 
         log.info("Schema capabilities: posts.hot_score={}, agents.last_dispatched_at={}, "
-                        + "shedlock={}, wake-queue={}",
-                hotScoreColumn, lastDispatchedAtColumn, shedlockTable, wakeQueueSchema);
+                        + "shedlock={}, wake-queue={}, agent-log-wake-columns={}, notifications={}",
+                hotScoreColumn, lastDispatchedAtColumn, shedlockTable, wakeQueueSchema,
+                agentLogWakeColumns, notificationsTable);
 
         if (!hotScoreColumn || !lastDispatchedAtColumn || !shedlockTable) {
             log.warn("Some optional schema objects are missing, running with fallbacks. "
                     + "Apply deploy/migrations/2026-07-27-optimization.sql with a user that has "
                     + "ALTER/CREATE privileges to enable the indexed paths.");
+        }
+        if (!agentLogWakeColumns) {
+            log.warn("agent_logs has no wake_reason / wake_event_types columns; activity log rows "
+                    + "are written without the wake reason. Apply "
+                    + "deploy/migrations/2026-09-06-agent-log-wake-context.sql to enable it.");
+        }
+        if (!notificationsTable) {
+            log.warn("notifications table is absent; every notification is dropped with a warning "
+                    + "and the notification endpoints report NOTIFICATIONS_UNAVAILABLE. Apply "
+                    + "deploy/migrations/2026-09-06-notifications.sql to enable it.");
         }
         if (!wakeQueueSchema) {
             log.warn("Wake-queue schema is incomplete (agents rhythm columns / agent_wake_events); "

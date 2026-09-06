@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.pulse.dto.request.CommentCreateRequest;
 import com.pulse.dto.response.CommentResponse;
+import com.pulse.entity.Agent;
 import com.pulse.entity.Comment;
 import com.pulse.entity.Post;
 import com.pulse.entity.User;
@@ -18,6 +19,10 @@ import com.pulse.mapper.PostMapper;
 import com.pulse.mapper.PostViewMapper;
 import com.pulse.mapper.UserMapper;
 import com.pulse.service.AgentWakeEventService;
+import com.pulse.config.SchemaCapabilities;
+import com.pulse.entity.Notification;
+import com.pulse.mapper.NotificationMapper;
+import com.pulse.service.NotificationService;
 import com.pulse.service.support.AuthorResolver;
 import org.junit.jupiter.api.Test;
 
@@ -43,6 +48,7 @@ class PostServiceImplTest {
     private final AgentMapper agentMapper = mock(AgentMapper.class);
     private final AuthorResolver authorResolver = new AuthorResolver(userMapper, agentMapper);
     private final AgentWakeEventService agentWakeEventService = mock(AgentWakeEventService.class);
+    private final NotificationService notificationService = mock(NotificationService.class);
 
     private final PostServiceImpl service = new PostServiceImpl(
             postMapper,
@@ -53,7 +59,8 @@ class PostServiceImplTest {
             userMapper,
             agentMapper,
             authorResolver,
-            agentWakeEventService
+            agentWakeEventService,
+            notificationService
     );
 
     @Test
@@ -207,6 +214,170 @@ class PostServiceImplTest {
         service.createComment(20L, 88L, commentRequest("普通评论", null));
 
         verifyNoInteractions(agentWakeEventService);
+    }
+
+    // ========== Notification producers ==========
+
+    /**
+     * The mirror of the wake queue for the human side: a person whose post was
+     * commented on has no scheduler bringing them back, so this row is the only thing
+     * that tells them.
+     */
+    @Test
+    void commentingOnAHumanPostNotifiesThePostAuthor() {
+        when(postMapper.selectById(88L)).thenReturn(humanPost(88L, 10L));
+        when(userMapper.selectById(20L)).thenReturn(user(20L, "bob"));
+
+        service.createComment(20L, 88L, commentRequest("我有不同看法", null));
+
+        verify(notificationService).notifyCommentOnPost(10L, AuthorType.HUMAN.getCode(), 20L,
+                88L, "我有不同看法");
+    }
+
+    @Test
+    void replyingToAHumanCommentNotifiesTheCommentAuthor() {
+        when(postMapper.selectById(88L)).thenReturn(humanPost(88L, 10L));
+        when(userMapper.selectById(20L)).thenReturn(user(20L, "bob"));
+        when(commentMapper.selectById(5L)).thenReturn(topLevelComment(5L, 88L, 10L));
+
+        service.createComment(20L, 88L, commentRequest("同意你的说法", 5L));
+
+        verify(notificationService).notifyReplyToComment(10L, AuthorType.HUMAN.getCode(), 20L,
+                88L, "同意你的说法");
+    }
+
+    /**
+     * The owner of an agent has no other way of hearing that a person walked up to it.
+     *
+     * The wake event that the same comment produces goes to the AGENT, and the agent's
+     * answer is delivered to whoever it is replying to - here the agent's own post. So
+     * the owner used to receive nothing at all, not the duplicate the old comment
+     * claimed to be avoiding.
+     */
+    @Test
+    void commentingOnAnAgentPostNotifiesTheOwner() {
+        when(postMapper.selectById(88L)).thenReturn(agentPost(88L, 30L));
+        when(userMapper.selectById(20L)).thenReturn(user(20L, "bob"));
+        when(agentMapper.selectById(30L)).thenReturn(agent(30L, "Nova", 10L));
+
+        service.createComment(20L, 88L, commentRequest("有意思", null));
+
+        verify(notificationService).notifyCommentOnAgentPost(10L, 20L, 88L, "Nova", "有意思");
+    }
+
+    @Test
+    void replyingToAnAgentCommentNotifiesTheOwner() {
+        when(postMapper.selectById(88L)).thenReturn(humanPost(88L, 10L));
+        when(userMapper.selectById(20L)).thenReturn(user(20L, "bob"));
+        Comment agentComment = topLevelComment(5L, 88L, 30L);
+        agentComment.setAuthorType(AuthorType.AGENT.getCode());
+        when(commentMapper.selectById(5L)).thenReturn(agentComment);
+        when(agentMapper.selectById(30L)).thenReturn(agent(30L, "Nova", 11L));
+
+        service.createComment(20L, 88L, commentRequest("我不同意", 5L));
+
+        verify(notificationService).notifyReplyToAgentComment(11L, 20L, 88L, "Nova", "我不同意");
+    }
+
+    /**
+     * An agent that no longer resolves produces no notification rather than a null
+     * recipient - the comment itself still stands.
+     */
+    @Test
+    void anUnresolvableAgentAuthorNotifiesNobody() {
+        when(postMapper.selectById(88L)).thenReturn(agentPost(88L, 30L));
+        when(userMapper.selectById(20L)).thenReturn(user(20L, "bob"));
+        when(agentMapper.selectById(30L)).thenReturn(null);
+
+        service.createComment(20L, 88L, commentRequest("有意思", null));
+
+        verifyNoInteractions(notificationService);
+    }
+
+    /**
+     * The owner replying to their own agent's comment writes nothing.
+     *
+     * Run against the REAL notification service, because the guard that drops it is the
+     * shared "never tell somebody about their own action" rule inside it - the point of
+     * the test is that the new call site is covered by that rule rather than having to
+     * restate it.
+     *
+     * (The top-level case cannot arise: commenting directly on your own agent's post is
+     * refused upstream with SELF_POST_DIRECT_COMMENT_FORBIDDEN.)
+     */
+    @Test
+    void theOwnerReplyingToTheirOwnAgentIsNotNotified() {
+        NotificationMapper notificationMapper = mock(NotificationMapper.class);
+        SchemaCapabilities capabilities = mock(SchemaCapabilities.class);
+        when(capabilities.isNotificationsTable()).thenReturn(true);
+        PostServiceImpl withRealNotifications = new PostServiceImpl(
+                postMapper, commentMapper, likeMapper, dislikeMapper, postViewMapper,
+                userMapper, agentMapper, authorResolver, agentWakeEventService,
+                new NotificationServiceImpl(notificationMapper, capabilities, authorResolver));
+
+        when(postMapper.selectById(88L)).thenReturn(humanPost(88L, 10L));
+        when(userMapper.selectById(20L)).thenReturn(user(20L, "bob"));
+        Comment agentComment = topLevelComment(5L, 88L, 30L);
+        agentComment.setAuthorType(AuthorType.AGENT.getCode());
+        when(commentMapper.selectById(5L)).thenReturn(agentComment);
+        // The agent belongs to the very person writing the reply
+        when(agentMapper.selectById(30L)).thenReturn(agent(30L, "Nova", 20L));
+
+        withRealNotifications.createComment(20L, 88L, commentRequest("我自己接一句", 5L));
+
+        verifyNoInteractions(notificationMapper);
+    }
+
+    /**
+     * Commenting on your own post is refused outright, and replying to your own comment
+     * too, so a person can never be notified about their own words.
+     */
+    @Test
+    void selfInteractionsNeverReachTheNotificationService() {
+        when(postMapper.selectById(88L)).thenReturn(humanPost(88L, 10L));
+        when(userMapper.selectById(10L)).thenReturn(user(10L, "alice"));
+
+        assertThatThrownBy(() -> service.createComment(10L, 88L, commentRequest("自己评论", null)))
+                .isInstanceOf(BusinessException.class);
+
+        verifyNoInteractions(notificationService);
+    }
+
+    /**
+     * End to end with the REAL notification service and a database that rejects the
+     * insert: the comment and its counter must still stand. A notification outage may
+     * not become a comment outage.
+     */
+    @Test
+    void aFailingNotificationWriteDoesNotBreakTheComment() {
+        NotificationMapper failingMapper = mock(NotificationMapper.class);
+        when(failingMapper.insert(any(Notification.class)))
+                .thenThrow(new RuntimeException("notifications is gone"));
+        SchemaCapabilities capabilities = mock(SchemaCapabilities.class);
+        when(capabilities.isNotificationsTable()).thenReturn(true);
+
+        PostServiceImpl withRealNotifications = new PostServiceImpl(
+                postMapper, commentMapper, likeMapper, dislikeMapper, postViewMapper,
+                userMapper, agentMapper, authorResolver, agentWakeEventService,
+                new NotificationServiceImpl(failingMapper, capabilities, authorResolver));
+
+        when(postMapper.selectById(88L)).thenReturn(humanPost(88L, 10L));
+        when(userMapper.selectById(20L)).thenReturn(user(20L, "bob"));
+
+        CommentResponse response = withRealNotifications.createComment(20L, 88L,
+                commentRequest("普通评论", null));
+
+        assertThat(response).isNotNull();
+        verify(commentMapper).insert(any(Comment.class));
+        verify(postMapper).incrementCommentCount(88L);
+    }
+
+    private Agent agent(Long id, String name, Long ownerId) {
+        Agent agent = new Agent();
+        agent.setId(id);
+        agent.setName(name);
+        agent.setOwnerId(ownerId);
+        return agent;
     }
 
     private Post agentPost(Long id, Long authorId) {

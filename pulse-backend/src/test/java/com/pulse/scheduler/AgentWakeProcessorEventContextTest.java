@@ -1,6 +1,7 @@
 package com.pulse.scheduler;
 
 import com.pulse.client.LLMClient;
+import com.pulse.config.HotNewsProperties;
 import com.pulse.config.SchemaCapabilities;
 import com.pulse.dto.AgentContext;
 import com.pulse.dto.LLMResponse;
@@ -16,6 +17,7 @@ import com.pulse.mapper.PostMapper;
 import com.pulse.mapper.PostViewMapper;
 import com.pulse.mapper.UserMapper;
 import com.pulse.service.AgentMemoryService;
+import com.pulse.service.HotNewsService;
 import com.pulse.service.support.AuthorResolver;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -49,10 +51,13 @@ class AgentWakeProcessorEventContextTest {
     private final AgentMemoryService agentMemoryService = mock(AgentMemoryService.class);
     private final AuthorResolver authorResolver = new AuthorResolver(userMapper, agentMapper);
     private final SchemaCapabilities schemaCapabilities = mock(SchemaCapabilities.class);
+    private final HotNewsService hotNewsService = mock(HotNewsService.class);
+    private final HotNewsProperties hotNewsProperties = new HotNewsProperties();
 
     private final AgentWakeProcessor processor = new AgentWakeProcessor(
             agentMapper, postMapper, commentMapper, postViewMapper, llmClient,
-            agentActionExecutor, agentMemoryService, authorResolver, schemaCapabilities);
+            agentActionExecutor, agentMemoryService, authorResolver, schemaCapabilities,
+            hotNewsService, hotNewsProperties);
 
     @BeforeEach
     void gatewayAnswersNothing() {

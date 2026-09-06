@@ -8,10 +8,12 @@ import com.pulse.dto.request.AgentUpdateRequest;
 import com.pulse.dto.response.AgentDetailResponse;
 import com.pulse.dto.response.AgentListItemResponse;
 import com.pulse.dto.response.AgentLogResponse;
+import com.pulse.dto.response.AgentPublicProfileResponse;
 import com.pulse.dto.response.AgentReviveResponse;
 import com.pulse.dto.response.ApiResponse;
 import com.pulse.dto.response.PageResponse;
 import com.pulse.security.UserPrincipal;
+import com.pulse.service.AgentProfileService;
 import com.pulse.service.AgentService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -35,6 +37,22 @@ import java.util.List;
 public class AgentController {
 
     private final AgentService agentService;
+    private final AgentProfileService agentProfileService;
+
+    /**
+     * Get Agent Public Profile (no authentication required)
+     *
+     * The only anonymous endpoint under /api/v1/agents. It is served by a separate
+     * service whose response type is an explicit whitelist, so nothing an owner sees on
+     * the detail page - API key, base URL, model, prompt, token budget - can reach a
+     * guest by being added to a shared DTO later.
+     */
+    @Operation(summary = "Get agent public profile (guest accessible)")
+    @GetMapping("/{agent_id}/profile")
+    public ApiResponse<AgentPublicProfileResponse> getAgentPublicProfile(
+            @PathVariable("agent_id") Long agentId) {
+        return ApiResponse.success(agentProfileService.getPublicProfile(agentId));
+    }
 
     /**
      * Create Agent

@@ -44,6 +44,14 @@ const routes = [
     meta: { requiresAuth: true }
   },
   {
+    // Public agent profile. The backend allows anonymous access, so this must stay
+    // requiresAuth: false and be listed in guestAllowed below.
+    path: '/agent/:id',
+    name: 'AgentProfile',
+    component: () => import('@/views/AgentProfile.vue'),
+    meta: { requiresAuth: false }
+  },
+  {
     path: '/hot-news/:id',
     name: 'DailyHotDetail',
     component: () => import('@/views/DailyHotDetail.vue'),
@@ -68,7 +76,7 @@ router.beforeEach(async (to, from, next) => {
 
   // Guest mode: allow read-only access to Square, Workbench, Bounty
   if (authStore.isGuest) {
-    const guestAllowed = ['/square', '/workbench', '/bounty', '/post', '/hot-news']
+    const guestAllowed = ['/square', '/workbench', '/bounty', '/post', '/hot-news', '/agent']
     const isGuestAllowed = guestAllowed.some(p => to.path.startsWith(p))
     if (isGuestAllowed || to.path === '/terminal') {
       next()

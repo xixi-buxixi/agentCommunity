@@ -3,6 +3,7 @@ package com.pulse.scheduler;
 import com.pulse.config.SchemaCapabilities;
 import com.pulse.config.WakeMode;
 import com.pulse.dto.AgentWakeSettings;
+import com.pulse.dto.WakeLogContext;
 import com.pulse.entity.Agent;
 import com.pulse.entity.AgentWakeEvent;
 import com.pulse.enums.WakeReason;
@@ -190,21 +191,30 @@ public class AgentWakeQueueScheduler {
         List<Agent> agents = agentMapper.findAliveAgentsByIds(agentIds);
         int woken = 0;
         for (Agent agent : agents) {
+            // Filled in by wakeForEvents as soon as it knows which events this wake-up
+            // is answering, so the failure path below can attribute its error row to
+            // the same wake-up the successful path would have attributed it to.
+            List<AgentWakeEvent> attempted = new ArrayList<>();
             try {
-                if (wakeForEvents(agent)) {
+                if (wakeForEvents(agent, attempted)) {
                     woken++;
                 }
             } catch (Exception e) {
                 // The events stay PENDING, so the next tick retries; a chronically
                 // failing event is eventually retired by the expiry sweep.
                 log.error("Event wake failed: agentId={}", agent.getId(), e);
-                agentActionExecutor.logAgentError(agent, safeMessage(e), 0);
+                // Four-arg overload: an error row written inside a wake-up records WHY
+                // the agent was awake, exactly like the action rows around it. The
+                // three-arg call left wake_reason NULL on precisely the rows an
+                // operator reads first.
+                agentActionExecutor.logAgentError(agent, safeMessage(e), 0,
+                        WakeLogContext.of(WakeReason.EVENT, attempted));
             }
         }
         return woken;
     }
 
-    private boolean wakeForEvents(Agent agent) {
+    private boolean wakeForEvents(Agent agent, List<AgentWakeEvent> attempted) {
         // This agent's own "now": the batch may have been running for minutes.
         LocalDateTime now = clock.get();
 
@@ -213,6 +223,8 @@ public class AgentWakeQueueScheduler {
         if (events == null || events.isEmpty()) {
             return false;
         }
+        // Best information available until the consume step narrows it down.
+        attempted.addAll(events);
 
         if (!claimWakeSlot(agent, now)) {
             // Debounced or out of budget. The events stay PENDING on purpose: an
@@ -221,6 +233,10 @@ public class AgentWakeQueueScheduler {
             logClaimRefusal(agent, now, "event wake", events.size() + " pending interaction(s)");
             return false;
         }
+
+        // Read straight after the claim, while the counter still says "1": see
+        // isFirstWakeToday.
+        boolean firstToday = isFirstWakeToday(agent, now);
 
         // Consume the events BEFORE the model call, not after.
         //
@@ -248,10 +264,15 @@ public class AgentWakeQueueScheduler {
             return false;
         }
 
+        // Narrow the attribution to what this tick actually won, matching the context
+        // AgentWakeProcessor builds from the same list.
+        attempted.clear();
+        attempted.addAll(consumed);
+
         // Only the events actually consumed here are answered, and only their posts get the
         // duplicate-reply exemption: a partially consumed batch must not let this agent
         // reply under a post whose interaction somebody else is handling.
-        agentWakeProcessor.wake(agent, WakeReason.EVENT, consumed);
+        agentWakeProcessor.wake(agent, WakeReason.EVENT, consumed, firstToday);
         log.info("Agent woken by {} interaction(s): agentId={}, offered={}",
                 consumed.size(), agent.getId(), events.size());
         return true;
@@ -344,7 +365,11 @@ public class AgentWakeQueueScheduler {
                 }
             } catch (Exception e) {
                 log.error("Rhythm wake failed: agentId={}", agent.getId(), e);
-                agentActionExecutor.logAgentError(agent, safeMessage(e), 0);
+                // A rhythm wake answers no interactions, so the context carries the
+                // reason and no event types - the same pair the action rows of a
+                // successful rhythm wake carry.
+                agentActionExecutor.logAgentError(agent, safeMessage(e), 0,
+                        WakeLogContext.of(WakeReason.RHYTHM, List.of()));
             }
         }
         return woken;
@@ -390,13 +415,15 @@ public class AgentWakeQueueScheduler {
             return false;
         }
 
+        boolean firstToday = isFirstWakeToday(agent, now);
+
         // Compute the next slot BEFORE the (slow) model call, so a crash mid-wake cannot
         // leave next_wake_at in the past and re-trigger this agent on every tick.
         LocalDateTime next = wakeScheduleCalculator.nextRhythmWake(now,
                 agent.getWakeHoursStart(), agent.getWakeHoursEnd(), targetDailyRhythmWakes);
         agentMapper.updateNextWakeAt(agent.getId(), next);
 
-        agentWakeProcessor.wake(agent, WakeReason.RHYTHM, List.of());
+        agentWakeProcessor.wake(agent, WakeReason.RHYTHM, List.of(), firstToday);
         log.info("Agent woken by its rhythm: agentId={}, nextWakeAt={}", agent.getId(), next);
         return true;
     }
@@ -412,6 +439,31 @@ public class AgentWakeQueueScheduler {
         int claimed = agentMapper.claimWakeSlot(agent.getId(), now, now.toLocalDate(),
                 debounceCutoff, Math.max(defaultDailyWakeBudget, 1));
         return claimed > 0;
+    }
+
+    /**
+     * Whether the slot just claimed is this agent's first of the day.
+     *
+     * Read AFTER the claim and from the database, not from the Agent object: the counter
+     * is incremented inside {@link AgentMapper#claimWakeSlot}, and the object in hand was
+     * selected before that statement ran - it carries the pre-increment value, and on a
+     * day boundary a stale one (the counter resets lazily, so yesterday's number is still
+     * in the row until the claim rewrites it). Post-claim, "first today" is exactly
+     * "the counter now reads 1".
+     *
+     * One extra small SELECT per wake-up that actually happens, not per tick. A failure
+     * answers "not the first", which only means the world block is skipped for this
+     * wake-up.
+     */
+    private boolean isFirstWakeToday(Agent agent, LocalDateTime now) {
+        try {
+            AgentWakeSettings settings = agentMapper.findWakeSettings(agent.getId());
+            return settings != null && settings.wakeCountFor(now.toLocalDate()) == 1;
+        } catch (Exception e) {
+            log.debug("Could not tell whether this is the first wake of the day: agentId={}, {}",
+                    agent.getId(), e.getMessage());
+            return false;
+        }
     }
 
     private String safeMessage(Exception e) {

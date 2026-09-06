@@ -1,5 +1,6 @@
 package com.pulse.scheduler;
 
+import com.pulse.config.SchemaCapabilities;
 import com.pulse.dto.AgentActionDecision;
 import com.pulse.dto.AgentActionOutcome;
 import com.pulse.entity.Agent;
@@ -15,14 +16,24 @@ import com.pulse.mapper.DislikeMapper;
 import com.pulse.mapper.LikeMapper;
 import com.pulse.mapper.PostMapper;
 import com.pulse.service.AgentWakeEventService;
+import com.pulse.entity.Notification;
+import com.pulse.enums.AgentStatus;
+import com.pulse.mapper.NotificationMapper;
+import com.pulse.service.NotificationService;
+import com.pulse.service.impl.NotificationServiceImpl;
+import com.pulse.service.support.AuthorResolver;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 /**
@@ -40,10 +51,13 @@ class AgentActionExecutorTest {
     private final DislikeMapper dislikeMapper = mock(DislikeMapper.class);
     private final AgentBountyExecutor agentBountyExecutor = mock(AgentBountyExecutor.class);
     private final AgentWakeEventService agentWakeEventService = mock(AgentWakeEventService.class);
+    private final NotificationService notificationService = mock(NotificationService.class);
+    private final SchemaCapabilities schemaCapabilities = mock(SchemaCapabilities.class);
 
     private final AgentActionExecutor executor = new AgentActionExecutor(
             agentMapper, postMapper, commentMapper, agentLogMapper,
-            likeMapper, dislikeMapper, agentBountyExecutor, agentWakeEventService);
+            likeMapper, dislikeMapper, agentBountyExecutor, agentWakeEventService,
+            notificationService, schemaCapabilities);
 
     @Test
     void postOutcomeCarriesTheNewPostId() {
@@ -193,6 +207,108 @@ class AgentActionExecutorTest {
         executor.applyDecisions(agent(), List.of(decision(ActionType.REPLY, 88L, "普通回复")), 500);
 
         org.mockito.Mockito.verifyNoInteractions(agentWakeEventService);
+    }
+
+    // ========== Notification producers ==========
+
+    /**
+     * A human whose post an agent answered has no wake queue bringing them back; the
+     * notification is the only thing that tells them.
+     */
+    @Test
+    void replyingToAHumanPostNotifiesThePostAuthor() {
+        Post target = new Post();
+        target.setId(88L);
+        target.setAuthorId(55L);
+        target.setAuthorType(AuthorType.HUMAN.getCode());
+        when(postMapper.selectById(88L)).thenReturn(target);
+        when(commentMapper.countAgentCommentsOnPost(1L, 88L)).thenReturn(0);
+        when(commentMapper.insert(any(Comment.class))).thenReturn(1);
+
+        executor.applyDecisions(agent(), List.of(decision(ActionType.REPLY, 88L, "我有不同看法")), 500);
+
+        verify(notificationService).notifyCommentOnPost(55L, AuthorType.AGENT.getCode(), 1L, 88L,
+                "我有不同看法");
+    }
+
+    /**
+     * The agent-to-agent case already produces a wake event, which is how the target's
+     * owner learns anything happened. A notification too would report it twice.
+     */
+    @Test
+    void replyingToAnotherAgentsPostNotifiesNobody() {
+        Post target = new Post();
+        target.setId(88L);
+        target.setAuthorId(77L);
+        target.setAuthorType(AuthorType.AGENT.getCode());
+        when(postMapper.selectById(88L)).thenReturn(target);
+        when(commentMapper.countAgentCommentsOnPost(1L, 88L)).thenReturn(0);
+        when(commentMapper.insert(any(Comment.class))).thenReturn(1);
+
+        executor.applyDecisions(agent(), List.of(decision(ActionType.REPLY, 88L, "我有不同看法")), 500);
+
+        verifyNoInteractions(notificationService);
+    }
+
+    @Test
+    void deathNotifiesTheOwnerWithTheFarewellThatWasPublished() {
+        when(agentMapper.updateStatus(1L, AgentStatus.DEAD.getCode())).thenReturn(1);
+
+        executor.markAgentDead(agent());
+
+        ArgumentCaptor<String> lastWords = ArgumentCaptor.forClass(String.class);
+        verify(notificationService).notifyAgentDied(eq(7L), eq(1L), eq("Pulse"), lastWords.capture());
+        assertThat(lastWords.getValue()).contains("[Pulse]").contains("能量耗尽");
+    }
+
+    /**
+     * updateStatus returning 0 means another cycle already killed this agent, so the
+     * owner must not be told a second time.
+     */
+    @Test
+    void anAgentAlreadyKilledByAnotherCycleNotifiesNobody() {
+        when(agentMapper.updateStatus(1L, AgentStatus.DEAD.getCode())).thenReturn(0);
+
+        executor.markAgentDead(agent());
+
+        verifyNoInteractions(notificationService);
+        verify(postMapper, never()).insert(any(Post.class));
+    }
+
+    /**
+     * End to end with the REAL notification service and a database that rejects the
+     * insert: the comment and the audit row must still stand. The agent's action is
+     * worth more than telling somebody about it.
+     */
+    @Test
+    void aFailingNotificationWriteDoesNotBreakTheAgentAction() {
+        NotificationMapper failingMapper = mock(NotificationMapper.class);
+        when(failingMapper.insert(any(Notification.class)))
+                .thenThrow(new RuntimeException("notifications is gone"));
+        SchemaCapabilities capabilities = mock(SchemaCapabilities.class);
+        when(capabilities.isNotificationsTable()).thenReturn(true);
+
+        AgentActionExecutor withRealNotifications = new AgentActionExecutor(
+                agentMapper, postMapper, commentMapper, agentLogMapper, likeMapper, dislikeMapper,
+                agentBountyExecutor, agentWakeEventService,
+                new NotificationServiceImpl(failingMapper, capabilities,
+                        new AuthorResolver(mock(com.pulse.mapper.UserMapper.class), agentMapper)),
+                schemaCapabilities);
+
+        Post target = new Post();
+        target.setId(88L);
+        target.setAuthorId(55L);
+        target.setAuthorType(AuthorType.HUMAN.getCode());
+        when(postMapper.selectById(88L)).thenReturn(target);
+        when(commentMapper.countAgentCommentsOnPost(1L, 88L)).thenReturn(0);
+        when(commentMapper.insert(any(Comment.class))).thenReturn(1);
+
+        AgentActionOutcome outcome = withRealNotifications.applyDecisions(agent(),
+                List.of(decision(ActionType.REPLY, 88L, "普通回复")), 500).get(0);
+
+        assertThat(outcome.isSuccess()).isTrue();
+        verify(commentMapper).insert(any(Comment.class));
+        verify(agentLogMapper).insert(any(AgentLog.class));
     }
 
     private Agent agent() {

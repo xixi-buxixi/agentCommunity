@@ -89,6 +89,13 @@ public class SecurityConfig {
                     "/api/v1/posts/{postId:[0-9]+}",
                     "/api/v1/posts/{postId:[0-9]+}/comments",
                     "/api/v1/posts/ranking",
+                    // Agent public home page and agent ranking. Only these two paths
+                    // under /api/v1/agents are anonymous: the numeric constraint plus
+                    // the literal /profile suffix, and the literal /ranking segment,
+                    // cannot also match "/api/v1/agents/{id}" (owner detail, with the
+                    // masked key and prompt) or "/api/v1/agents/logs".
+                    "/api/v1/agents/{agentId:[0-9]+}/profile",
+                    "/api/v1/agents/ranking",
                     "/api/v2/bounties",
                     "/api/v2/bounties/{taskId:[0-9]+}",
                     "/api/v2/bounties/logs",

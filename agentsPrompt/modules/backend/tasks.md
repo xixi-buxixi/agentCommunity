@@ -1,6 +1,28 @@
 # Task State: backend
 
 ## Current
+- Task ID: backend-2026-09-06-public-profile-ranking-wake-context
+- Goal: 按 `docs/optimization-plan-2026-09-06.md` 落地阶段 1/2 后端：Agent 公开主页只读接口、Agent 维度排行榜、agent_logs 唤醒原因两列、日报作为 `[World#N]` 区块进入队列模式当日首次唤醒上下文（默认关闭）、通知中心（进行中）。
+- Scope: `/pulse-backend/**`、`/deploy/migrations/2026-09-06-*.sql`、`/agentsPrompt/modules/backend/tasks.md`
+- Status: in progress
+- Owner: Claude Fable 5.1 协调，Opus 5 执行者（W2 / W3 / W6 / W7），Codex gpt-5.6-sol 对抗审查
+- Last Updated: 2026-09-06
+
+## Done Summary
+- 已新增 `GET /api/v1/agents/{agent_id}/profile`（匿名可读，独立白名单 DTO `AgentPublicProfileResponse`，不含 api_key / base_url / model_name / system_prompt / token 用量 / owner_id；打赏按 `sys_ledger` 的 TIP_RECV + related_type=AGENT 统计；completed_bounty_count 因 schema 中 Agent 只能作为发单方而恒为 0，待决策）。SecurityRulesTest 新增 3 例，AgentProfileServiceImplTest 14 例。
+- 已新增 `GET /api/v1/agents/ranking?type=replied|tipped|active&limit=`（匿名可读，Redis ZSet 缓存 + MySQL 聚合回退，随 `RankingRefreshScheduler` 每小时刷新；`AgentRankingRoutingTest` 实测字面量 `/ranking` 优先于 `{agent_id}` 路径变量）。
+- 已为 `agent_logs` 新增 `wake_reason` / `wake_event_types`（`@TableField(exist=false)`，`SchemaCapabilities.agentLogWakeColumns` 独立探测，有列走显式 INSERT，无列维持原 insert），迁移 `deploy/migrations/2026-09-06-agent-log-wake-context.sql`；`AgentLogResponse` 新增 wake_reason / wake_event_types / wake_reason_text。
+- 已实现日报注入：`hot-news.context.enabled`（默认 false）与 `hot-news.context.max-chars`（默认 600）；仅队列模式且 claim 成功后回读 wake_count_today==1 的当日首次唤醒注入 `[World#<report_id>] [SYSTEM 今日日报 <date>]: ...` 区块；legacy 一律不注入；`flattenForContext` 同时改写正文中的 `[World#`。
+- 合并后 `mvn test` 319/319 通过（基线 240）。
+- 阶段 1 Codex 计划审查 8 条意见全部处置，记录见 scratchpad 计划文件与本轮方案文档；阶段 1 交付物的 Opus 证伪验证进行中。
+- 已完成通知中心（W7）：新增 `notifications` 表 + 迁移 `deploy/migrations/2026-09-06-notifications.sql`，四个接口 `GET /api/v1/notifications`、`GET /api/v1/notifications/unread-count`、`POST /api/v1/notifications/{id}/read`、`POST /api/v1/notifications/read-all`；八种通知类型与触发点（AGENT_REPLIED_POST / AGENT_REPLIED_COMMENT / HUMAN_REPLIED_POST / HUMAN_REPLIED_COMMENT / AGENT_TIPPED / AGENT_DIED / BOUNTY_SUBMITTED / BOUNTY_AUDITED），其中 `AGENT_REPLIED_COMMENT` 暂无生产者（Agent 决策格式不支持目标评论 id，待决策）；通知与唤醒事件按接收者类型互斥（Agent 作者走唤醒队列，人类作者走通知）；缺表时读接口返回 `NOTIFICATIONS_UNAVAILABLE(90001/409)`，写路径静默降级不影响主业务；`NotificationServiceImplTest` 等新增测试覆盖生产者侧真实落库路径。
+- 已完成阶段 1 证伪验证（`verify-phase1.md`）发现问题的修复（FIX1）：D1a（排行榜空窗口写 Redis 哨兵标记，TTL 5 分钟，避免每次匿名请求回源 MySQL）、D1b（`comments` 补三条索引 + 迁移 `deploy/migrations/2026-09-06-comments-indexes.sql`）、D1c（`GET /api/v1/agents/ranking` 与 `GET /api/v1/agents/*/profile` 纳入限流，各 60 次/分钟/IP）、D2（replied 榜对同一条评论重复计数，两个 UNION ALL 分支改投影 `(agent_id, comment_id)` 后 `UNION` 去重）、D3（World 区块在 `_semantic_filter` 中无条件保留，不再与其他行按分值竞争容量预算）、D4（记忆面板 5xx 文案改为通用故障提示，不再一律显示"未启用记忆表"）、D6（公开主页对未知/NULL `status` 返回 `status_text="UNKNOWN"` 而非 500）、D7（唤醒异常时写出的错误行补齐 `wake_reason`/`wake_event_types`）、D8（`refreshAllAgentRankingCaches` 单个榜单刷新失败不再中止其余榜单）、D9（`findAgentTipTotals` 补 `amount > 0`，与排行榜口径一致）。D5（缓存路径与 MySQL 路径在同分时排序不一致）与验证报告"其他问题"六条移入 Pending，本轮未修复。
+- 合并后全量测试见 overview（`agentsPrompt/overview_agent/tasks.md` 的 Verification 节）。
+
+## In Progress
+- 无
+
+## Previous Current (2026-07-28)
 - Task ID: backend-2026-07-28-wakeup-rework-phase3
 - Goal: 交付唤醒机制重构 Phase 3 后端：agents 作息字段与 agent_wake_events 队列、事件入队、legacy|queue 双模式调度、事件上下文注入、Agent 作息设置接口。
 - Scope: `/pulse-backend/**`、`/agentsPrompt/modules/backend/tasks.md`
@@ -8,7 +30,7 @@
 - Owner: Claude (Opus 5)
 - Last Updated: 2026-07-28
 
-## Done Summary
+## Previous Done Summary (2026-07-28)
 - 已在 `schema.sql` 用幂等 ALTER 模式为 agents 新增 next_wake_at / wake_hours_start / wake_hours_end / daily_wake_budget / wake_count_today / wake_count_date 与 idx_next_wake，并新增 `agent_wake_events` 表（dedup_key 唯一索引 + agent/status 索引）；`SchemaCapabilities` 新增 wake-queue 探测（列或表缺失 → queue 不可用并 warn、回退 legacy），Agent 实体作息字段仅在探测通过时赋值，未迁移库因 MyBatis-Plus 跳过 null 字段而照常写入。
 - 已实现事件入队 `AgentWakeEventService`：评论 Agent 帖子 → COMMENTED、回复 Agent 评论 → REPLIED（归属被回复者而非帖主）、打赏 → TIPPED（键在收款 ledger 行）；`INSERT IGNORE` + dedup_key `{agentId}:{type}:{sourceType}:{sourceId}:{actorType}:{actorId}`，Agent 自触发不入队，任何失败只 warn，schema 缺失直接空转。
 - 已实现 `legacy|queue` 双模式：新增 `WakeMode.resolve`（未知值/schema 缺失一律回退 legacy 并 warn，绝不猜 queue 以免社区静默），`AgentLoopScheduler` 保留 12h 批次与选取逻辑不变、仅加模式闸门；新增 `AgentWakeQueueScheduler`（5 分钟 tick + ShedLock）依次做过期清理、事件唤醒、作息唤醒。
