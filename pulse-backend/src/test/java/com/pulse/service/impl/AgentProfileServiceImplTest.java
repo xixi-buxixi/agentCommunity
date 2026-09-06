@@ -7,12 +7,18 @@ import com.pulse.dto.AgentTipTotals;
 import com.pulse.dto.AgentWakeSettings;
 import com.pulse.dto.response.AgentPublicProfileResponse;
 import com.pulse.entity.Agent;
+import com.pulse.entity.AgentMemory;
 import com.pulse.entity.Post;
 import com.pulse.entity.User;
 import com.pulse.enums.AgentStatus;
+import com.pulse.enums.BountyStatus;
+import com.pulse.enums.MemoryStatus;
+import com.pulse.enums.MemoryType;
 import com.pulse.exception.BusinessException;
 import com.pulse.exception.ErrorCode;
 import com.pulse.mapper.AgentMapper;
+import com.pulse.mapper.AgentMemoryMapper;
+import com.pulse.mapper.BountyTaskMapper;
 import com.pulse.mapper.CommentMapper;
 import com.pulse.mapper.PostMapper;
 import com.pulse.mapper.SysLedgerMapper;
@@ -29,6 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.clearInvocations;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -58,6 +65,8 @@ class AgentProfileServiceImplTest {
     private final PostMapper postMapper = mock(PostMapper.class);
     private final CommentMapper commentMapper = mock(CommentMapper.class);
     private final SysLedgerMapper sysLedgerMapper = mock(SysLedgerMapper.class);
+    private final BountyTaskMapper bountyTaskMapper = mock(BountyTaskMapper.class);
+    private final AgentMemoryMapper agentMemoryMapper = mock(AgentMemoryMapper.class);
     private final SchemaCapabilities schemaCapabilities = mock(SchemaCapabilities.class);
     // The real calculator: the active-hours window is exactly the logic under test here,
     // and the profile badge must agree with what the scheduler would decide.
@@ -65,7 +74,7 @@ class AgentProfileServiceImplTest {
 
     private final AgentProfileServiceImpl service = new AgentProfileServiceImpl(
             agentMapper, userMapper, postMapper, commentMapper, sysLedgerMapper,
-            schemaCapabilities, wakeScheduleCalculator);
+            bountyTaskMapper, agentMemoryMapper, schemaCapabilities, wakeScheduleCalculator);
 
     @BeforeEach
     void configure() {
@@ -82,6 +91,8 @@ class AgentProfileServiceImplTest {
                         new AgentInteractionCount(9L, "Nova", 4)));
         when(postMapper.findRecentAgentPosts(anyLong(), anyInt()))
                 .thenReturn(List.of(post(101L, "hello world")));
+        when(bountyTaskMapper.countByAgentIdAndStatus(anyLong(), anyInt())).thenReturn(0);
+        when(agentMemoryMapper.findPublicTraits(anyLong(), anyInt())).thenReturn(List.of());
     }
 
     // ========== Unexpected status values ==========
@@ -188,13 +199,33 @@ class AgentProfileServiceImplTest {
         assertThat(profile.getStatusText()).isEqualTo(AgentStatus.DEAD.getText());
     }
 
+    // ========== completed_bounty_count ==========
+
     /**
-     * Agents cannot accept bounties in this schema (both hunter_id columns are foreign
-     * keys into users), so the counter is a documented zero rather than the owner's own
-     * completions borrowed for the agent.
+     * The counter is the PUBLISHER-side figure: bounties this agent published that
+     * reached COMPLETED, which is the status the audit path sets in the same
+     * transaction that settles the reward.
+     *
+     * The status argument is asserted, not just the result. "Completed" has six
+     * neighbours in BountyStatus, three of which (ABANDONED, EXPIRED, CANCELLED) are
+     * also terminal and none of which paid anybody, so counting the wrong code would
+     * produce a plausible number rather than a visible failure.
      */
     @Test
-    void completedBountiesReportZeroWithoutQueryingBounties() {
+    void completedBountiesCountThePublishedTasksThatSettled() {
+        when(bountyTaskMapper.countByAgentIdAndStatus(AGENT_ID, BountyStatus.COMPLETED.getCode()))
+                .thenReturn(4);
+
+        assertThat(service.getPublicProfile(AGENT_ID).getStats().getCompletedBountyCount())
+                .isEqualTo(4);
+
+        verify(bountyTaskMapper).countByAgentIdAndStatus(AGENT_ID, 2);
+    }
+
+    @Test
+    void anAgentThatPublishedNoBountyReportsZero() {
+        when(bountyTaskMapper.countByAgentIdAndStatus(anyLong(), anyInt())).thenReturn(0);
+
         assertThat(service.getPublicProfile(AGENT_ID).getStats().getCompletedBountyCount())
                 .isZero();
     }
@@ -315,7 +346,8 @@ class AgentProfileServiceImplTest {
     @Test
     void aRepeatedProfileIsServedFromTheInProcessCache() {
         AgentPublicProfileResponse first = service.getPublicProfile(AGENT_ID);
-        clearInvocations(agentMapper, userMapper, postMapper, commentMapper, sysLedgerMapper);
+        clearInvocations(agentMapper, userMapper, postMapper, commentMapper, sysLedgerMapper,
+                bountyTaskMapper, agentMemoryMapper);
 
         AgentPublicProfileResponse second = service.getPublicProfile(AGENT_ID);
 
@@ -325,6 +357,8 @@ class AgentProfileServiceImplTest {
         verifyNoInteractions(postMapper);
         verifyNoInteractions(commentMapper);
         verifyNoInteractions(sysLedgerMapper);
+        verifyNoInteractions(bountyTaskMapper);
+        verifyNoInteractions(agentMemoryMapper);
     }
 
     /** The key is the agent id, so one agent's page is never answered with another's. */
@@ -356,6 +390,121 @@ class AgentProfileServiceImplTest {
         assertThat(service.getPublicProfile(AGENT_ID).getId()).isEqualTo(AGENT_ID);
     }
 
+    // ========== Published trait cards ==========
+
+    /**
+     * The four fields the page renders, in the order the query returns them.
+     *
+     * The list is NOT re-sorted here: the ordering (confidence descending, then recency)
+     * lives in the SQL, and duplicating it in Java would let the two drift while both
+     * still looked right in isolation. What this asserts is that the mapper's order is
+     * passed through untouched.
+     */
+    @Test
+    void publishedTraitsAreRenderedInTheOrderTheQueryReturned() {
+        when(agentMemoryMapper.findPublicTraits(eq(AGENT_ID), anyInt())).thenReturn(List.of(
+                trait(11L, "倾向于先提出反例再表态", 92),
+                trait(12L, "对压缩类话题格外投入", 70)));
+
+        List<AgentPublicProfileResponse.PublicTrait> traits =
+                service.getPublicProfile(AGENT_ID).getPublicTraits();
+
+        assertThat(traits).extracting(AgentPublicProfileResponse.PublicTrait::getMemoryId)
+                .containsExactly(11L, 12L);
+        assertThat(traits.get(0).getContent()).isEqualTo("倾向于先提出反例再表态");
+        assertThat(traits.get(0).getConfidenceScore()).isEqualTo(92);
+        assertThat(traits.get(0).getCreatedAt()).isEqualTo("2026-09-01T10:00:00");
+    }
+
+    /**
+     * The selection - ACTIVE, PERSONA_TRAIT, scope PUBLIC, unexpired - is the query's
+     * job, so what the service has to get right is the bound it asks for and the fact
+     * that it asks the trait query at all rather than filtering a general memory read
+     * in Java.
+     */
+    @Test
+    void theTraitListIsBoundedByTheQueryRatherThanTrimmedAfterwards() {
+        service.getPublicProfile(AGENT_ID);
+
+        verify(agentMemoryMapper).findPublicTraits(AGENT_ID, 20);
+    }
+
+    /**
+     * agent_memories arrived in a later migration than this page and the deploy user may
+     * not hold DDL privileges, so "the table is not there" is a state that actually
+     * happens. The owner-facing memory panel reports that as an error (D-0008: an inbox
+     * that silently looks empty is worse than one that says it is unavailable); this
+     * anonymous page does the opposite, because the other nine sections are fine and a
+     * profile with no published traits is also what most agents legitimately have.
+     */
+    @Test
+    void aMissingMemoryTableLeavesTheProfileWithoutTraitsRatherThanFailing() {
+        when(agentMemoryMapper.findPublicTraits(anyLong(), anyInt()))
+                .thenThrow(new RuntimeException("Table 'agent_memories' doesn't exist"));
+
+        AgentPublicProfileResponse profile = service.getPublicProfile(AGENT_ID);
+
+        assertThat(profile.getPublicTraits()).isEmpty();
+        // the rest of the page is unaffected
+        assertThat(profile.getStats().getPostCount()).isEqualTo(12);
+        assertThat(profile.getRecentPosts()).hasSize(1);
+    }
+
+    @Test
+    void anAgentWithNoPublishedTraitCarriesAnEmptyListRatherThanNull() {
+        when(agentMemoryMapper.findPublicTraits(anyLong(), anyInt())).thenReturn(null);
+
+        assertThat(service.getPublicProfile(AGENT_ID).getPublicTraits()).isEmpty();
+    }
+
+    // ========== Eviction ==========
+
+    /**
+     * Publishing a card must show up at once. Without eviction the owner sees no change
+     * for up to the cache TTL, and the natural reading of that is that the switch did
+     * not work.
+     */
+    @Test
+    void evictingAnAgentForcesTheNextProfileToBeRebuilt() {
+        AgentPublicProfileResponse first = service.getPublicProfile(AGENT_ID);
+        when(agentMemoryMapper.findPublicTraits(eq(AGENT_ID), anyInt()))
+                .thenReturn(List.of(trait(11L, "刚刚公开的特质", 88)));
+
+        // still the memoised copy
+        assertThat(service.getPublicProfile(AGENT_ID)).isSameAs(first);
+
+        service.evict(AGENT_ID);
+
+        AgentPublicProfileResponse rebuilt = service.getPublicProfile(AGENT_ID);
+        assertThat(rebuilt).isNotSameAs(first);
+        assertThat(rebuilt.getPublicTraits()).hasSize(1);
+    }
+
+    /** Eviction is per agent: one owner's patch must not cost every other page its cache. */
+    @Test
+    void evictingOneAgentLeavesTheOtherEntriesAlone() {
+        Agent other = agent(AgentStatus.ALIVE.getCode());
+        other.setId(43L);
+        when(agentMapper.selectById(43L)).thenReturn(other);
+
+        AgentPublicProfileResponse otherProfile = service.getPublicProfile(43L);
+        service.getPublicProfile(AGENT_ID);
+
+        service.evict(AGENT_ID);
+
+        assertThat(service.getPublicProfile(43L)).isSameAs(otherProfile);
+    }
+
+    @Test
+    void evictingAnUnknownOrNullAgentIsANoOp() {
+        AgentPublicProfileResponse first = service.getPublicProfile(AGENT_ID);
+
+        service.evict(null);
+        service.evict(9999L);
+
+        assertThat(service.getPublicProfile(AGENT_ID)).isSameAs(first);
+    }
+
     // ========== Nothing sensitive escapes ==========
 
     @Test
@@ -378,10 +527,24 @@ class AgentProfileServiceImplTest {
         // cannot pass by producing an empty document
         assertThat(json).contains("\"owner_name\"").contains("\"is_active_now\"")
                 .contains("\"recent_posts\"").contains("\"frequent_interactions\"")
-                .contains("\"tips_received_total\"");
+                .contains("\"tips_received_total\"").contains("\"public_traits\"");
     }
 
     // ========== Fixtures ==========
+
+    /** An ACTIVE, PUBLIC PERSONA_TRAIT - the only shape findPublicTraits returns. */
+    private AgentMemory trait(Long id, String content, int confidence) {
+        AgentMemory memory = new AgentMemory();
+        memory.setId(id);
+        memory.setAgentId(AGENT_ID);
+        memory.setMemoryType(MemoryType.PERSONA_TRAIT.getCode());
+        memory.setScope("PUBLIC");
+        memory.setStatus(MemoryStatus.ACTIVE.getCode());
+        memory.setContent(content);
+        memory.setConfidenceScore(confidence);
+        memory.setCreatedAt(LocalDateTime.of(2026, 9, 1, 10, 0));
+        return memory;
+    }
 
     private Agent agentWithRawStatus(Integer status) {
         Agent agent = agent(AgentStatus.ALIVE.getCode());

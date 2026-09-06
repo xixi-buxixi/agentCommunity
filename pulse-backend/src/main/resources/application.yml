@@ -80,6 +80,43 @@ pulse-ai-side:
   # Shared secret sent as X-Service-Token; the gateway rejects calls without it.
   service-token: ${SERVICE_TOKEN:}
 
+# Platform-hosted model
+#
+# Lets an owner create an agent WITHOUT bringing their own provider key: the agent runs on
+# the platform's key and the owner is charged in points per 1000 tokens. Off by default,
+# because switching it on starts spending a real provider account.
+#
+# The key is read from the environment and never leaves the backend: it is sent to the AI
+# gateway and nowhere else, never logged, and never present in any response
+# (GET /api/v1/agents/templates reports the model name and the caps only).
+#
+# Enabling this ALSO requires deploy/migrations/2026-09-06-agent-provider-mode.sql. Without
+# those columns every agent reads back as BYOK, so creating a platform agent is refused
+# with 20010 PLATFORM_MODEL_UNAVAILABLE rather than silently producing a keyless agent.
+# Check the startup log for agent-provider-mode=true.
+platform-llm:
+  enabled: ${PLATFORM_LLM_ENABLED:false}
+  # No default value, like every other secret. enabled=true with an empty key is reported
+  # at WARN and treated as unavailable - one optional feature must not stop the service
+  # from starting for everybody else.
+  api-key: ${PLATFORM_LLM_API_KEY:}
+  base-url: ${PLATFORM_LLM_BASE_URL:https://api.openai.com/v1}
+  # Also required: enabled=true without it is treated as unavailable.
+  model-name: ${PLATFORM_LLM_MODEL:}
+  # Points charged per 1000 tokens, rounded UP to two decimals per call. 0 makes the
+  # platform model free without needing a second switch.
+  points-per-1k-tokens: ${PLATFORM_LLM_POINTS_PER_1K:1}
+  # Tokens ONE agent may spend on the platform key per calendar day. Measured from
+  # agent_logs, so it is exactly as accurate as the owner's own activity log. 0 disables.
+  daily-token-cap-per-agent: ${PLATFORM_LLM_DAILY_CAP_PER_AGENT:50000}
+  # Tokens every platform agent may spend together per calendar day - the number that
+  # actually bounds the provider bill. 0 disables.
+  daily-token-cap-global: ${PLATFORM_LLM_DAILY_CAP_GLOBAL:2000000}
+  # Available points the owner must still hold for a platform agent to be woken. A floor,
+  # not a per-call estimate: the cost is only known after the call, so this is the point at
+  # which the agent pauses and its owner is notified (at most once a day).
+  min-points-to-wake: ${PLATFORM_LLM_MIN_POINTS:1}
+
 # Daily Hot News Configuration
 # Reverse proxies whose X-Forwarded-For may be trusted for rate-limit bucketing.
 # MUST list the nginx host: it reaches the backend over a public address, so the
@@ -107,6 +144,43 @@ pulse:
     # Upper bound on behaviour lines sent to the reflection endpoint, so a very busy
     # agent cannot produce an unbounded prompt.
     behavior-limit: ${MEMORY_BEHAVIOR_LIMIT:40}
+
+# Notification centre: how loudly it repeats itself, and how long it keeps rows.
+notifications:
+  # An unread notification suppresses an identical one (same recipient, type, link and
+  # actor) written inside this many minutes. It collapses the burst a single conversation
+  # produces without hiding a genuinely new event an hour later. Only UNREAD rows
+  # suppress: once the user has read the line, the next event of the same shape is news
+  # again. 0 or less disables de-duplication entirely.
+  dedup-window-minutes: ${NOTIFICATION_DEDUP_WINDOW_MINUTES:10}
+  # Age at which a READ notification is deleted, in days. Unread rows are kept whatever
+  # their age - that is the one case where the user demonstrably has not seen it yet.
+  # 0 or less is treated as a misconfiguration and the cleanup run is skipped.
+  retention-days: ${NOTIFICATION_RETENTION_DAYS:90}
+  cleanup:
+    # On by default, unlike the schedulers that spend tokens: this one only deletes rows
+    # the retention policy already declared expendable.
+    enabled: ${NOTIFICATION_CLEANUP_ENABLED:true}
+    # 04:00 - after the 03:40 reflection pass, before the 04:20 counter reconciliation
+    cron: ${NOTIFICATION_CLEANUP_CRON:0 0 4 * * *}
+    # Rows per DELETE; the run repeats until a batch deletes nothing
+    batch-size: ${NOTIFICATION_CLEANUP_BATCH_SIZE:1000}
+
+# Physical retention for memory cards. The write-path sweep only RETIRES cards
+# (status=DEPRECATED), which bounds prompt cost and not table size; this is the other half.
+memory:
+  retention:
+    # On by default: it deletes only cards that were already retired, and costs no tokens.
+    purge-enabled: ${MEMORY_PURGE_ENABLED:true}
+    # How long a retired card is kept, in days, counted from when it was retired
+    # (updated_at). ACTIVE and DISABLED cards are never touched at any age - a disabled
+    # card is the owner's standing instruction, not a stale row. 0 or less is treated as a
+    # misconfiguration and the run is skipped.
+    deprecated-purge-days: ${MEMORY_DEPRECATED_PURGE_DAYS:30}
+    # 04:10 - between the notification cleanup and the counter reconciliation
+    purge-cron: ${MEMORY_PURGE_CRON:0 10 4 * * *}
+    # Rows per DELETE; the run repeats until a batch deletes nothing
+    purge-batch-size: ${MEMORY_PURGE_BATCH_SIZE:1000}
 
 hot-news:
   # Empty default, not a placeholder value: a missing ingest token must not stop the

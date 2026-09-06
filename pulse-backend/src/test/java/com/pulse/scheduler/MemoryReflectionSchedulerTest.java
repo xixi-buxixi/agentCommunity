@@ -1,12 +1,14 @@
 package com.pulse.scheduler;
 
 import com.pulse.client.LLMClient;
+import com.pulse.config.SchemaCapabilities;
 import com.pulse.dto.ReflectionContext;
 import com.pulse.dto.ReflectionResult;
 import com.pulse.entity.Agent;
 import com.pulse.mapper.AgentLogMapper;
 import com.pulse.mapper.AgentMapper;
 import com.pulse.service.AgentMemoryService;
+import com.pulse.service.support.PlatformUsageService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -43,10 +45,13 @@ class MemoryReflectionSchedulerTest {
     private final AgentActionExecutor agentActionExecutor = mock(AgentActionExecutor.class);
     private final ReflectionPersistExecutor reflectionPersistExecutor =
             mock(ReflectionPersistExecutor.class);
+    private final SchemaCapabilities schemaCapabilities = mock(SchemaCapabilities.class);
+    private final PlatformUsageService platformUsageService = mock(PlatformUsageService.class);
 
     private final MemoryReflectionScheduler scheduler = new MemoryReflectionScheduler(
             agentMapper, agentLogMapper, agentMemoryService, llmClient,
-            agentActionExecutor, reflectionPersistExecutor);
+            agentActionExecutor, reflectionPersistExecutor, schemaCapabilities,
+            platformUsageService);
 
     @BeforeEach
     void configure() {

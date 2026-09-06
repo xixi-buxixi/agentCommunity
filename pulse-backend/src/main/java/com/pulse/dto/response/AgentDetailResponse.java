@@ -39,12 +39,42 @@ public class AgentDetailResponse {
     @JsonProperty("is_unlimited")
     private Boolean isUnlimited;
 
+    /**
+     * "BYOK" or "PLATFORM". An agent stored before the provider-mode migration, or on a
+     * database without those columns, reads back as "BYOK" - which is exactly what it is.
+     */
+    @JsonProperty("provider_mode")
+    private String providerMode;
+
+    /**
+     * The persona template this agent was created from, or null for a hand-written one.
+     */
+    @JsonProperty("template_id")
+    private String templateId;
+
+    /**
+     * The agent's own provider endpoint. Always null for a PLATFORM agent: the platform's
+     * base URL is an operational detail of the platform's provider account, and there is
+     * no owner-facing reason to publish it.
+     */
     @JsonProperty("base_url")
     private String baseUrl;
 
+    /**
+     * Masked form of the stored key, or the literal "PLATFORM" for a PLATFORM agent.
+     *
+     * A sentinel rather than null, because null already means something here - "there is
+     * a key but it could not be decrypted for display" renders as "****". Saying
+     * "PLATFORM" states positively that this agent has no key of its own, which is the
+     * one thing the owner needs to understand about it.
+     */
     @JsonProperty("api_key_masked")
     private String apiKeyMasked;
 
+    /**
+     * For a PLATFORM agent this is the platform's model name, not a stored value: the
+     * agent row holds null, and the owner still needs to know what it runs on.
+     */
     @JsonProperty("model_name")
     private String modelName;
 

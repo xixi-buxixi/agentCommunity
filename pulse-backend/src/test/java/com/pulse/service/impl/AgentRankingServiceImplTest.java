@@ -567,6 +567,65 @@ class AgentRankingServiceImplTest {
                 .containsExactly("UNKNOWN", "UNKNOWN");
     }
 
+    // ========== Tie ordering across both paths ==========
+
+    /**
+     * Redis breaks a tie lexicographically by member, and the members are ids rendered
+     * as strings - so "10" sorts before "9" and a Redis-served board put agent 10 above
+     * agent 9 on an equal score, while the MySQL fallback's numeric ORDER BY put agent 9
+     * above agent 10. Same window, same data, two different boards depending on whether
+     * the cache happened to be warm.
+     *
+     * The tuple order below is what Redis actually hands back for these members. The
+     * response must be numeric anyway.
+     */
+    @Test
+    void tiedScoresFromRedisAreOrderedByAgentIdAscending() {
+        cacheHolds("pulse:rank:agent:replied",
+                tuple("10", 5.0), tuple("9", 5.0), tuple("7", 12.0));
+        agentsExist(agent(7L, "Ada", 1, 100L), agent(9L, "Bo", 1, 101L),
+                agent(10L, "Cy", 1, 100L));
+        ownersExist(user(100L, "alice"), user(101L, "bob"));
+
+        List<AgentRankingItemResponse> ranking = service.getAgentRanking("replied", 10);
+
+        assertThat(ranking).extracting(AgentRankingItemResponse::getAgentId)
+                .containsExactly(7L, 9L, 10L);
+        assertThat(ranking).extracting(AgentRankingItemResponse::getRank)
+                .containsExactly(1, 2, 3);
+    }
+
+    /** The MySQL fallback is re-ordered by the same rule, so the two paths agree. */
+    @Test
+    void tiedScoresFromMySqlAreOrderedByAgentIdAscending() {
+        cacheIsEmpty();
+        when(agentRankingMapper.findTopByRepliesReceived(any(), anyInt()))
+                .thenReturn(List.of(score(10L, "5"), score(9L, "5"), score(7L, "12")));
+        agentsExist(agent(7L, "Ada", 1, 100L), agent(9L, "Bo", 1, 101L),
+                agent(10L, "Cy", 1, 100L));
+        ownersExist(user(100L, "alice"), user(101L, "bob"));
+
+        assertThat(service.getAgentRanking("replied", 10))
+                .extracting(AgentRankingItemResponse::getAgentId)
+                .containsExactly(7L, 9L, 10L);
+    }
+
+    /**
+     * The scale differs between the two paths - MySQL hands back an unscaled decimal,
+     * Redis a double - so the comparison has to be BigDecimal.compareTo. With equals,
+     * 12.50 and 12.5 would count as different scores and the tie rule would not fire.
+     */
+    @Test
+    void aTieIsRecognisedRegardlessOfScale() {
+        cacheHolds("pulse:rank:agent:tipped", tuple("10", 12.5), tuple("9", 12.50));
+        agentsExist(agent(9L, "Bo", 1, 101L), agent(10L, "Cy", 1, 100L));
+        ownersExist(user(100L, "alice"), user(101L, "bob"));
+
+        assertThat(service.getAgentRanking("tipped", 10))
+                .extracting(AgentRankingItemResponse::getAgentId)
+                .containsExactly(9L, 10L);
+    }
+
     // ========== Fixtures ==========
 
     @SafeVarargs

@@ -1,6 +1,9 @@
 package com.pulse.service.impl;
 
+import com.pulse.config.AgentTemplateCatalog;
+import com.pulse.config.PlatformLlmProperties;
 import com.pulse.config.SchemaCapabilities;
+import com.pulse.service.support.LlmCredentialResolver;
 import com.pulse.dto.AgentWakeSettings;
 import com.pulse.dto.request.AgentCreateRequest;
 import com.pulse.dto.request.AgentUpdateRequest;
@@ -56,12 +59,21 @@ class AgentWakeSettingsTest {
     private final WakeScheduleCalculator wakeScheduleCalculator =
             new WakeScheduleCalculator(new Random(11));
 
+    // A real resolver over the same mocked capability probe: with provider_mode reported
+    // absent, every agent here is BYOK and nothing in the rhythm paths changes.
+    private final PlatformLlmProperties platformLlmProperties = new PlatformLlmProperties();
+    private final AgentTemplateCatalog agentTemplateCatalog = new AgentTemplateCatalog();
+    private final LlmCredentialResolver credentialResolver = new LlmCredentialResolver(
+            aesUtil, platformLlmProperties, schemaCapabilities, agentMapper);
+
     private final AgentServiceImpl service = new AgentServiceImpl(
             agentMapper, agentLogMapper, userMapper, postMapper, aesUtil,
-            schemaCapabilities, wakeScheduleCalculator);
+            schemaCapabilities, wakeScheduleCalculator, credentialResolver,
+            platformLlmProperties, agentTemplateCatalog);
 
     @BeforeEach
     void configure() {
+        agentTemplateCatalog.load();
         ReflectionTestUtils.setField(service, "targetDailyRhythmWakes", 3);
         ReflectionTestUtils.setField(service, "defaultDailyWakeBudget", 4);
         when(schemaCapabilities.isWakeQueueSchema()).thenReturn(true);
@@ -86,6 +98,89 @@ class AgentWakeSettingsTest {
         // the rhythm cannot ride along in the generated INSERT, so it is written separately
         verify(agentMapper).updateWakeSettings(eq(AGENT_ID), any(Integer.class), any(Integer.class),
                 eq(4), any(LocalDateTime.class));
+    }
+
+    /**
+     * The rhythm chosen in the creation wizard lands in the same transaction as the
+     * agent. It used to be a second request the wizard sent afterwards, so a dropped
+     * connection between the two left the owner with an agent quietly running on the
+     * random hours the seeding picked, which they never chose and were never shown.
+     */
+    @Test
+    void aRhythmSubmittedWithTheCreationIsWrittenAndReportedBack() {
+        givenInsertAssignsId();
+        // First read: the seeded row the rhythm write is about to overwrite. Second read:
+        // the row the response is built from.
+        when(agentMapper.findWakeSettings(AGENT_ID))
+                .thenReturn(settings(9, 18, 4, null))
+                .thenReturn(settings(22, 6, 8, null));
+        AgentCreateRequest request = createRequest();
+        request.setWakeHoursStart(22);
+        request.setWakeHoursEnd(6);
+        request.setDailyWakeBudget(8);
+
+        AgentDetailResponse response = service.createAgent(OWNER_ID, request);
+
+        verify(agentMapper).updateWakeSettings(eq(AGENT_ID), eq(22), eq(6), eq(8),
+                any(LocalDateTime.class));
+        assertThat(response.getWakeHoursStart()).isEqualTo(22);
+        assertThat(response.getWakeHoursEnd()).isEqualTo(6);
+        assertThat(response.getDailyWakeBudget()).isEqualTo(8);
+    }
+
+    /**
+     * Only the budget was chosen, so the hours stay the ones the seeding picked rather
+     * than falling back to a shared default.
+     */
+    @Test
+    void aPartialRhythmKeepsTheSeededHours() {
+        givenInsertAssignsId();
+        when(agentMapper.findWakeSettings(AGENT_ID)).thenReturn(settings(9, 18, 4, null));
+        AgentCreateRequest request = createRequest();
+        request.setDailyWakeBudget(12);
+
+        service.createAgent(OWNER_ID, request);
+
+        verify(agentMapper).updateWakeSettings(eq(AGENT_ID), eq(9), eq(18), eq(12), any());
+    }
+
+    /**
+     * The settings endpoint answers 20009 when the columns are missing, because that is
+     * all the owner asked for. At creation they asked for an agent: refusing to create it
+     * because this deployment cannot store active hours would be the wrong trade, so the
+     * three fields are dropped and the rhythm is reported as absent.
+     */
+    @Test
+    void withoutTheColumnsARhythmSubmittedWithTheCreationIsIgnoredRatherThanRefused() {
+        when(schemaCapabilities.isWakeQueueSchema()).thenReturn(false);
+        givenInsertAssignsId();
+        AgentCreateRequest request = createRequest();
+        request.setWakeHoursStart(22);
+        request.setWakeHoursEnd(6);
+        request.setDailyWakeBudget(8);
+
+        AgentDetailResponse response = service.createAgent(OWNER_ID, request);
+
+        assertThat(response.getId()).isEqualTo(AGENT_ID);
+        assertThat(response.getWakeHoursStart()).isNull();
+        assertThat(response.getWakeHoursEnd()).isNull();
+        assertThat(response.getDailyWakeBudget()).isNull();
+        verify(agentMapper, never()).updateWakeSettings(anyLong(), any(), any(), any(), any());
+    }
+
+    /**
+     * ...and a rhythm write that fails for any other reason must not fail the creation
+     * either.
+     */
+    @Test
+    void aFailingRhythmWriteDoesNotFailACreationThatCarriedOne() {
+        givenInsertAssignsId();
+        when(agentMapper.updateWakeSettings(anyLong(), any(), any(), any(), any()))
+                .thenThrow(new RuntimeException("unknown column"));
+        AgentCreateRequest request = createRequest();
+        request.setWakeHoursStart(22);
+
+        assertThat(service.createAgent(OWNER_ID, request).getId()).isEqualTo(AGENT_ID);
     }
 
     @Test
@@ -247,6 +342,13 @@ class AgentWakeSettingsTest {
     }
 
     // ========== Fixtures ==========
+
+    private void givenInsertAssignsId() {
+        when(agentMapper.insert(any(Agent.class))).thenAnswer(invocation -> {
+            invocation.getArgument(0, Agent.class).setId(AGENT_ID);
+            return 1;
+        });
+    }
 
     private AgentCreateRequest createRequest() {
         AgentCreateRequest request = new AgentCreateRequest();

@@ -5,9 +5,10 @@ import lombok.Getter;
 /**
  * Why an agent was put on the wake queue.
  *
- * The three kinds of interaction a community member can have with an agent that
- * deserve a timely answer. Interest-triggered wake-ups are deliberately not here -
- * they need content matching infrastructure that does not exist yet.
+ * The kinds of interaction a community member can have with an agent that deserve a
+ * timely answer. Interest-triggered wake-ups are deliberately not here - they need
+ * content matching infrastructure that does not exist yet; {@link #MENTIONED} is the
+ * one exception, and only because an explicit "@name" needs no matching at all.
  */
 @Getter
 public enum WakeEventType {
@@ -19,7 +20,17 @@ public enum WakeEventType {
     REPLIED("REPLIED", "回复了你的评论"),
 
     /** Someone tipped the agent. */
-    TIPPED("TIPPED", "打赏了你");
+    TIPPED("TIPPED", "打赏了你"),
+
+    /**
+     * Someone wrote "@name" and that name is this agent's.
+     *
+     * Unlike the three above, the source may be a POST as well as a COMMENT: a mention
+     * can be written in the body of a new post, where there is no comment row to point
+     * at. Everything that consumes an event therefore has to resolve both source kinds -
+     * see AgentWakeProcessor#resolveInteractionSources.
+     */
+    MENTIONED("MENTIONED", "提到了你");
 
     private final String code;
 

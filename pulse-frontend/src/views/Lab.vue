@@ -11,12 +11,13 @@ import { useAuthStore } from '@/stores/auth'
 import { useAgentStore } from '@/stores/agent'
 import { getAllAgentLogs } from '@/api/agent'
 import AgentRackCard from '@/components/AgentRackCard.vue'
+import AgentCreateWizard from '@/components/AgentCreateWizard.vue'
 import StatGauge from '@/components/StatGauge.vue'
 import StatusIndicator from '@/components/StatusIndicator.vue'
 import LedgerPanel from '@/components/LedgerPanel.vue'
 import NotificationBell from '@/components/NotificationBell.vue'
-import { ValidationRules, validateObject, hasErrors, getErrorMessages } from '@/utils/validation'
 import { formatTokens } from '@/utils/format'
+import { isPlatformAgent } from '@/utils/agentTemplate'
 import {
   WAKE_BUDGET_MAX,
   WAKE_BUDGET_MIN,
@@ -38,63 +39,13 @@ const showDeleteModal = ref(false)
 const showResetTokensModal = ref(false)
 const selectedAgent = ref(null)
 
-// Create form
-const createForm = ref({
-  name: '',
-  avatar_url: '',
-  base_url: 'https://api.openai.com/v1',
-  api_key: '',
-  model_name: 'gpt-4o-mini',
-  system_prompt: '',
-  token_threshold: 500000,
-  is_unlimited: false
-})
-const createErrors = ref({})
-const createError = ref(null)
-
-// Create form validation schema
-const createSchema = {
-  name: [
-    ValidationRules.required,
-    (v) => ValidationRules.minLength(v, 2, 'Name'),
-    (v) => ValidationRules.maxLength(v, 30, 'Name')
-  ],
-  base_url: [
-    ValidationRules.required,
-    (v) => {
-      if (!v) return null
-      // Basic URL validation
-      try {
-        new URL(v)
-        return null
-      } catch {
-        return 'Base URL format is invalid'
-      }
-    }
-  ],
-  api_key: [
-    ValidationRules.required,
-    (v) => ValidationRules.minLength(v, 10, 'API Key')
-  ],
-  model_name: [
-    ValidationRules.required,
-    (v) => ValidationRules.maxLength(v, 80, 'Model Name')
-  ],
-  system_prompt: [
-    ValidationRules.required,
-    (v) => ValidationRules.minLength(v, 10, 'System Prompt'),
-    (v) => ValidationRules.maxLength(v, 2000, 'System Prompt')
-  ],
-  token_threshold: [
-    ValidationRules.required,
-    (v) => ValidationRules.numberRange(v, 1000, 100000000, 'Token Threshold')
-  ]
-}
-
 // Edit form - includes validation info
 const editForm = ref({
   name: '',
   model_name: '',
+  // Set from the detail response; the model source cannot be changed after
+  // creation, so this is display-only and never submitted.
+  provider_mode: null,
   system_prompt: '',
   token_threshold: 0,
   is_unlimited: false,
@@ -105,6 +56,9 @@ const editForm = ref({
 })
 const editUsedTokens = ref(0)
 const editValidationError = ref('')
+// PLATFORM agents have no base_url / api_key / model_name of their own: the three
+// fields are hidden and model_name is left out of the update payload.
+const editIsPlatform = computed(() => editForm.value.provider_mode === 'PLATFORM')
 // Snapshot of the wake fields as loaded, so only user edits are submitted
 const editWakeOriginal = ref({
   wake_hours_start: null,
@@ -214,6 +168,7 @@ const handleEdit = async (agent) => {
       editForm.value = {
         name: agentDetail.name || '',
         model_name: agentDetail.model_name || '',
+        provider_mode: isPlatformAgent(agentDetail) ? 'PLATFORM' : 'BYOK',
         system_prompt: agentDetail.system_prompt || '',
         token_threshold: agentDetail.token_threshold || 500000,
         is_unlimited: agentDetail.is_unlimited || false,
@@ -262,45 +217,11 @@ const validateEditForm = () => {
   return true
 }
 
-// Submit create
-const submitCreate = async () => {
-  // Validate form
-  createErrors.value = validateObject(createForm.value, createSchema)
-
-  if (hasErrors(createErrors.value)) {
-    createError.value = getErrorMessages(createErrors.value)[0]
-    return
-  }
-
-  createError.value = null
-
-  // Trim and sanitize inputs
-  const sanitizedForm = {
-    ...createForm.value,
-    name: createForm.value.name.trim(),
-    base_url: createForm.value.base_url.trim(),
-    api_key: createForm.value.api_key.trim(),
-    model_name: createForm.value.model_name.trim(),
-    system_prompt: createForm.value.system_prompt.trim(),
-    token_threshold: Math.max(1000, Math.min(100000000, createForm.value.token_threshold))
-  }
-
-  const result = await agentStore.createAgent(sanitizedForm)
-  if (result) {
-    showCreateModal.value = false
-    createForm.value = {
-      name: '',
-      avatar_url: '',
-      base_url: 'https://api.openai.com/v1',
-      api_key: '',
-      model_name: 'gpt-4o-mini',
-      system_prompt: '',
-      token_threshold: 500000,
-      is_unlimited: false
-    }
-    createErrors.value = {}
-    createError.value = null
-  }
+// The wizard owns the create request; the store already prepends the new agent
+// to the list, so the page only has to close the wizard and refresh the log.
+const handleCreated = async () => {
+  showCreateModal.value = false
+  await loadActivityLogs()
 }
 
 // Submit edit
@@ -319,10 +240,10 @@ const submitEdit = async () => {
   // fields read back as null - echoing them would be a write, not a no-op.
   const payload = {
     name: editForm.value.name,
-    model_name: editForm.value.model_name,
     system_prompt: editForm.value.system_prompt,
     token_threshold: editForm.value.token_threshold,
     is_unlimited: editForm.value.is_unlimited,
+    ...(editIsPlatform.value ? {} : { model_name: editForm.value.model_name }),
     ...buildWakeUpdatePayload(editForm.value, editWakeOriginal.value)
   }
 
@@ -508,70 +429,12 @@ const submitResetTokens = async () => {
       </div>
     </div>
 
-    <!-- Create Modal -->
-    <div v-if="showCreateModal" class="fixed inset-0 bg-pulse-bg/80 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
-      <div class="border border-pulse-border bg-pulse-card w-full sm:max-w-lg sm:p-6 max-h-[85vh] sm:max-h-none overflow-y-auto">
-        <div class="flex items-center justify-between mb-3 sm:mb-4 p-4 sm:p-0 border-b sm:border-b-0 border-pulse-border sticky top-0 bg-pulse-card sm:bg-transparent">
-          <span class="text-pulse-white text-xs sm:text-sm">SPAWN_NEW_INSTANCE</span>
-          <button @click="showCreateModal = false; createErrors = {}; createError = null" class="text-pulse-muted text-xs hover:text-pulse-white min-h-[44px] min-w-[44px] flex items-center justify-center">[CLOSE]</button>
-        </div>
-
-        <!-- Validation Error Display -->
-        <div v-if="createError" class="bg-pulse-dead/10 border border-pulse-dead/30 p-2 mb-3 sm:mb-4 mx-4 sm:mx-0">
-          <span class="text-pulse-dead text-xs break-words">> {{ createError }}</span>
-        </div>
-
-        <div class="space-y-3 sm:space-y-4 p-4 sm:p-0">
-          <div>
-            <div class="text-pulse-muted text-[10px] sm:text-xs mb-2">NAME:</div>
-            <input v-model="createForm.name" maxlength="30" class="w-full border border-pulse-border bg-pulse-bg px-3 py-2 text-xs sm:text-sm text-pulse-white min-h-[44px]" :class="{ 'border-pulse-dead': createErrors.name }" placeholder="暴躁老哥" />
-            <div v-if="createErrors.name" class="text-pulse-dead text-[10px] mt-1">> {{ createErrors.name }}</div>
-          </div>
-
-          <div>
-            <div class="text-pulse-muted text-[10px] sm:text-xs mb-2">BASE_URL:</div>
-            <input v-model="createForm.base_url" class="w-full border border-pulse-border bg-pulse-bg px-3 py-2 text-xs sm:text-sm text-pulse-white min-h-[44px]" :class="{ 'border-pulse-dead': createErrors.base_url }" placeholder="https://api.openai.com/v1" />
-            <div v-if="createErrors.base_url" class="text-pulse-dead text-[10px] mt-1">> {{ createErrors.base_url }}</div>
-          </div>
-
-          <div>
-            <div class="text-pulse-muted text-[10px] sm:text-xs mb-2">API_KEY:</div>
-            <input v-model="createForm.api_key" type="password" maxlength="200" class="w-full border border-pulse-border bg-pulse-bg px-3 py-2 text-xs sm:text-sm text-pulse-white min-h-[44px]" :class="{ 'border-pulse-dead': createErrors.api_key }" placeholder="sk-xxxxxx" />
-            <div v-if="createErrors.api_key" class="text-pulse-dead text-[10px] mt-1">> {{ createErrors.api_key }}</div>
-          </div>
-
-          <div>
-            <div class="text-pulse-muted text-[10px] sm:text-xs mb-2">MODEL_NAME:</div>
-            <input v-model="createForm.model_name" maxlength="50" class="w-full border border-pulse-border bg-pulse-bg px-3 py-2 text-xs sm:text-sm text-pulse-white min-h-[44px]" :class="{ 'border-pulse-dead': createErrors.model_name }" placeholder="gpt-4o-mini" />
-            <div v-if="createErrors.model_name" class="text-pulse-dead text-[10px] mt-1">> {{ createErrors.model_name }}</div>
-          </div>
-
-          <div>
-            <div class="text-pulse-muted text-[10px] sm:text-xs mb-2">SYSTEM_PROMPT:</div>
-            <textarea v-model="createForm.system_prompt" rows="3" maxlength="2000" class="w-full border border-pulse-border bg-pulse-bg px-3 py-2 text-xs sm:text-sm text-pulse-white resize-none min-h-[100px]" :class="{ 'border-pulse-dead': createErrors.system_prompt }" placeholder="你是一个理性、克制、喜欢技术讨论的数字居民..."></textarea>
-            <div v-if="createErrors.system_prompt" class="text-pulse-dead text-[10px] mt-1">> {{ createErrors.system_prompt }}</div>
-          </div>
-
-          <div>
-            <div class="text-pulse-muted text-[10px] sm:text-xs mb-2">TOKEN_THRESHOLD:</div>
-            <input v-model="createForm.token_threshold" type="number" min="1000" max="100000000" class="w-full border border-pulse-border bg-pulse-bg px-3 py-2 text-xs sm:text-sm text-pulse-white min-h-[44px]" :class="{ 'border-pulse-dead': createErrors.token_threshold }" placeholder="500000" />
-            <div v-if="createErrors.token_threshold" class="text-pulse-dead text-[10px] mt-1">> {{ createErrors.token_threshold }}</div>
-          </div>
-
-          <div class="flex items-center gap-2 min-h-[44px]">
-            <input v-model="createForm.is_unlimited" type="checkbox" class="accent-pulse-alive" />
-            <span class="text-pulse-muted text-xs">UNLIMITED_SURVIVAL</span>
-          </div>
-
-          <div class="flex gap-2 pt-3 sm:pt-4">
-            <button @click="showCreateModal = false; createErrors = {}; createError = null" class="flex-1 border border-pulse-border text-pulse-muted px-3 py-2 text-xs hover:text-pulse-white transition min-h-[44px]">CANCEL</button>
-            <button @click="submitCreate" :disabled="agentStore.loading" class="flex-1 border border-pulse-alive text-pulse-alive px-3 py-2 text-xs hover:bg-pulse-alive/10 transition disabled:opacity-50 min-h-[44px]">
-              {{ agentStore.loading ? 'CREATING...' : 'CONFIRM_SPAWN' }}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+    <!-- Create Wizard (persona / model source / confirm) -->
+    <AgentCreateWizard
+      :show="showCreateModal"
+      @close="showCreateModal = false"
+      @created="handleCreated"
+    />
 
     <!-- Edit Modal -->
     <div v-if="showEditModal" class="fixed inset-0 bg-pulse-bg/80 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
@@ -595,7 +458,19 @@ const submitResetTokens = async () => {
             <input v-model="editForm.name" class="w-full border border-pulse-border bg-pulse-bg px-3 py-2 text-xs sm:text-sm text-pulse-white min-h-[44px]" />
           </div>
 
-          <div>
+          <!-- Model source. PLATFORM agents own no connection settings, so the
+               three BYOK fields are replaced by a badge and the platform model name. -->
+          <div v-if="editIsPlatform" class="bg-pulse-bg border border-pulse-border p-3">
+            <div class="flex items-center justify-between gap-2">
+              <span class="border border-pulse-accent text-pulse-accent text-[10px] px-1 py-0.5">PLATFORM</span>
+              <span class="text-pulse-text text-[10px] sm:text-xs truncate">{{ editForm.model_name || '未知' }}</span>
+            </div>
+            <div class="text-pulse-muted text-[10px] sm:text-xs mt-2">
+              该 Agent 使用平台模型，按积分计费。模型来源创建后不可更改。
+            </div>
+          </div>
+
+          <div v-else>
             <div class="text-pulse-muted text-[10px] sm:text-xs mb-2">MODEL_NAME:</div>
             <input v-model="editForm.model_name" class="w-full border border-pulse-border bg-pulse-bg px-3 py-2 text-xs sm:text-sm text-pulse-white min-h-[44px]" />
           </div>

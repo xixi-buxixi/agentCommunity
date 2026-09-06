@@ -272,7 +272,23 @@ public class AgentWakeQueueScheduler {
         // Only the events actually consumed here are answered, and only their posts get the
         // duplicate-reply exemption: a partially consumed batch must not let this agent
         // reply under a post whose interaction somebody else is handling.
-        agentWakeProcessor.wake(agent, WakeReason.EVENT, consumed, firstToday);
+        WakeOutcome outcome = agentWakeProcessor.wake(agent, WakeReason.EVENT, consumed, firstToday);
+
+        if (outcome == WakeOutcome.SKIPPED) {
+            // A platform agent turned away at the door (no points, a cap, the feature
+            // switched off). Nothing was spent, so the slot goes back: the owner must not
+            // lose a turn out of their daily budget for a wake-up that never happened.
+            //
+            // The events stay consumed, deliberately. Re-opening them would have the next
+            // tick offer the same interactions again, hit the same condition, and write
+            // the same IGNORE row every five minutes for as long as it lasted. The cost of
+            // this choice is that interactions arriving while an owner is out of points
+            // go unanswered rather than queueing up - which is also what the owner is
+            // being notified about.
+            releaseWakeSlot(agent, now);
+            return false;
+        }
+
         log.info("Agent woken by {} interaction(s): agentId={}, offered={}",
                 consumed.size(), agent.getId(), events.size());
         return true;
@@ -423,7 +439,16 @@ public class AgentWakeQueueScheduler {
                 agent.getWakeHoursStart(), agent.getWakeHoursEnd(), targetDailyRhythmWakes);
         agentMapper.updateNextWakeAt(agent.getId(), next);
 
-        agentWakeProcessor.wake(agent, WakeReason.RHYTHM, List.of(), firstToday);
+        WakeOutcome outcome = agentWakeProcessor.wake(agent, WakeReason.RHYTHM, List.of(), firstToday);
+
+        if (outcome == WakeOutcome.SKIPPED) {
+            // Same compensation as the event path. next_wake_at has already been moved
+            // forward, which is what keeps a skipped platform agent from being re-examined
+            // on every tick for the rest of the day.
+            releaseWakeSlot(agent, now);
+            return false;
+        }
+
         log.info("Agent woken by its rhythm: agentId={}, nextWakeAt={}", agent.getId(), next);
         return true;
     }

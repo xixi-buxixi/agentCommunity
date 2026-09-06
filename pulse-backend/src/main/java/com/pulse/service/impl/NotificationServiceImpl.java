@@ -16,6 +16,7 @@ import com.pulse.service.support.AuthorResolver;
 import com.pulse.util.MemoryTextSanitizer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
@@ -28,8 +29,8 @@ import java.util.Objects;
 /**
  * Notification Service Implementation.
  *
- * Four rules hold for every producer call, and they are the same three that govern
- * {@link AgentWakeEventServiceImpl} plus one:
+ * Five rules hold for every producer call, and the first three are the same ones that
+ * govern {@link AgentWakeEventServiceImpl}:
  * 1. Never throw. The caller is in the middle of creating a comment, moving points or
  *    settling a bounty; a notification is worth strictly less than any of those.
  * 2. Never notify somebody about their own action. The project already forbids most
@@ -39,6 +40,7 @@ import java.util.Objects;
  *    serving the whole community normally.
  * 4. Store a snapshot. Title and body are rendered once, at the moment of the event,
  *    and never re-derived from rows that may since have changed.
+ * 5. Do not repeat a line the user has not read yet. See {@link #isDuplicate}.
  *
  * The read half is the opposite: it validates, it filters on the recipient, and a
  * missing table is reported rather than hidden (see {@link #requireTable()}).
@@ -72,6 +74,17 @@ public class NotificationServiceImpl implements NotificationService {
     private final NotificationMapper notificationMapper;
     private final SchemaCapabilities schemaCapabilities;
     private final AuthorResolver authorResolver;
+
+    /**
+     * How long an unread notification suppresses an identical one, in minutes.
+     *
+     * 10 by default: long enough to collapse the burst that a single conversation
+     * produces, short enough that coming back to a post an hour later is still reported.
+     * 0 or less switches de-duplication off entirely, which is the honest way to say
+     * "report everything" rather than a window so small it is untestable.
+     */
+    @Value("${notifications.dedup-window-minutes:10}")
+    private int dedupWindowMinutes;
 
     // ========== Recipient-facing ==========
 
@@ -272,6 +285,9 @@ public class NotificationServiceImpl implements NotificationService {
                     recipientUserId, type);
             return;
         }
+        if (isDuplicate(type, recipientUserId, actorType, actorId, linkType, linkId)) {
+            return;
+        }
 
         try {
             Notification notification = new Notification();
@@ -298,6 +314,47 @@ public class NotificationServiceImpl implements NotificationService {
             // about it. Never rethrow: this runs inside the caller's transaction.
             log.warn("Failed to write notification: userId={}, type={}, error={}",
                     recipientUserId, type, e.getMessage());
+        }
+    }
+
+    /**
+     * Whether the same unread line is already in this user's inbox.
+     *
+     * Without this, one conversation produces one notification per message: an agent and
+     * a person going back and forth under a post filled the owner's inbox with twenty
+     * identical "someone replied to your post" rows, and the twentieth said nothing the
+     * first had not.
+     *
+     * The check is a read before a write and therefore racy - two simultaneous events can
+     * both find nothing and both insert. That is deliberate: the alternative is a unique
+     * key on a tuple that includes a time bucket, which would make a notification failure
+     * able to abort somebody's comment. Losing the race costs one duplicate row; the
+     * check is a noise filter, not an invariant.
+     *
+     * A failure here is answered with "not a duplicate": a broken count must degrade into
+     * a possible extra notification, never into a silently dropped one.
+     */
+    private boolean isDuplicate(NotificationType type, Long recipientUserId,
+                                String actorType, Long actorId,
+                                NotificationLinkType linkType, Long linkId) {
+        if (dedupWindowMinutes <= 0) {
+            return false;
+        }
+        try {
+            LocalDateTime since = LocalDateTime.now().minusMinutes(dedupWindowMinutes);
+            int existing = notificationMapper.countRecentDuplicates(recipientUserId,
+                    type.getCode(), linkType == null ? null : linkType.getCode(), linkId,
+                    actorType, actorId, since);
+            if (existing > 0) {
+                log.debug("Suppressing a duplicate notification: userId={}, type={}, "
+                        + "linkType={}, linkId={}", recipientUserId, type, linkType, linkId);
+                return true;
+            }
+            return false;
+        } catch (Exception e) {
+            log.warn("Could not check for duplicate notifications, writing it anyway: "
+                    + "userId={}, type={}, error={}", recipientUserId, type, e.getMessage());
+            return false;
         }
     }
 

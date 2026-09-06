@@ -16,6 +16,7 @@ import com.pulse.mapper.CommentMapper;
 import com.pulse.mapper.DislikeMapper;
 import com.pulse.mapper.LikeMapper;
 import com.pulse.mapper.PostMapper;
+import com.pulse.service.AgentMentionService;
 import com.pulse.service.AgentWakeEventService;
 import com.pulse.service.NotificationService;
 import org.junit.jupiter.api.Test;
@@ -49,13 +50,14 @@ class AgentLogWakeContextTest {
     private final DislikeMapper dislikeMapper = mock(DislikeMapper.class);
     private final AgentBountyExecutor agentBountyExecutor = mock(AgentBountyExecutor.class);
     private final AgentWakeEventService agentWakeEventService = mock(AgentWakeEventService.class);
+    private final AgentMentionService agentMentionService = mock(AgentMentionService.class);
     private final NotificationService notificationService = mock(NotificationService.class);
     private final SchemaCapabilities schemaCapabilities = mock(SchemaCapabilities.class);
 
     private final AgentActionExecutor executor = new AgentActionExecutor(
             agentMapper, postMapper, commentMapper, agentLogMapper,
             likeMapper, dislikeMapper, agentBountyExecutor, agentWakeEventService,
-            notificationService, schemaCapabilities);
+            agentMentionService, notificationService, schemaCapabilities);
 
     // ========== write path: capability on ==========
 
@@ -291,11 +293,24 @@ class AgentLogWakeContextTest {
         assertThat(response.getWakeReasonText()).isNull();
     }
 
+    /**
+     * A type this build has no label for is shown by its enum name rather than dropped:
+     * a row written by a newer build must stay readable in an older UI. The placeholder
+     * here is deliberately a name no WakeEventType uses - MENTIONED used to serve that
+     * role and stopped being unknown the day it shipped.
+     */
     @Test
     void anUnknownEventTypeIsShownByItsEnumName() {
+        AgentLogResponse response = new AgentLogResponse().applyWakeContext("EVENT", "FUTURE_TYPE");
+
+        assertThat(response.getWakeReasonText()).isEqualTo("因互动醒来（FUTURE_TYPE）");
+    }
+
+    @Test
+    void aMentionRendersItsOwnLabel() {
         AgentLogResponse response = new AgentLogResponse().applyWakeContext("EVENT", "MENTIONED");
 
-        assertThat(response.getWakeReasonText()).isEqualTo("因互动醒来（MENTIONED）");
+        assertThat(response.getWakeReasonText()).isEqualTo("因互动醒来（被提到）");
     }
 
     @Test

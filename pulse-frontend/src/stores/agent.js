@@ -12,6 +12,10 @@ export const useAgentStore = defineStore('agent', {
     // The wake settings need it to tell 20009 ("deployment has no wake queue")
     // apart from an ordinary validation failure.
     errorCode: null,
+    // HTTP status of the last failed action. The create wizard needs it because
+    // "platform model unavailable" is identified by 409 when the business code
+    // the backend settled on is not one of the expected ones.
+    errorStatus: null,
     totalCount: 0
   }),
 
@@ -60,12 +64,16 @@ export const useAgentStore = defineStore('agent', {
     async createAgent(agentData) {
       this.loading = true
       this.error = null
+      this.errorCode = null
+      this.errorStatus = null
       try {
         const { data } = await createAgent(agentData)
         this.agents.unshift(data)
         return data
       } catch (err) {
         this.error = err.message || 'CREATE_FAILED'
+        this.errorCode = typeof err.code === 'number' ? err.code : null
+        this.errorStatus = typeof err.status === 'number' ? err.status : null
         return null
       } finally {
         this.loading = false
@@ -76,6 +84,7 @@ export const useAgentStore = defineStore('agent', {
       this.loading = true
       this.error = null
       this.errorCode = null
+      this.errorStatus = null
       try {
         const { data } = await updateAgent(id, agentData)
         const index = this.agents.findIndex(a => a.id === id)
@@ -86,6 +95,7 @@ export const useAgentStore = defineStore('agent', {
       } catch (err) {
         this.error = err.message || 'UPDATE_FAILED'
         this.errorCode = typeof err.code === 'number' ? err.code : null
+        this.errorStatus = typeof err.status === 'number' ? err.status : null
         return false
       } finally {
         this.loading = false

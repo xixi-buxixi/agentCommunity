@@ -69,6 +69,45 @@ public class SchemaCapabilities {
      */
     private boolean notificationsTable;
 
+    /**
+     * Whether the memory cards have a table at all.
+     *
+     * Only consulted by the retention purge today, which must not run a DELETE against a
+     * table that is not there. The read and write paths of the memory feature predate this
+     * flag and handle their own failures, so they are deliberately left alone: adding a
+     * gate there would change behaviour that is already shipped and tested.
+     *
+     * Apply deploy/migrations/2026-07-28-agent-memories.sql to enable it.
+     */
+    private boolean agentMemoriesTable;
+
+    /**
+     * Whether agents.last_reflection_attempt_at exists.
+     *
+     * It is the cursor the daily reflection pass orders its candidates by: with it, the
+     * agent that waited longest goes first and the run pages through a (time, id) keyset;
+     * without it the pass keeps its original id-ordered cursor, which reflects on the
+     * lowest ids first every night and starves the tail whenever the per-run cap bites.
+     *
+     * Apply deploy/migrations/2026-09-06-agent-reflection-cursor.sql to enable it.
+     */
+    private boolean reflectionCursorColumn;
+
+    /**
+     * Whether an agent row can say which provider mode it runs in: both provider_mode and
+     * template_id must exist, because the insert path writes them together.
+     *
+     * Without it the whole platform-hosted model feature is off, not degraded. That is
+     * deliberate and stronger than the usual fallback: every agent would read back as
+     * BYOK, so a "PLATFORM" agent created here would be a BYOK agent with no key - it
+     * would look created, then fail on every wake-up with a decryption error. Creating one
+     * is therefore refused with PLATFORM_MODEL_UNAVAILABLE, and BYOK agents are entirely
+     * unaffected.
+     *
+     * Apply deploy/migrations/2026-09-06-agent-provider-mode.sql to enable it.
+     */
+    private boolean agentProviderModeColumns;
+
     @PostConstruct
     public void detect() {
         hotScoreColumn = columnExists("posts", "hot_score");
@@ -87,11 +126,18 @@ public class SchemaCapabilities {
         agentLogWakeColumns = columnExists("agent_logs", "wake_reason")
                 && columnExists("agent_logs", "wake_event_types");
         notificationsTable = tableExists("notifications");
+        agentMemoriesTable = tableExists("agent_memories");
+        reflectionCursorColumn = columnExists("agents", "last_reflection_attempt_at");
+
+        agentProviderModeColumns = columnExists("agents", "provider_mode")
+                && columnExists("agents", "template_id");
 
         log.info("Schema capabilities: posts.hot_score={}, agents.last_dispatched_at={}, "
-                        + "shedlock={}, wake-queue={}, agent-log-wake-columns={}, notifications={}",
+                        + "shedlock={}, wake-queue={}, agent-log-wake-columns={}, notifications={}, "
+                        + "agent-memories={}, reflection-cursor={}, agent-provider-mode={}",
                 hotScoreColumn, lastDispatchedAtColumn, shedlockTable, wakeQueueSchema,
-                agentLogWakeColumns, notificationsTable);
+                agentLogWakeColumns, notificationsTable, agentMemoriesTable, reflectionCursorColumn,
+                agentProviderModeColumns);
 
         if (!hotScoreColumn || !lastDispatchedAtColumn || !shedlockTable) {
             log.warn("Some optional schema objects are missing, running with fallbacks. "
@@ -107,6 +153,17 @@ public class SchemaCapabilities {
             log.warn("notifications table is absent; every notification is dropped with a warning "
                     + "and the notification endpoints report NOTIFICATIONS_UNAVAILABLE. Apply "
                     + "deploy/migrations/2026-09-06-notifications.sql to enable it.");
+        }
+        if (!reflectionCursorColumn) {
+            log.warn("agents has no last_reflection_attempt_at column; the daily reflection pass "
+                    + "keeps its id-ordered candidate cursor. Apply "
+                    + "deploy/migrations/2026-09-06-agent-reflection-cursor.sql to enable "
+                    + "least-recently-attempted ordering.");
+        }
+        if (!agentProviderModeColumns) {
+            log.warn("agents has no provider_mode / template_id columns; the platform-hosted "
+                    + "model is unavailable and every agent must bring its own key. Apply "
+                    + "deploy/migrations/2026-09-06-agent-provider-mode.sql to enable it.");
         }
         if (!wakeQueueSchema) {
             log.warn("Wake-queue schema is incomplete (agents rhythm columns / agent_wake_events); "

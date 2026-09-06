@@ -3,6 +3,7 @@ package com.pulse.service.impl;
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.pulse.dto.request.CommentCreateRequest;
+import com.pulse.dto.request.PostCreateRequest;
 import com.pulse.dto.response.CommentResponse;
 import com.pulse.entity.Agent;
 import com.pulse.entity.Comment;
@@ -18,6 +19,7 @@ import com.pulse.mapper.LikeMapper;
 import com.pulse.mapper.PostMapper;
 import com.pulse.mapper.PostViewMapper;
 import com.pulse.mapper.UserMapper;
+import com.pulse.service.AgentMentionService;
 import com.pulse.service.AgentWakeEventService;
 import com.pulse.config.SchemaCapabilities;
 import com.pulse.entity.Notification;
@@ -25,6 +27,7 @@ import com.pulse.mapper.NotificationMapper;
 import com.pulse.service.NotificationService;
 import com.pulse.service.support.AuthorResolver;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.time.LocalDateTime;
 
@@ -32,6 +35,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -48,6 +52,7 @@ class PostServiceImplTest {
     private final AgentMapper agentMapper = mock(AgentMapper.class);
     private final AuthorResolver authorResolver = new AuthorResolver(userMapper, agentMapper);
     private final AgentWakeEventService agentWakeEventService = mock(AgentWakeEventService.class);
+    private final AgentMentionService agentMentionService = mock(AgentMentionService.class);
     private final NotificationService notificationService = mock(NotificationService.class);
 
     private final PostServiceImpl service = new PostServiceImpl(
@@ -60,6 +65,7 @@ class PostServiceImplTest {
             agentMapper,
             authorResolver,
             agentWakeEventService,
+            agentMentionService,
             notificationService
     );
 
@@ -313,6 +319,7 @@ class PostServiceImplTest {
         PostServiceImpl withRealNotifications = new PostServiceImpl(
                 postMapper, commentMapper, likeMapper, dislikeMapper, postViewMapper,
                 userMapper, agentMapper, authorResolver, agentWakeEventService,
+                agentMentionService,
                 new NotificationServiceImpl(notificationMapper, capabilities, authorResolver));
 
         when(postMapper.selectById(88L)).thenReturn(humanPost(88L, 10L));
@@ -359,6 +366,7 @@ class PostServiceImplTest {
         PostServiceImpl withRealNotifications = new PostServiceImpl(
                 postMapper, commentMapper, likeMapper, dislikeMapper, postViewMapper,
                 userMapper, agentMapper, authorResolver, agentWakeEventService,
+                agentMentionService,
                 new NotificationServiceImpl(failingMapper, capabilities, authorResolver));
 
         when(postMapper.selectById(88L)).thenReturn(humanPost(88L, 10L));
@@ -370,6 +378,77 @@ class PostServiceImplTest {
         assertThat(response).isNotNull();
         verify(commentMapper).insert(any(Comment.class));
         verify(postMapper).incrementCommentCount(88L);
+    }
+
+    // ========== Mentions ==========
+
+    /**
+     * A person writing "@name" in a new post reaches their own agents - which is the
+     * useful half of this feature: it is how an owner calls an agent to a subject without
+     * waiting for its rhythm.
+     */
+    @Test
+    void aNewPostGoesThroughTheMentionPath() {
+        PostCreateRequest request = new PostCreateRequest();
+        request.setContent("@Nova 来看看这个");
+
+        service.createPost(10L, request);
+
+        ArgumentCaptor<Post> post = ArgumentCaptor.forClass(Post.class);
+        verify(agentMentionService).recordMentionsInPost(post.capture(),
+                eq(AuthorType.HUMAN.getCode()), eq(10L));
+        assertThat(post.getValue().getContent()).isEqualTo("@Nova 来看看这个");
+    }
+
+    /**
+     * A top-level comment on an agent's post already queues a COMMENTED event for that
+     * agent, so the mention path is told to skip it: one interaction is one wake-up, and
+     * naming the agent in the comment that is already bringing it back adds nothing.
+     */
+    @Test
+    void aCommentOnAnAgentPostTellsTheMentionPathWhoIsAlreadyBeingWoken() {
+        when(postMapper.selectById(88L)).thenReturn(agentPost(88L, 30L));
+        when(userMapper.selectById(20L)).thenReturn(user(20L, "bob"));
+        when(agentMapper.selectById(30L)).thenReturn(agent(30L, "Nova", 99L));
+
+        service.createComment(20L, 88L, commentRequest("@Nova 你怎么看", null));
+
+        verify(agentMentionService).recordMentionsInComment(any(Post.class), any(Comment.class),
+                eq(AuthorType.HUMAN.getCode()), eq(20L), eq(30L));
+    }
+
+    /**
+     * A reply attributes the already-queued wake-up to the parent comment's agent author,
+     * not to the post's - the same agent the REPLIED event went to.
+     */
+    @Test
+    void aReplyToAnAgentCommentAttributesTheExclusionToThatAgent() {
+        when(postMapper.selectById(88L)).thenReturn(humanPost(88L, 10L));
+        when(userMapper.selectById(20L)).thenReturn(user(20L, "bob"));
+        Comment agentComment = topLevelComment(5L, 88L, 31L);
+        agentComment.setAuthorType(AuthorType.AGENT.getCode());
+        when(commentMapper.selectById(5L)).thenReturn(agentComment);
+        when(agentMapper.selectById(31L)).thenReturn(agent(31L, "Echo", 99L));
+
+        service.createComment(20L, 88L, commentRequest("@Nova 也说说", 5L));
+
+        verify(agentMentionService).recordMentionsInComment(any(Post.class), any(Comment.class),
+                eq(AuthorType.HUMAN.getCode()), eq(20L), eq(31L));
+    }
+
+    /**
+     * A comment under a human's post wakes nobody by itself, so nothing is excluded and
+     * every mentioned agent is fair game.
+     */
+    @Test
+    void aCommentOnAHumanPostExcludesNobodyFromTheMentionPath() {
+        when(postMapper.selectById(88L)).thenReturn(humanPost(88L, 10L));
+        when(userMapper.selectById(20L)).thenReturn(user(20L, "bob"));
+
+        service.createComment(20L, 88L, commentRequest("@Nova 看一下", null));
+
+        verify(agentMentionService).recordMentionsInComment(any(Post.class), any(Comment.class),
+                eq(AuthorType.HUMAN.getCode()), eq(20L), isNull());
     }
 
     private Agent agent(Long id, String name, Long ownerId) {

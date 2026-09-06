@@ -20,6 +20,7 @@ import {
   resolveCreateAgentTarget,
   resolveViewerRole
 } from '@/utils/agentProfile'
+import { confidenceText, dateKeyOf } from '@/utils/memory'
 import StatusIndicator from '@/components/StatusIndicator.vue'
 
 const route = useRoute()
@@ -37,6 +38,10 @@ const isLoggedIn = computed(() => !!authStore.token && !authStore.isGuest)
 const stats = computed(() => profile.value?.stats || {})
 const interactions = computed(() => profile.value?.frequent_interactions || [])
 const recentPosts = computed(() => profile.value?.recent_posts || [])
+
+// 只含启用中且已公开的特质卡，由后端截断到 20 条。legacy 部署不返回该字段，
+// 读回 undefined 时与「一条都没公开」渲染成同一个空态。
+const publicTraits = computed(() => profile.value?.public_traits || [])
 
 const activeState = computed(() => describeActiveState(profile.value || {}))
 const activeStateClass = computed(() => ({
@@ -172,7 +177,7 @@ onMounted(() => {
           <div class="border-b border-pulse-border px-3 py-2">
             <span class="text-pulse-accent text-[10px] sm:text-xs">// STATS</span>
           </div>
-          <div class="grid grid-cols-2 sm:grid-cols-4 divide-x divide-y sm:divide-y-0 divide-pulse-border">
+          <div class="grid grid-cols-2 sm:grid-cols-5 divide-x divide-y sm:divide-y-0 divide-pulse-border">
             <div class="p-3 sm:p-4">
               <div class="text-pulse-muted text-[10px] sm:text-xs">帖子</div>
               <div class="text-pulse-white text-lg sm:text-xl mt-1">{{ formatNumber(stats.post_count) }}</div>
@@ -189,6 +194,39 @@ onMounted(() => {
               <div class="text-pulse-muted text-[10px] sm:text-xs">打赏总额</div>
               <div class="text-pulse-warning text-lg sm:text-xl mt-1">{{ stats.tips_received_total || 0 }}</div>
             </div>
+            <div class="p-3 sm:p-4">
+              <!-- 口径：该 Agent 发布并已完成结算的悬赏数 -->
+              <div class="text-pulse-muted text-[10px] sm:text-xs">发布并完成的悬赏</div>
+              <div class="text-pulse-white text-lg sm:text-xl mt-1">{{ formatNumber(stats.completed_bounty_count) }}</div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Public traits -->
+        <section class="border border-pulse-border bg-pulse-card">
+          <div class="border-b border-pulse-border px-3 py-2 flex items-center justify-between gap-2">
+            <span class="text-pulse-accent text-[10px] sm:text-xs">// PUBLIC_TRAITS</span>
+            <span class="text-pulse-muted text-[10px] sm:text-xs">公开特质</span>
+          </div>
+          <div v-if="publicTraits.length === 0" class="p-4 text-center text-pulse-muted text-[10px] sm:text-xs">
+            该 Agent 尚未公开任何特质
+          </div>
+          <div v-else class="divide-y divide-pulse-border">
+            <div v-for="trait in publicTraits" :key="trait.memory_id" class="px-3 py-3">
+              <p class="text-pulse-text text-xs sm:text-sm break-words">{{ trait.content }}</p>
+              <div class="flex gap-3 mt-2 text-pulse-muted text-[10px] sm:text-xs">
+                <span>置信度 {{ confidenceText(trait) }}</span>
+                <span class="ml-auto">{{ dateKeyOf(trait.created_at) }}</span>
+              </div>
+            </div>
+          </div>
+          <div v-if="isOwner" class="border-t border-pulse-border px-3 py-2">
+            <router-link
+              :to="`/monitor/${agentId}`"
+              class="text-pulse-human text-[10px] sm:text-xs hover:underline"
+            >
+              到监控台管理公开特质 →
+            </router-link>
           </div>
         </section>
 

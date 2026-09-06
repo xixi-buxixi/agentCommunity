@@ -178,6 +178,101 @@ class PointsServiceImplTest {
         verify(sysLedgerMapper, never()).insert(any());
     }
 
+    // ========== spendAvailablePoints (platform model usage) ==========
+
+    /**
+     * The verb that is neither a freeze nor a credit: the points are gone the moment the
+     * tokens were burned, and the row has to say which agent burned them.
+     */
+    @Test
+    void spendingWritesAnExpenseRowAgainstTheGivenRelatedType() {
+        // requireUser, the pre-read, then the post-update re-read - in that order
+        when(userMapper.selectById(USER_ID)).thenReturn(user("100.00", "0.00"),
+                user("100.00", "0.00"), user("98.00", "0.00"));
+        when(userMapper.deductAvailablePointsAtomic(eq(USER_ID), any())).thenReturn(1);
+
+        BigDecimal spent = pointsService.spendAvailablePoints(USER_ID, new BigDecimal("2.00"),
+                "LLM_USAGE", "AGENT", 99L, "平台模型消耗 2000 tokens");
+
+        assertThat(spent).isEqualByComparingTo("2.00");
+        SysLedger ledger = captureLedger();
+        assertThat(ledger.getAmount()).isEqualByComparingTo("-2.00");
+        assertThat(ledger.getType()).isEqualTo("LLM_USAGE");
+        assertThat(ledger.getRelatedType()).isEqualTo("AGENT");
+        assertThat(ledger.getRelatedId()).isEqualTo(99L);
+        assertThat(ledger.getBalanceBefore()).isEqualByComparingTo("100.00");
+        assertThat(ledger.getBalanceAfter()).isEqualByComparingTo("98.00");
+    }
+
+    /**
+     * The provider has already billed, so a short balance is charged to what is there.
+     * Throwing would mean the platform absorbing the cost AND the owner keeping points
+     * they have spent.
+     */
+    @Test
+    void aShortBalanceIsChargedToZeroInsteadOfThrowing() {
+        when(userMapper.selectById(USER_ID)).thenReturn(user("0.50", "0.00"),
+                user("0.50", "0.00"), user("0.00", "0.00"));
+        when(userMapper.deductAvailablePointsAtomic(eq(USER_ID), eq(new BigDecimal("0.50"))))
+                .thenReturn(1);
+
+        BigDecimal spent = pointsService.spendAvailablePoints(USER_ID, new BigDecimal("2.00"),
+                "LLM_USAGE", "AGENT", 99L, "平台模型消耗");
+
+        assertThat(spent).isEqualByComparingTo("0.50");
+        assertThat(captureLedger().getAmount()).isEqualByComparingTo("-0.50");
+    }
+
+    /**
+     * An empty balance writes no row at all: a 0-value entry claims a movement that did
+     * not happen, which is the thing refundPoints was fixed to stop doing.
+     */
+    @Test
+    void anEmptyBalanceWritesNoLedgerRow() {
+        when(userMapper.selectById(USER_ID)).thenReturn(user("0.00", "0.00"));
+
+        BigDecimal spent = pointsService.spendAvailablePoints(USER_ID, new BigDecimal("2.00"),
+                "LLM_USAGE", "AGENT", 99L, "平台模型消耗");
+
+        assertThat(spent).isEqualByComparingTo("0");
+        verify(userMapper, never()).deductAvailablePointsAtomic(any(), any());
+        verify(sysLedgerMapper, never()).insert(any());
+    }
+
+    /**
+     * The frozen half of the balance is not spendable here either - a platform call must
+     * never eat points reserved for an open bounty. The atomic predicate enforces it; the
+     * pre-read has to agree, or the amount offered to the update would be wrong.
+     */
+    @Test
+    void frozenPointsAreNotSpendable() {
+        when(userMapper.selectById(USER_ID)).thenReturn(user("100.00", "99.00"),
+                user("100.00", "99.00"), user("99.00", "99.00"));
+        when(userMapper.deductAvailablePointsAtomic(eq(USER_ID), eq(new BigDecimal("1.00"))))
+                .thenReturn(1);
+
+        BigDecimal spent = pointsService.spendAvailablePoints(USER_ID, new BigDecimal("5.00"),
+                "LLM_USAGE", "AGENT", 99L, "平台模型消耗");
+
+        assertThat(spent).isEqualByComparingTo("1.00");
+    }
+
+    /**
+     * The pre-existing bounty callers must keep writing related_type=BOUNTY: the new
+     * overload defaults it, and a drift there would make every historical ledger query
+     * wrong.
+     */
+    @Test
+    void bountyMovementsStillRecordTheBountyRelatedType() {
+        when(userMapper.selectById(USER_ID)).thenReturn(user("500.00", "0.00"), user("500.00", "30.00"),
+                user("500.00", "30.00"));
+        when(userMapper.deductAndFreezePointsAtomic(eq(USER_ID), any())).thenReturn(1);
+
+        pointsService.deductPoints(USER_ID, new BigDecimal("30.00"), TASK_ID, "freeze");
+
+        assertThat(captureLedger().getRelatedType()).isEqualTo("BOUNTY");
+    }
+
     private SysLedger captureLedger() {
         ArgumentCaptor<SysLedger> captor = ArgumentCaptor.forClass(SysLedger.class);
         verify(sysLedgerMapper).insert(captor.capture());

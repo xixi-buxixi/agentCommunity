@@ -51,6 +51,17 @@ public class SecretsValidator {
     @Value("${pulse.trusted-proxies:}")
     private String trustedProxies;
 
+    /**
+     * The platform's own provider key. Only meaningful when the platform-hosted model is
+     * switched on, which is why both are injected: a placeholder in a field nobody reads
+     * is not a security problem, and failing startup over it would be noise.
+     */
+    @Value("${platform-llm.enabled:false}")
+    private boolean platformLlmEnabled;
+
+    @Value("${platform-llm.api-key:}")
+    private String platformLlmApiKey;
+
     @PostConstruct
     public void validate() {
         requireStrongSecret("JWT_SECRET (jwt.secret)", jwtSecret);
@@ -78,6 +89,25 @@ public class SecretsValidator {
                     + "Anyone can push daily-report content until it is rotated on both sides.");
         }
 
+        // The platform model key is a real provider credential and is treated like one -
+        // but only while the feature is actually on. Unlike the ingest token this DOES
+        // abort startup on a placeholder: a publicly known value here would let anyone
+        // spend the platform's provider account, and unlike JWT/AES it is not needed for
+        // the service to function, so refusing to boot costs a feature rather than the
+        // site. An EMPTY key is not an error at all - PlatformLlmProperties reports it and
+        // treats the model as unavailable, which is the correct degradation.
+        if (platformLlmEnabled) {
+            if (platformLlmApiKey == null || platformLlmApiKey.isBlank()) {
+                log.error("PLATFORM_LLM_ENABLED is true but PLATFORM_LLM_API_KEY is empty: "
+                        + "the platform-hosted model is unavailable and agents created against "
+                        + "it will be refused.");
+            } else if (PUBLIC_PLACEHOLDERS.contains(platformLlmApiKey.trim())) {
+                throw new IllegalStateException("PLATFORM_LLM_API_KEY (platform-llm.api-key) is set "
+                        + "to a publicly known placeholder value. Set the real platform provider "
+                        + "key, or set PLATFORM_LLM_ENABLED=false.");
+            }
+        }
+
         // Redacted resolution summary.
         //
         // The production outage during this rollout was a deployment script that
@@ -85,11 +115,26 @@ public class SecretsValidator {
         // "Could not resolve placeholder", with nothing in the log about what had
         // been resolved. Printing lengths (never values) makes that failure mode
         // obvious at a glance next time.
-        log.info("Secret validation passed (jwt={} bytes, aes={} chars, ingest-token={}, trusted-proxies={})",
+        log.info("Secret validation passed (jwt={} bytes, aes={} chars, ingest-token={}, "
+                        + "trusted-proxies={}, platform-llm-key={})",
                 jwtSecret.getBytes(StandardCharsets.UTF_8).length,
                 aesSecretKey.length(),
                 isPlaceholder(hermesIngestToken) ? "PLACEHOLDER" : "configured",
-                trustedProxies == null || trustedProxies.isBlank() ? "none (loopback/private only)" : "configured");
+                trustedProxies == null || trustedProxies.isBlank() ? "none (loopback/private only)" : "configured",
+                describePlatformKey());
+    }
+
+    /**
+     * Length only, never the value - the same stance as the byte counts above.
+     */
+    private String describePlatformKey() {
+        if (!platformLlmEnabled) {
+            return "disabled";
+        }
+        if (platformLlmApiKey == null || platformLlmApiKey.isBlank()) {
+            return "MISSING";
+        }
+        return "configured(" + platformLlmApiKey.length() + " chars)";
     }
 
     private void requireStrongSecret(String name, String value) {

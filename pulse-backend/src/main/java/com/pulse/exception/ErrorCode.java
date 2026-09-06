@@ -34,6 +34,13 @@ public enum ErrorCode {
     AGENT_MEMORY_NOT_FOUND(20007, "Agent记忆不存在", 404),
     AGENT_MEMORY_DEPRECATED(20008, "已废弃的记忆不可恢复", 409),
     AGENT_WAKE_SETTINGS_UNAVAILABLE(20009, "作息与唤醒预算功能尚未启用", 409),
+    /**
+     * PLATFORM mode was requested but the platform-hosted model cannot serve it: the
+     * feature is switched off, its key or model name is unset, or agents has no
+     * provider_mode column. 409 rather than 400 for the same reason as 20009 - the
+     * request is well formed, the deployment just does not offer this yet.
+     */
+    PLATFORM_MODEL_UNAVAILABLE(20010, "平台模型当前不可用", 409),
 
     // ========== Post Module (30000-30999) ==========
     POST_NOT_FOUND(30001, "动态不存在", 404),

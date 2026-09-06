@@ -14,6 +14,7 @@ import com.pulse.entity.Agent;
 import com.pulse.entity.AgentLog;
 import com.pulse.entity.User;
 import com.pulse.enums.AgentStatus;
+import com.pulse.enums.ProviderMode;
 import com.pulse.enums.ActionType;
 import com.pulse.exception.BusinessException;
 import com.pulse.exception.ErrorCode;
@@ -23,7 +24,11 @@ import com.pulse.mapper.PostMapper;
 import com.pulse.mapper.UserMapper;
 import com.pulse.entity.Post;
 import com.pulse.service.AgentService;
+import com.pulse.service.support.LlmCredentialResolver;
+import com.pulse.config.AgentTemplateCatalog;
+import com.pulse.config.PlatformLlmProperties;
 import com.pulse.config.SchemaCapabilities;
+import com.pulse.dto.AgentProviderSettings;
 import com.pulse.dto.AgentWakeSettings;
 import com.pulse.service.support.WakeScheduleCalculator;
 import com.pulse.util.AesUtil;
@@ -58,6 +63,9 @@ public class AgentServiceImpl implements AgentService {
     private final AesUtil aesUtil;
     private final SchemaCapabilities schemaCapabilities;
     private final WakeScheduleCalculator wakeScheduleCalculator;
+    private final LlmCredentialResolver credentialResolver;
+    private final PlatformLlmProperties platformLlmProperties;
+    private final AgentTemplateCatalog agentTemplateCatalog;
 
     /**
      * Rhythm wake-ups per day used when seeding a new agent's schedule; the scheduler
@@ -68,6 +76,12 @@ public class AgentServiceImpl implements AgentService {
 
     @Value("${scheduler.agent-loop.default-daily-wake-budget:4}")
     private int defaultDailyWakeBudget;
+
+    /**
+     * What api_key_masked says for an agent running on the platform's key. A sentinel,
+     * not a mask of anything: there is no per-agent key to mask.
+     */
+    private static final String PLATFORM_API_KEY_PLACEHOLDER = "PLATFORM";
 
     /** Daytime window used when a stored bound is missing or unusable. */
     private static final int DEFAULT_WAKE_HOURS_START = 9;
@@ -98,6 +112,31 @@ public class AgentServiceImpl implements AgentService {
         String modelName = normalizeText(request.getModelName());
         String systemPrompt = normalizeText(request.getSystemPrompt());
 
+        // Which credentials this agent will run on decides which of the three fields
+        // above are required, so it is resolved before any of them is looked at.
+        ProviderMode providerMode = resolveRequestedMode(request.getProviderMode());
+        String templateId = resolveTemplateId(request.getTemplateId());
+
+        if (providerMode == ProviderMode.PLATFORM) {
+            if (!credentialResolver.isPlatformAvailable()) {
+                // Not 500 and not a silent downgrade to BYOK: the request is well formed,
+                // this deployment simply does not offer a hosted model. A downgrade would
+                // create an agent with no key that fails on its first wake-up.
+                throw new BusinessException(ErrorCode.PLATFORM_MODEL_UNAVAILABLE);
+            }
+            // Stored as null rather than as a copy of the platform settings. A copy would
+            // be a second source of truth for a value the operator can change, and rotating
+            // the platform key would then leave every agent row holding a stale one.
+            baseUrl = null;
+            apiKey = null;
+            modelName = null;
+        } else {
+            // The @NotBlank annotations these replace could not stay on the DTO: whether
+            // the field is required depends on provider_mode. Same error code, so a BYOK
+            // client sees exactly the response it saw before.
+            requirePresent(baseUrl, apiKey, modelName);
+        }
+
         // Check if name already exists for this owner
         if (agentNameExists(ownerId, name)) {
             throw new BusinessException(ErrorCode.AGENT_NAME_EXISTS);
@@ -110,7 +149,7 @@ public class AgentServiceImpl implements AgentService {
         agent.setAvatarUrl(request.getAvatarUrl());
         // Trim baseUrl to avoid URL encoding issues (spaces become %20)
         agent.setBaseUrl(baseUrl);
-        agent.setApiKey(aesUtil.encrypt(apiKey)); // Encrypt API Key
+        agent.setApiKey(apiKey != null ? aesUtil.encrypt(apiKey) : null); // Encrypt API Key
         agent.setModelName(modelName);
         agent.setSystemPrompt(systemPrompt);
         agent.setTokenThreshold(request.getTokenThreshold());
@@ -120,11 +159,92 @@ public class AgentServiceImpl implements AgentService {
         agent.setVersion(0);
 
         agentMapper.insert(agent);
+        persistProviderMode(agent, providerMode, templateId);
         assignInitialWakeRhythm(agent);
+        applyRequestedWakeRhythm(agent, request);
 
-        log.info("Agent created: agentId={}, ownerId={}, name={}", agent.getId(), ownerId, agent.getName());
+        log.info("Agent created: agentId={}, ownerId={}, name={}, providerMode={}",
+                agent.getId(), ownerId, agent.getName(), providerMode);
 
         return buildDetailResponse(agent, ownerId);
+    }
+
+    /**
+     * Parse the requested mode, defaulting to BYOK.
+     *
+     * An unrecognised value is rejected rather than defaulted: a client that meant
+     * PLATFORM and misspelled it would otherwise get a BYOK agent it never asked for, and
+     * find out at the first wake-up.
+     */
+    private ProviderMode resolveRequestedMode(String requested) {
+        if (requested == null || requested.isBlank()) {
+            return ProviderMode.BYOK;
+        }
+        ProviderMode mode = ProviderMode.fromCode(requested);
+        if (mode == null) {
+            throw new BusinessException(ErrorCode.INVALID_PARAMETER);
+        }
+        return mode;
+    }
+
+    /**
+     * Accept a template id only if it names a template that actually ships.
+     *
+     * Stored ids are meant to answer "how many people picked the philosopher", so an
+     * arbitrary string would make the column useless the first time a client sent one.
+     * A blank value stays null: writing a hand-written prompt is the normal case, not an
+     * error.
+     */
+    private String resolveTemplateId(String requested) {
+        String templateId = normalizeText(requested);
+        if (templateId == null || templateId.isEmpty()) {
+            return null;
+        }
+        if (!agentTemplateCatalog.exists(templateId)) {
+            throw new BusinessException(ErrorCode.INVALID_PARAMETER);
+        }
+        return templateId;
+    }
+
+    private void requirePresent(String baseUrl, String apiKey, String modelName) {
+        if (isBlank(baseUrl) || isBlank(apiKey) || isBlank(modelName)) {
+            throw new BusinessException(ErrorCode.INVALID_PARAMETER);
+        }
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.isBlank();
+    }
+
+    /**
+     * Write provider_mode / template_id, in a separate statement after the insert.
+     *
+     * Same pattern and the same reason as {@link #assignInitialWakeRhythm}: the columns
+     * are outside the generated INSERT, so a database without the migration can still
+     * create agents. The difference is what a failure means. A missing rhythm is
+     * cosmetic and only warned about; a PLATFORM agent whose mode was not stored is a
+     * broken agent - it would read back as BYOK, with no key - so that failure rolls the
+     * creation back rather than handing the owner something that cannot work.
+     */
+    private void persistProviderMode(Agent agent, ProviderMode mode, String templateId) {
+        if (!schemaCapabilities.isAgentProviderModeColumns()) {
+            if (mode == ProviderMode.PLATFORM) {
+                // Unreachable in practice - isPlatformAvailable() already covers it - but
+                // stated here so the invariant does not depend on that call staying put.
+                throw new BusinessException(ErrorCode.PLATFORM_MODEL_UNAVAILABLE);
+            }
+            return;
+        }
+        try {
+            agentMapper.updateProviderMode(agent.getId(), mode.getCode(), templateId);
+        } catch (Exception e) {
+            log.error("Could not store the provider mode for agent {}: {}", agent.getId(), e.getMessage());
+            if (mode == ProviderMode.PLATFORM) {
+                throw new BusinessException(ErrorCode.PLATFORM_MODEL_UNAVAILABLE);
+            }
+        }
+        agent.setProviderMode(mode.getCode());
+        agent.setTemplateId(templateId);
     }
 
     @Override
@@ -145,8 +265,10 @@ public class AgentServiceImpl implements AgentService {
         // Convert to response
         Page<AgentListItemResponse> responsePage = new Page<>(agentPage.getCurrent(), agentPage.getSize(), agentPage.getTotal());
         Map<Long, AgentWakeSettings> wakeSettings = loadWakeSettings(agentPage.getRecords());
+        Map<Long, AgentProviderSettings> providerSettings = loadProviderSettings(agentPage.getRecords());
         List<AgentListItemResponse> responses = agentPage.getRecords().stream()
-                .map(agent -> buildListItemResponse(agent, wakeSettings.get(agent.getId())))
+                .map(agent -> buildListItemResponse(agent, wakeSettings.get(agent.getId()),
+                        providerSettings.get(agent.getId())))
                 .collect(Collectors.toList());
         responsePage.setRecords(responses);
 
@@ -163,6 +285,17 @@ public class AgentServiceImpl implements AgentService {
     @Transactional
     public AgentDetailResponse updateAgent(Long ownerId, Long agentId, AgentUpdateRequest request) {
         Agent agent = validateAgentOwnership(ownerId, agentId);
+
+        // A PLATFORM agent has no credentials of its own, so accepting any of the three
+        // would store a value nothing will ever read - and leave the owner believing they
+        // had switched their agent onto their own key. Refusing says what happened.
+        // provider_mode itself is not a field on the update request at all, so there is
+        // nothing to ignore here: see AgentUpdateRequest.
+        if (isPlatformAgent(agent)
+                && (request.getBaseUrl() != null || request.getApiKey() != null
+                    || request.getModelName() != null)) {
+            throw new BusinessException(ErrorCode.INVALID_PARAMETER);
+        }
 
         // Update fields if provided
         if (request.getName() != null) {
@@ -335,43 +468,95 @@ public class AgentServiceImpl implements AgentService {
     }
 
     /**
-     * Apply the owner's rhythm settings.
+     * Apply the owner's rhythm settings from an update request.
+     */
+    private void applyWakeSettings(Agent agent, AgentUpdateRequest request) {
+        applyWakeSettings(agent, request.getWakeHoursStart(), request.getWakeHoursEnd(),
+                request.getDailyWakeBudget());
+    }
+
+    /**
+     * The rhythm chosen in the creation wizard, applied in the same transaction as the
+     * insert that carried it.
      *
-     * Both hour columns are always written together, defaulting the one the request left
+     * Runs after {@link #assignInitialWakeRhythm}, so what the owner asked for overwrites
+     * the seeded random hours and anything they left out keeps the seeded value.
+     *
+     * Nothing here may fail the creation. A missing wake-queue schema is a 409 on the
+     * settings endpoint - the owner asked only for that, and telling them it is
+     * unavailable is the answer - but at creation the owner asked for an agent, and
+     * refusing to create it because this deployment cannot store active hours would be
+     * the wrong trade. The three fields are dropped with a warning instead, and the
+     * response reports the rhythm as absent, which is exactly what a read of this agent
+     * will keep saying.
+     */
+    private void applyRequestedWakeRhythm(Agent agent, AgentCreateRequest request) {
+        if (request.getWakeHoursStart() == null && request.getWakeHoursEnd() == null
+                && request.getDailyWakeBudget() == null) {
+            return;
+        }
+        if (!schemaCapabilities.isWakeQueueSchema()) {
+            log.warn("Ignoring the requested rhythm for agent {}: this deployment has no "
+                    + "wake queue schema", agent.getId());
+            return;
+        }
+        try {
+            applyWakeSettings(agent, request.getWakeHoursStart(), request.getWakeHoursEnd(),
+                    request.getDailyWakeBudget());
+        } catch (Exception e) {
+            // Same reasoning as assignInitialWakeRhythm: an agent without the rhythm it
+            // asked for still works, and the owner can set it from the settings dialog.
+            log.warn("Could not apply the requested rhythm for agent {}: {}",
+                    agent.getId(), e.getMessage());
+        }
+    }
+
+    /**
+     * Apply a rhythm change, from creation or from a settings update.
+     *
+     * Both hour columns are always written together, defaulting the one the caller left
      * out: a window assembled from one new bound and one old one would have the scheduler
      * computing against hours the owner never chose.
      *
      * Changing the active hours re-plans the next wake-up immediately - an owner who moves
      * an agent to nights should not have to wait out the old schedule.
      */
-    private void applyWakeSettings(Agent agent, AgentUpdateRequest request) {
-        boolean requested = request.getWakeHoursStart() != null
-                || request.getWakeHoursEnd() != null
-                || request.getDailyWakeBudget() != null;
+    private void applyWakeSettings(Agent agent, Integer requestedStart, Integer requestedEnd,
+                                   Integer requestedBudget) {
+        boolean requested = requestedStart != null
+                || requestedEnd != null
+                || requestedBudget != null;
         if (!requested) {
             return;
         }
         if (!schemaCapabilities.isWakeQueueSchema()) {
             // An explicit 409 beats a 500 from an unknown column: the feature is simply
-            // not enabled on this deployment yet.
+            // not enabled on this deployment yet. The creation path never reaches this -
+            // see applyRequestedWakeRhythm.
             throw new BusinessException(ErrorCode.AGENT_WAKE_SETTINGS_UNAVAILABLE);
         }
 
+        // The stored row is the first source for anything the caller left out; the agent
+        // object is the second, and it only ever carries a value on the creation path,
+        // where the rhythm seeded a moment ago is not visible to a read that fails or
+        // races. On the update path these columns are @TableField(exist = false), so the
+        // fallback is null there either way and nothing about that path changes.
         AgentWakeSettings current = agentMapper.findWakeSettings(agent.getId());
-        int start = resolveHour(request.getWakeHoursStart(),
-                current != null ? current.getWakeHoursStart() : null, DEFAULT_WAKE_HOURS_START);
-        int end = resolveHour(request.getWakeHoursEnd(),
-                current != null ? current.getWakeHoursEnd() : null, DEFAULT_WAKE_HOURS_END);
-        int budget = request.getDailyWakeBudget() != null
-                ? request.getDailyWakeBudget()
-                : (current != null && current.getDailyWakeBudget() != null
-                        ? current.getDailyWakeBudget()
-                        : defaultDailyWakeBudget);
+        int start = resolveHour(requestedStart,
+                current != null ? current.getWakeHoursStart() : agent.getWakeHoursStart(),
+                DEFAULT_WAKE_HOURS_START);
+        int end = resolveHour(requestedEnd,
+                current != null ? current.getWakeHoursEnd() : agent.getWakeHoursEnd(),
+                DEFAULT_WAKE_HOURS_END);
+        Integer storedBudget = current != null ? current.getDailyWakeBudget() : agent.getDailyWakeBudget();
+        int budget = requestedBudget != null
+                ? requestedBudget
+                : (storedBudget != null ? storedBudget : defaultDailyWakeBudget);
 
-        boolean hoursChanged = request.getWakeHoursStart() != null || request.getWakeHoursEnd() != null;
+        boolean hoursChanged = requestedStart != null || requestedEnd != null;
         LocalDateTime nextWake = hoursChanged
                 ? wakeScheduleCalculator.initialWake(LocalDateTime.now(), start, end, targetDailyRhythmWakes)
-                : (current != null ? current.getNextWakeAt() : null);
+                : (current != null ? current.getNextWakeAt() : agent.getNextWakeAt());
 
         agentMapper.updateWakeSettings(agent.getId(), start, end, budget, nextWake);
 
@@ -393,6 +578,68 @@ public class AgentServiceImpl implements AgentService {
             return stored;
         }
         return fallback;
+    }
+
+    /**
+     * Whether this stored agent runs on the platform model.
+     *
+     * Goes through the resolver rather than reading the field directly, because the agent
+     * in hand came from {@code selectById} and provider_mode is outside every generated
+     * statement - the field is always null at this point, and the resolver is what turns
+     * that into one explicit, capability-guarded lookup.
+     */
+    private boolean isPlatformAgent(Agent agent) {
+        return credentialResolver.isPlatformAgent(agent);
+    }
+
+    /**
+     * Provider fields for display. Absent schema or an absent row reads as BYOK with no
+     * template, which is what an agent created before this feature actually is.
+     */
+    private AgentProviderSettings loadProviderSettings(Long agentId) {
+        if (!schemaCapabilities.isAgentProviderModeColumns()) {
+            return null;
+        }
+        try {
+            return agentMapper.findProviderSettings(agentId);
+        } catch (Exception e) {
+            log.warn("Could not read provider settings for agent {}: {}", agentId, e.getMessage());
+            return null;
+        }
+    }
+
+    private Map<Long, AgentProviderSettings> loadProviderSettings(List<Agent> agents) {
+        if (!schemaCapabilities.isAgentProviderModeColumns() || agents.isEmpty()) {
+            return Map.of();
+        }
+        try {
+            List<Long> ids = agents.stream().map(Agent::getId).collect(Collectors.toList());
+            Map<Long, AgentProviderSettings> byId = new HashMap<>();
+            for (AgentProviderSettings settings : agentMapper.findProviderSettingsByIds(ids)) {
+                byId.put(settings.getAgentId(), settings);
+            }
+            return byId;
+        } catch (Exception e) {
+            log.warn("Could not read provider settings for a list page: {}", e.getMessage());
+            return Map.of();
+        }
+    }
+
+    /**
+     * The mode a response should report, defaulting to BYOK.
+     */
+    private ProviderMode modeOf(AgentProviderSettings settings) {
+        return ProviderMode.ofStored(settings == null ? null : settings.getProviderMode());
+    }
+
+    /**
+     * Model name to report: the platform's for a PLATFORM agent, whose own column is null.
+     */
+    private String displayModelName(Agent agent, ProviderMode mode) {
+        if (mode == ProviderMode.PLATFORM) {
+            return platformLlmProperties.getModelName();
+        }
+        return agent.getModelName();
     }
 
     /**
@@ -453,13 +700,17 @@ public class AgentServiceImpl implements AgentService {
      * Build list item response
      */
     private AgentListItemResponse buildListItemResponse(Agent agent) {
-        return buildListItemResponse(agent, null);
+        return buildListItemResponse(agent, null, null);
     }
 
-    private AgentListItemResponse buildListItemResponse(Agent agent, AgentWakeSettings wake) {
+    private AgentListItemResponse buildListItemResponse(Agent agent, AgentWakeSettings wake,
+                                                        AgentProviderSettings provider) {
         AgentStatus status = AgentStatus.fromCode(agent.getStatus());
+        ProviderMode mode = modeOf(provider);
 
         return AgentListItemResponse.builder()
+                .providerMode(mode.getCode())
+                .templateId(provider != null ? provider.getTemplateId() : null)
                 .id(agent.getId())
                 .name(agent.getName())
                 .avatarUrl(agent.getAvatarUrl())
@@ -468,7 +719,7 @@ public class AgentServiceImpl implements AgentService {
                 .usedTokens(agent.getUsedTokens())
                 .tokenThreshold(agent.getTokenThreshold())
                 .tokenPercentage(agent.getTokenPercentage())
-                .modelName(agent.getModelName())
+                .modelName(displayModelName(agent, mode))
                 .lastActiveAt(formatDateTime(agent.getLastActiveAt()))
                 .wakeHoursStart(wake != null ? wake.getWakeHoursStart() : null)
                 .wakeHoursEnd(wake != null ? wake.getWakeHoursEnd() : null)
@@ -484,6 +735,8 @@ public class AgentServiceImpl implements AgentService {
     private AgentDetailResponse buildDetailResponse(Agent agent, Long ownerId) {
         AgentStatus status = AgentStatus.fromCode(agent.getStatus());
         AgentWakeSettings wake = loadWakeSettings(agent.getId());
+        AgentProviderSettings provider = loadProviderSettings(agent.getId());
+        ProviderMode mode = modeOf(provider);
 
         // Get owner name
         User owner = userMapper.selectById(ownerId);
@@ -492,15 +745,26 @@ public class AgentServiceImpl implements AgentService {
         // Mask API key for display (decrypt first, then mask).
         // Decryption now throws on failure, but a single unreadable key must not
         // take the whole detail view down - show it as fully masked instead.
+        //
+        // A PLATFORM agent has no key to mask and never touches the cipher at all: the
+        // sentinel "PLATFORM" says so positively, where "****" would suggest a stored key
+        // that just cannot be shown. The platform's real key is never a candidate here -
+        // it exists only in the properties bean and only travels to the AI gateway.
         String maskedApiKey;
-        try {
-            maskedApiKey = aesUtil.maskApiKey(aesUtil.decrypt(agent.getApiKey()));
-        } catch (RuntimeException e) {
-            log.warn("Unable to decrypt stored API key for display: agentId={}", agent.getId());
-            maskedApiKey = "****";
+        if (mode == ProviderMode.PLATFORM) {
+            maskedApiKey = PLATFORM_API_KEY_PLACEHOLDER;
+        } else {
+            try {
+                maskedApiKey = aesUtil.maskApiKey(aesUtil.decrypt(agent.getApiKey()));
+            } catch (RuntimeException e) {
+                log.warn("Unable to decrypt stored API key for display: agentId={}", agent.getId());
+                maskedApiKey = "****";
+            }
         }
 
         return AgentDetailResponse.builder()
+                .providerMode(mode.getCode())
+                .templateId(provider != null ? provider.getTemplateId() : null)
                 .id(agent.getId())
                 .name(agent.getName())
                 .avatarUrl(agent.getAvatarUrl())
@@ -510,9 +774,11 @@ public class AgentServiceImpl implements AgentService {
                 .tokenThreshold(agent.getTokenThreshold())
                 .tokenPercentage(agent.getTokenPercentage())
                 .isUnlimited(agent.getIsUnlimited())
-                .baseUrl(agent.getBaseUrl())
+                // Null for PLATFORM: the platform's endpoint is not the owner's business
+                // and publishing it would put an operational detail on a user-facing page.
+                .baseUrl(mode == ProviderMode.PLATFORM ? null : agent.getBaseUrl())
                 .apiKeyMasked(maskedApiKey)
-                .modelName(agent.getModelName())
+                .modelName(displayModelName(agent, mode))
                 .systemPrompt(agent.getSystemPrompt())
                 .ownerId(ownerId)
                 .ownerName(ownerName)

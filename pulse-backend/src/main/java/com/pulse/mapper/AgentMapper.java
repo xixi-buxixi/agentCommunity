@@ -2,6 +2,7 @@ package com.pulse.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.pulse.dto.AgentProviderSettings;
 import com.pulse.dto.AgentWakeSettings;
 import com.pulse.entity.Agent;
 import org.apache.ibatis.annotations.Mapper;
@@ -98,6 +99,63 @@ public interface AgentMapper extends BaseMapper<Agent> {
     List<Agent> findAliveAgentsActiveSince(@Param("since") java.time.LocalDateTime since,
                                            @Param("afterId") long afterId,
                                            @Param("limit") int limit);
+
+    /**
+     * The same candidates, ordered by how long they have waited for a reflection instead
+     * of by id, and paged with a (last_reflection_attempt_at, id) keyset.
+     *
+     * Only usable when {@code SchemaCapabilities.isReflectionCursorColumn()} is true: the
+     * column is outside the generated statements (see {@link Agent}) and this query names
+     * it explicitly.
+     *
+     * Why the ordering changed: with the id cursor, every run started at the lowest id
+     * and walked upwards. That is fair only when the run reaches the end - the moment the
+     * per-run cap bites, or the job is interrupted, the same low-id agents are reflected
+     * on every single night and the tail never is. Ordering by the attempt cursor makes
+     * the agent that waited longest go first, so the cap truncates the queue at the
+     * agents that were served most recently.
+     *
+     * Three things this signature has to carry, and each is load-bearing:
+     * - {@code hasCursor} distinguishes the first page (no keyset predicate) from a later
+     *   one, because a NULL {@code afterAttemptAt} is a legitimate cursor value: NULLs
+     *   sort FIRST here, so "after (NULL, 41)" means "still inside the never-attempted
+     *   block, past agent 41".
+     * - {@code afterAttemptAt} / {@code afterId} are the composite cursor. Compared as a
+     *   pair, so agents sharing a timestamp to the second are neither skipped nor
+     *   repeated.
+     * - {@code attemptedBefore} excludes agents this run already stamped. Without it the
+     *   run would re-select its own work: stamping an agent moves it to the END of this
+     *   ordering, which is by definition after the cursor, so it would come back on a
+     *   later page. Passing the run's start time makes a stamped agent ineligible for the
+     *   rest of the run.
+     *
+     * @param since          cut-off timestamp (start of the reflection window)
+     * @param hasCursor      false for the first page
+     * @param afterAttemptAt cursor timestamp, null while inside the never-attempted block
+     * @param afterId        cursor id
+     * @param attemptedBefore only agents whose cursor is NULL or strictly older than this
+     * @param limit          page size
+     */
+    List<Agent> findAliveAgentsActiveSinceByReflectionCursor(
+            @Param("since") java.time.LocalDateTime since,
+            @Param("hasCursor") boolean hasCursor,
+            @Param("afterAttemptAt") java.time.LocalDateTime afterAttemptAt,
+            @Param("afterId") long afterId,
+            @Param("attemptedBefore") java.time.LocalDateTime attemptedBefore,
+            @Param("limit") int limit);
+
+    /**
+     * Record that the reflection pass just took a turn on this agent, whatever came of it.
+     *
+     * Hand-written and capability-guarded for the same reason as the wake settings: the
+     * column is invisible to MyBatis Plus's generated statements, so it can only be
+     * written by a statement that names it, and only on a database that has it.
+     *
+     * @return 1 when the stamp landed, 0 when the agent is gone
+     */
+    @Update("UPDATE agents SET last_reflection_attempt_at = #{now} "
+            + "WHERE id = #{id} AND deleted = 0")
+    int markReflectionAttempt(@Param("id") Long id, @Param("now") java.time.LocalDateTime now);
 
     /**
      * How many candidates the window holds in total, so a run that hits its hard cap can
@@ -220,6 +278,48 @@ public interface AgentMapper extends BaseMapper<Agent> {
             + "WHERE id = #{id} AND deleted = 0 "
             + "AND wake_count_date = #{today} AND COALESCE(wake_count_today, 0) > 0")
     int releaseWakeSlot(@Param("id") Long id, @Param("today") java.time.LocalDate today);
+
+    /**
+     * Read one agent's provider mode.
+     *
+     * Hand written for the same reason as {@link #findWakeSettings}: provider_mode is
+     * {@code @TableField(exist = false)}, so a generated SELECT never returns it. Only
+     * call this when {@code SchemaCapabilities.isAgentProviderModeColumns()} is true.
+     *
+     * @return "BYOK", "PLATFORM", or null when the agent is gone
+     */
+    @Select("SELECT provider_mode FROM agents WHERE id = #{id} AND deleted = 0")
+    String findProviderMode(@Param("id") Long id);
+
+    /**
+     * Read the provider fields of one agent, for the owner-facing responses.
+     */
+    @Select("SELECT id AS agentId, provider_mode AS providerMode, template_id AS templateId "
+            + "FROM agents WHERE id = #{id} AND deleted = 0")
+    AgentProviderSettings findProviderSettings(@Param("id") Long id);
+
+    /**
+     * Batch variant, so an agent list page costs one extra query rather than one per row.
+     */
+    @Select({"<script>",
+            "SELECT id AS agentId, provider_mode AS providerMode, template_id AS templateId",
+            "FROM agents WHERE deleted = 0 AND id IN",
+            "<foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach>",
+            "</script>"})
+    List<AgentProviderSettings> findProviderSettingsByIds(@Param("ids") List<Long> ids);
+
+    /**
+     * Write the provider fields, once, right after the agent row is inserted.
+     *
+     * There is deliberately no update path: provider_mode decides who pays for every
+     * call this agent ever makes, and flipping it on a live agent would either strand a
+     * PLATFORM agent without a key or start charging an owner who never opted in.
+     */
+    @Update("UPDATE agents SET provider_mode = #{providerMode}, template_id = #{templateId} "
+            + "WHERE id = #{id} AND deleted = 0")
+    int updateProviderMode(@Param("id") Long id,
+                           @Param("providerMode") String providerMode,
+                           @Param("templateId") String templateId);
 
     /**
      * Store the next rhythm wake-up. Event wakes deliberately do not touch it: answering

@@ -16,6 +16,16 @@ import lombok.Data;
 @Data
 public class AgentUpdateRequest {
 
+    // There is deliberately no provider_mode field here, and a submitted one is dropped
+    // by Jackson rather than acted on. provider_mode decides who pays for every call the
+    // agent makes: flipping BYOK -> PLATFORM would start charging an owner's points
+    // without them choosing it, and PLATFORM -> BYOK would leave an agent with no key at
+    // all. Neither is a settings change; both are "create a different agent".
+    //
+    // The credential fields below are still accepted, but only for a BYOK agent - the
+    // service rejects them on a PLATFORM agent with INVALID_PARAMETER, because storing a
+    // key that would never be read is worse than refusing it.
+
     @Size(min = 2, max = 50, message = "Agent名称长度为2-50字符")
     private String name;
 

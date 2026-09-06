@@ -19,6 +19,7 @@ import com.pulse.service.support.AuthorResolver;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -445,6 +446,102 @@ class NotificationServiceImplTest {
         }).doesNotThrowAnyException();
     }
 
+    // ========== De-duplication ==========
+
+    /**
+     * One conversation used to produce one notification per message: an agent and a person
+     * going back and forth under a post filled the owner's inbox with twenty identical
+     * lines, and the twentieth said nothing the first had not.
+     */
+    @Test
+    void anIdenticalUnreadNotificationSuppressesTheNextOne() {
+        givenDedupWindow(10);
+        when(notificationMapper.countRecentDuplicates(eq(RECIPIENT_ID), eq("HUMAN_REPLIED_POST"),
+                eq("POST"), eq(88L), eq("HUMAN"), eq(ACTOR_ID), any(LocalDateTime.class)))
+                .thenReturn(1);
+
+        service.notifyCommentOnPost(RECIPIENT_ID, AuthorType.HUMAN.getCode(), ACTOR_ID, 88L, "又一条");
+
+        verify(notificationMapper, never()).insert(any(Notification.class));
+    }
+
+    /**
+     * The tuple is what a person reads as one line. A different post, a different actor or
+     * a different kind of event is a different line and must still be reported - the check
+     * queries with the full tuple, so anything the query does not match is written.
+     */
+    @Test
+    void aDifferentInteractionIsStillWritten() {
+        givenDedupWindow(10);
+        when(notificationMapper.countRecentDuplicates(any(), any(), any(), any(), any(), any(),
+                any(LocalDateTime.class))).thenReturn(0);
+
+        service.notifyCommentOnPost(RECIPIENT_ID, AuthorType.HUMAN.getCode(), ACTOR_ID, 89L, "另一帖");
+
+        assertThat(captured().getLinkId()).isEqualTo(89L);
+    }
+
+    /**
+     * Only UNREAD rows suppress, and that is the mapper's predicate rather than this
+     * service's - what is asserted here is that the window handed to it is the configured
+     * one and not something derived from the row.
+     */
+    @Test
+    void theWindowHandedToTheQueryIsTheConfiguredOne() {
+        givenDedupWindow(30);
+        LocalDateTime before = LocalDateTime.now().minusMinutes(30);
+
+        service.notifyCommentOnPost(RECIPIENT_ID, AuthorType.HUMAN.getCode(), ACTOR_ID, 88L, "hi");
+
+        ArgumentCaptor<LocalDateTime> since = ArgumentCaptor.forClass(LocalDateTime.class);
+        verify(notificationMapper).countRecentDuplicates(any(), any(), any(), any(), any(), any(),
+                since.capture());
+        assertThat(since.getValue()).isBetween(before.minusSeconds(5), LocalDateTime.now().minusMinutes(29));
+    }
+
+    @Test
+    void aWindowOfZeroSwitchesDeduplicationOffEntirely() {
+        givenDedupWindow(0);
+
+        service.notifyCommentOnPost(RECIPIENT_ID, AuthorType.HUMAN.getCode(), ACTOR_ID, 88L, "hi");
+
+        verify(notificationMapper, never()).countRecentDuplicates(any(), any(), any(), any(),
+                any(), any(), any(LocalDateTime.class));
+        verify(notificationMapper).insert(any(Notification.class));
+    }
+
+    /**
+     * The check is a noise filter, not an invariant. A broken count must degrade into a
+     * possible extra notification, never into a silently dropped one.
+     */
+    @Test
+    void aFailingDuplicateCheckWritesTheNotificationAnyway() {
+        givenDedupWindow(10);
+        when(notificationMapper.countRecentDuplicates(any(), any(), any(), any(), any(), any(),
+                any(LocalDateTime.class))).thenThrow(new RuntimeException("index is gone"));
+
+        assertThatCode(() -> service.notifyCommentOnPost(RECIPIENT_ID, AuthorType.HUMAN.getCode(),
+                ACTOR_ID, 88L, "hi")).doesNotThrowAnyException();
+
+        verify(notificationMapper).insert(any(Notification.class));
+    }
+
+    /**
+     * A notification without a link (none exists today, but the write path allows it) must
+     * still de-duplicate: the mapper compares the nullable columns null-safely, and the
+     * service has to pass the nulls through rather than skipping the check.
+     */
+    @Test
+    void aNotificationWithoutALinkStillGoesThroughTheCheck() {
+        givenDedupWindow(10);
+
+        service.notifyAgentTipped(RECIPIENT_ID, AGENT_ID, "Nova", ACTOR_ID,
+                new BigDecimal("10"), null);
+
+        verify(notificationMapper).countRecentDuplicates(eq(RECIPIENT_ID), eq("AGENT_TIPPED"),
+                eq("AGENT"), eq(AGENT_ID), eq("HUMAN"), eq(ACTOR_ID), any(LocalDateTime.class));
+    }
+
     @Test
     void aMissingRecipientIsDroppedRatherThanWritten() {
         service.notifyCommentOnPost(null, AuthorType.HUMAN.getCode(), ACTOR_ID, 88L, "hi");
@@ -453,6 +550,10 @@ class NotificationServiceImplTest {
     }
 
     // ========== Fixtures ==========
+
+    private void givenDedupWindow(int minutes) {
+        ReflectionTestUtils.setField(service, "dedupWindowMinutes", minutes);
+    }
 
     private Notification captured() {
         ArgumentCaptor<Notification> captor = ArgumentCaptor.forClass(Notification.class);

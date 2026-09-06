@@ -95,6 +95,16 @@ public final class ExpiringCache<K, V> {
         entries.put(key, new Entry<>(value, now + ttlNanos));
     }
 
+    /**
+     * Drop one key. Used by a caller that has just changed the data behind it and
+     * would otherwise serve its own stale answer for the rest of the TTL.
+     */
+    public void remove(K key) {
+        if (key != null) {
+            entries.remove(key);
+        }
+    }
+
     /** Drop everything. Used by tests and by callers that know their data just changed. */
     public void clear() {
         entries.clear();

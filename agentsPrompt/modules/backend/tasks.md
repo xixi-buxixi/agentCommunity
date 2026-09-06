@@ -18,6 +18,13 @@
 - 已完成通知中心（W7）：新增 `notifications` 表 + 迁移 `deploy/migrations/2026-09-06-notifications.sql`，四个接口 `GET /api/v1/notifications`、`GET /api/v1/notifications/unread-count`、`POST /api/v1/notifications/{id}/read`、`POST /api/v1/notifications/read-all`；八种通知类型与触发点（AGENT_REPLIED_POST / AGENT_REPLIED_COMMENT / HUMAN_REPLIED_POST / HUMAN_REPLIED_COMMENT / AGENT_TIPPED / AGENT_DIED / BOUNTY_SUBMITTED / BOUNTY_AUDITED），其中 `AGENT_REPLIED_COMMENT` 暂无生产者（Agent 决策格式不支持目标评论 id，待决策）；通知与唤醒事件按接收者类型互斥（Agent 作者走唤醒队列，人类作者走通知）；缺表时读接口返回 `NOTIFICATIONS_UNAVAILABLE(90001/409)`，写路径静默降级不影响主业务；`NotificationServiceImplTest` 等新增测试覆盖生产者侧真实落库路径。
 - 已完成阶段 1 证伪验证（`verify-phase1.md`）发现问题的修复（FIX1）：D1a（排行榜空窗口写 Redis 哨兵标记，TTL 5 分钟，避免每次匿名请求回源 MySQL）、D1b（`comments` 补三条索引 + 迁移 `deploy/migrations/2026-09-06-comments-indexes.sql`）、D1c（`GET /api/v1/agents/ranking` 与 `GET /api/v1/agents/*/profile` 纳入限流，各 60 次/分钟/IP）、D2（replied 榜对同一条评论重复计数，两个 UNION ALL 分支改投影 `(agent_id, comment_id)` 后 `UNION` 去重）、D3（World 区块在 `_semantic_filter` 中无条件保留，不再与其他行按分值竞争容量预算）、D4（记忆面板 5xx 文案改为通用故障提示，不再一律显示"未启用记忆表"）、D6（公开主页对未知/NULL `status` 返回 `status_text="UNKNOWN"` 而非 500）、D7（唤醒异常时写出的错误行补齐 `wake_reason`/`wake_event_types`）、D8（`refreshAllAgentRankingCaches` 单个榜单刷新失败不再中止其余榜单）、D9（`findAgentTipTotals` 补 `amount > 0`，与排行榜口径一致）。D5（缓存路径与 MySQL 路径在同分时排序不一致）与验证报告"其他问题"六条移入 Pending，本轮未修复。
 - 合并后全量测试见 overview（`agentsPrompt/overview_agent/tasks.md` 的 Verification 节）。
+- 已按项目所有者 2026-09-06 批复的 12 项决策交付阶段 3（四个独立工作副本，基线 `4f6c850`）：
+  - X1：@提及唤醒（MENTIONED）——`MentionDetector` 提取正文中的 `@名称`（字符集含 CJK、平假名、片假名、拉丁字母、数字、下划线、连字符，长度 1-50，单条正文上限 20 个不同名称）；`AgentMentionService` 将候选集限定为帖子作者、帖内 AGENT 评论作者、发言者（若为 HUMAN）自己的 Agent 三部分并集，名称比较忽略大小写；新增通知/唤醒去重与 90 天物理清理（`NotificationCleanupScheduler`）；已废弃记忆卡 30 天物理清理（`MemoryPurgeScheduler`）；反思排序游标 `agents.last_reflection_attempt_at` 与运行水位线；迁移 `2026-09-06-agent-reflection-cursor.sql`。
+  - X2：特质卡逐张公开——记忆 PATCH 新增 `is_public`（仅 `PERSONA_TRAIT` 可公开，`DEPRECATED` 卡拒绝公开）；公开主页新增 `public_traits`；悬赏完成数改为发单方 `COMPLETED` 口径；排行榜 `replied` 榜排除自评自答、`active` 榜排除系统死亡遗言；排行榜缓存路径与 MySQL 路径同分排序统一为 `(score desc, agent_id asc)`。
+  - X3：人设模板接口 `GET /api/v1/agents/templates`（六个固定模板）与平台托管模型全流程——`provider_mode`/`template_id`、平台配置 `platform-llm.*`（环境变量 `PLATFORM_LLM_*`）、按 token 计费（`ceil` 保留两位小数）、每 Agent 与全局每日上限、错误码 `PLATFORM_MODEL_UNAVAILABLE(20010/409)`、迁移 `2026-09-06-agent-provider-mode.sql`。
+  - X4（后端 + AI Side）：Agent 回复指定评论——决策响应新增 `target_comment_id`，帖子区块内评论渲染为 `[Comment#N]` 子行，`AgentActionExecutor.resolveReplyTarget` 校验失败一律降级为顶层评论；`AGENT_REPLIED_COMMENT` 通知类型补齐生产者。
+  - FIX3a：平台托管模型 Agent 的每日反思调用接入与唤醒同一套 `PlatformUsageService` 前置检查与计费；跳过时写反思游标、不写 `agent_logs`、不发通知。
+  - 四路交付的完整字段、错误码、配置项与未解决问题见 `docs/contracts/overview.md` 与 `docs/decisions/decisions-and-pending-log.md`（D-0015 起）；四路独立工作副本尚待协调者合并到单一工作树后重跑一次全量 `mvn test`。
 
 ## In Progress
 - 无
@@ -99,6 +106,9 @@
 - Command: `mvn test -Dtest=MapperAnnotationSqlParseTest`（判别力验证：临时还原裸 `<>`）
 - Result: pass（预期必红后已恢复）
 - Notes: 还原缺陷后该测试以 SAXParseException 失败、BUILD FAILURE；恢复转义后全绿，证明"注解 SQL 不可解析 → mvn test 必炸"。
+- Command: 2026-09-06 阶段 3，四个独立工作副本各自 `mvn -B test`（基线 `4f6c850`）
+- Result: pass
+- Notes: X1 493/493（基线 416+77）、X2 442/442（基线 416+26）、X3 513/513（基线 416+97）、X4 在合并 X1-X3 后 553/553、FIX3a 在 X4 基础上合并后 628/628（基线 616+12）。各分支独立通过，尚未合并到单一工作树重跑；合并后的最终全量结果见 overview（`agentsPrompt/overview_agent/tasks.md` 的 Verification 节），具体数字待协调者补充。
 
 ## Next
 - 部署验证反思成本后再显式设置 `MEMORY_REFLECTION_ENABLED=true`（当前默认关闭）。
@@ -107,3 +117,4 @@
 - 与 AI Side 执行者联调契约 A/B（`memories` 字段、`/v1/llm/reflection`），并请总览会话把两项契约写入 `docs/contracts/overview.md`。
 - 前端记忆面板（Phase 1 任务 5、6）待 UX 会话落定后由前端会话开发，接口路径、字段与错误码见 `docs/contracts/overview.md` 的 Agent Memories 节。
 - 非阻塞待定：`agent_memories` 是否纳入 `SchemaCapabilities` 探测（表缺失时降级返回空页 vs 保持 500）。
+- 2026-09-06 阶段 3 待办：协调者合并 X1-X4、FIX3a 四个独立工作副本到单一工作树，重跑一次全量 `mvn test`；`AGENT_POINTS_INSUFFICIENT` 通知目前由新增的 `AgentPointsNotifier` 直接经 `NotificationMapper` 写入而非 `NotificationService`，需在该文件解冻后合并回去；反思与唤醒共用同一份平台每日 token 上限，二者相对优先级未定义；新增的反思游标 keyset 查询与两个清理任务的 `DELETE` 语句只在 mock mapper 下验证过，需要在真实数据库中复核执行计划与 `<=>`、`LIMIT` 在 DELETE 中的行为。

@@ -13,6 +13,13 @@ public enum LedgerType {
     BOUNTY_RECV("BOUNTY_RECV", "悬赏收入"),
     BOUNTY_RELEASE("BOUNTY_RELEASE", "悬赏冻结释放"),
     REFUND("REFUND", "退款"),
+    /**
+     * Points spent on the platform-hosted model, charged to the agent's owner after the
+     * call. related_type is AGENT and related_id the agent, not a bounty: the owner's
+     * ledger has to be able to answer "which agent spent this", and there is no bounty
+     * anywhere in this flow.
+     */
+    LLM_USAGE("LLM_USAGE", "平台模型消耗"),
     GRANT("GRANT", "系统赠予");
 
     private final String code;

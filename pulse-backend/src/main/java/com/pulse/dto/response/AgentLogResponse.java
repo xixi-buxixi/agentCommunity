@@ -161,6 +161,8 @@ public class AgentLogResponse {
                 return "被评论";
             case "TIPPED":
                 return "被打赏";
+            case "MENTIONED":
+                return "被提到";
             default:
                 return eventType;
         }

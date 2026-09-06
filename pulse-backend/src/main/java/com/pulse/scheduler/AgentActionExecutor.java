@@ -20,8 +20,10 @@ import com.pulse.mapper.CommentMapper;
 import com.pulse.mapper.DislikeMapper;
 import com.pulse.mapper.LikeMapper;
 import com.pulse.mapper.PostMapper;
+import com.pulse.service.AgentMentionService;
 import com.pulse.service.AgentWakeEventService;
 import com.pulse.service.NotificationService;
+import com.pulse.service.impl.PostServiceImpl;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -61,6 +63,7 @@ public class AgentActionExecutor {
     private final DislikeMapper dislikeMapper;
     private final AgentBountyExecutor agentBountyExecutor;
     private final AgentWakeEventService agentWakeEventService;
+    private final AgentMentionService agentMentionService;
     private final NotificationService notificationService;
     private final SchemaCapabilities schemaCapabilities;
 
@@ -264,6 +267,12 @@ public class AgentActionExecutor {
 
         log.info("Agent posted new content: agentId={}, postId={}", agent.getId(), post.getId());
 
+        // An agent naming somebody in a brand new post reaches nobody today: the post has
+        // no comments yet and its only agent is the speaker, so the candidate set is
+        // empty. The call is here anyway because it is the same rule as everywhere else,
+        // and because a post gains commenters the moment the community answers it.
+        agentMentionService.recordMentionsInPost(post, AuthorType.AGENT.getCode(), agent.getId());
+
         return AgentActionOutcome.builder()
                 .action(ActionType.POST)
                 .success(true)
@@ -290,19 +299,40 @@ public class AgentActionExecutor {
             return AgentActionOutcome.failed(ActionType.REPLY, decision.getTargetPostId());
         }
 
-        // Check if agent has already commented on this post (avoid duplicate replies).
-        //
-        // Lifted for the posts this wake-up was triggered by: an agent woken up because
-        // somebody replied under its own post had already commented there by definition,
-        // so the guard would have made it structurally unable to answer - it would wake up,
-        // read the reply, and be silently blocked from responding to it.
-        boolean triggeredHere = repliableAgainPostIds != null
-                && repliableAgainPostIds.contains(decision.getTargetPostId());
-        int existingComments = commentMapper.countAgentCommentsOnPost(agent.getId(), decision.getTargetPostId());
-        if (existingComments > 0 && !triggeredHere) {
-            log.info("Agent {} has already commented on post {}, skipping duplicate reply",
-                    agent.getId(), decision.getTargetPostId());
-            return AgentActionOutcome.failed(ActionType.REPLY, decision.getTargetPostId());
+        // The comment this reply answers, when the model named one and it survives
+        // validation. A rejected target degrades to a top-level comment rather than
+        // failing the action: the agent had something to say either way, and the reason
+        // is logged so a model that keeps inventing ids is visible.
+        Comment parentComment = resolveReplyTarget(agent, decision, targetPost);
+
+        if (parentComment == null) {
+            // Check if agent has already commented on this post (avoid duplicate replies).
+            //
+            // Lifted for the posts this wake-up was triggered by: an agent woken up because
+            // somebody replied under its own post had already commented there by definition,
+            // so the guard would have made it structurally unable to answer - it would wake up,
+            // read the reply, and be silently blocked from responding to it.
+            boolean triggeredHere = repliableAgainPostIds != null
+                    && repliableAgainPostIds.contains(decision.getTargetPostId());
+            int existingComments = commentMapper.countAgentCommentsOnPost(agent.getId(),
+                    decision.getTargetPostId());
+            if (existingComments > 0 && !triggeredHere) {
+                log.info("Agent {} has already commented on post {}, skipping duplicate reply",
+                        agent.getId(), decision.getTargetPostId());
+                return AgentActionOutcome.failed(ActionType.REPLY, decision.getTargetPostId());
+            }
+        } else {
+            // A targeted reply is not bound by the post-level guard: a thread with three
+            // questions in it deserves three answers. What stays bounded is answering the
+            // SAME comment twice, which is the shape a loop takes once agents can reply to
+            // each other's comments.
+            int existingReplies = commentMapper.countAgentRepliesToComment(agent.getId(),
+                    parentComment.getId());
+            if (existingReplies > 0) {
+                log.info("Agent {} has already replied to comment {}, skipping duplicate reply",
+                        agent.getId(), parentComment.getId());
+                return AgentActionOutcome.failed(ActionType.REPLY, decision.getTargetPostId());
+            }
         }
 
         Comment comment = new Comment();
@@ -310,26 +340,59 @@ public class AgentActionExecutor {
         comment.setAuthorId(agent.getId());
         comment.setAuthorType(AuthorType.AGENT.getCode());
         comment.setContent(decision.getTruncatedContent());
+        if (parentComment != null) {
+            // Same three fields, computed the same way, as PostServiceImpl#createComment:
+            // the tree the frontend renders must not depend on who wrote the reply.
+            comment.setParentCommentId(parentComment.getId());
+            comment.setRootCommentId(parentComment.getRootCommentId() != null
+                    ? parentComment.getRootCommentId()
+                    : parentComment.getId());
+            comment.setReplyDepth(replyDepthOf(parentComment) + 1);
+        }
 
         commentMapper.insert(comment);
 
         // Increment comment count on post
         postMapper.incrementCommentCount(decision.getTargetPostId());
 
-        log.info("Agent commented on post: agentId={}, postId={}, commentId={}",
-                agent.getId(), decision.getTargetPostId(), comment.getId());
+        log.info("Agent commented on post: agentId={}, postId={}, commentId={}, parentCommentId={}",
+                agent.getId(), decision.getTargetPostId(), comment.getId(),
+                parentComment == null ? null : parentComment.getId());
 
-        // Agents talk to each other too. Without this an agent-to-agent reply was a
-        // dead end: only humans could ever trigger a wake-up, so two agents could never
-        // hold a conversation. The chain is bounded by the same debounce and daily budget
-        // as any other wake-up, and the service drops self-interactions.
-        if (AuthorType.AGENT.getCode().equalsIgnoreCase(targetPost.getAuthorType())) {
+        // Who this reply is aimed at, and therefore who has to hear about it.
+        //
+        // A targeted reply answers the COMMENT's author, not the post's - exactly the
+        // rule PostServiceImpl uses on the human path. The person whose words were
+        // answered is the one who should come back, which in a threaded discussion is
+        // not always the post owner.
+        //
+        // Agents talk to each other too. Without the wake event an agent-to-agent reply
+        // was a dead end: only humans could ever trigger a wake-up, so two agents could
+        // never hold a conversation. The chain is bounded by the same debounce and daily
+        // budget as any other wake-up, and the service drops self-interactions.
+        Long wokenByThisComment = null;
+        if (parentComment != null) {
+            if (AuthorType.AGENT.getCode().equalsIgnoreCase(parentComment.getAuthorType())) {
+                agentWakeEventService.recordReplyToAgentComment(parentComment.getAuthorId(),
+                        parentComment.getId(), comment.getId(), AuthorType.AGENT.getCode(),
+                        agent.getId());
+                wokenByThisComment = parentComment.getAuthorId();
+            }
+        } else if (AuthorType.AGENT.getCode().equalsIgnoreCase(targetPost.getAuthorType())) {
             agentWakeEventService.recordCommentOnAgentPost(targetPost.getAuthorId(), targetPost.getId(),
                     comment.getId(), AuthorType.AGENT.getCode(), agent.getId());
+            wokenByThisComment = targetPost.getAuthorId();
         }
 
-        // A human whose post an agent just answered has no other way to find out: there
-        // is no wake queue on the human side. The mirror of the branch above.
+        // "@name" inside the reply. The candidate set is everyone already in this thread,
+        // so an agent can pull a third agent into a conversation it is part of - and the
+        // post's author is excluded when the COMMENTED event above already wakes it, so
+        // one reply is one wake-up.
+        agentMentionService.recordMentionsInComment(targetPost, comment, AuthorType.AGENT.getCode(),
+                agent.getId(), wokenByThisComment);
+
+        // A human whose post or comment an agent just answered has no other way to find
+        // out: there is no wake queue on the human side. The mirror of the branch above.
         //
         // No notification for an AGENT target here, and that is a product decision
         // rather than de-duplication: agents answering each other is the community's
@@ -338,16 +401,33 @@ public class AgentActionExecutor {
         // notify the owner, because a person walking up to somebody's agent is a rare
         // and specific event.
         //
-        // Only the post branch can fire here: the decision format carries a target POST
-        // and nothing else, so an agent comment is always top level (parent_comment_id
-        // is null). AGENT_REPLIED_COMMENT therefore has no producer yet - it exists for
-        // the day the decision format gains a target comment, and notifyReplyToComment
-        // is wired for that call site rather than being invented then.
-        if (AuthorType.HUMAN.getCode().equalsIgnoreCase(targetPost.getAuthorType())) {
+        // The comment branch is what finally gives AGENT_REPLIED_COMMENT a producer:
+        // until the decision format carried a target comment, every agent comment was
+        // top level and only the post branch could ever fire. The self-notification
+        // guard inside NotificationServiceImpl still drops a notification aimed at the
+        // acting agent's own owner, so this needs no owner check of its own.
+        if (parentComment != null) {
+            if (AuthorType.HUMAN.getCode().equalsIgnoreCase(parentComment.getAuthorType())) {
+                notificationService.notifyReplyToComment(parentComment.getAuthorId(),
+                        AuthorType.AGENT.getCode(), agent.getId(), targetPost.getId(),
+                        comment.getContent());
+            }
+        } else if (AuthorType.HUMAN.getCode().equalsIgnoreCase(targetPost.getAuthorType())) {
             notificationService.notifyCommentOnPost(targetPost.getAuthorId(),
                     AuthorType.AGENT.getCode(), agent.getId(), targetPost.getId(),
                     comment.getContent());
         }
+
+        // The memory card should record who was actually answered. For a targeted reply
+        // that is the comment's author and the comment's words, not the post's - a card
+        // saying "I answered Alice's post" about a reply to Bob's comment is a false
+        // memory, and memory cards are what the agent's persona is distilled from.
+        String targetAuthorType = parentComment != null
+                ? parentComment.getAuthorType() : targetPost.getAuthorType();
+        Long targetAuthorId = parentComment != null
+                ? parentComment.getAuthorId() : targetPost.getAuthorId();
+        String targetSummary = parentComment != null
+                ? parentComment.getContent() : targetPost.getContent();
 
         return AgentActionOutcome.builder()
                 .action(ActionType.REPLY)
@@ -355,11 +435,67 @@ public class AgentActionExecutor {
                 .sourceType(SOURCE_TYPE_COMMENT)
                 .sourceId(comment.getId())
                 .targetPostId(targetPost.getId())
-                .targetAuthorType(targetPost.getAuthorType())
-                .targetAuthorId(targetPost.getAuthorId())
+                .targetAuthorType(targetAuthorType)
+                .targetAuthorId(targetAuthorId)
                 .selfContent(comment.getContent())
-                .targetSummary(targetPost.getContent())
+                .targetSummary(targetSummary)
                 .build();
+    }
+
+    /**
+     * The comment a reply should hang under, or null for a top-level comment.
+     *
+     * Every rejection here degrades the reply to top level rather than dropping it. The
+     * agent produced a sentence worth publishing; the id it attached is a pointer that
+     * may be stale, hallucinated or simply out of reach, and losing the sentence over a
+     * bad pointer is the worse failure. Each rejection names its reason in the log, so a
+     * model that keeps inventing ids shows up as a pattern rather than as silence.
+     *
+     * The rules are PostServiceImpl#createComment's, with one addition: an agent may not
+     * answer its own comment. That is not a manners rule - a self-reply produces no wake
+     * event and no notification, so it is a thread the agent talks to itself in.
+     */
+    private Comment resolveReplyTarget(Agent agent, AgentActionDecision decision, Post targetPost) {
+        Long targetCommentId = decision.getTargetCommentId();
+        if (targetCommentId == null) {
+            return null;
+        }
+
+        Comment parent;
+        try {
+            parent = commentMapper.selectById(targetCommentId);
+        } catch (Exception e) {
+            log.warn("Agent {} reply degraded to a top-level comment: target comment {} "
+                    + "could not be read ({})", agent.getId(), targetCommentId, e.getMessage());
+            return null;
+        }
+
+        String reason = null;
+        if (parent == null || Integer.valueOf(1).equals(parent.getDeleted())) {
+            reason = "target comment not found or deleted";
+        } else if (!java.util.Objects.equals(parent.getPostId(), targetPost.getId())) {
+            // The pair is the check: a comment id that belongs to another post would
+            // attach this reply to a thread the agent never saw.
+            reason = "target comment belongs to post " + parent.getPostId()
+                    + ", not " + targetPost.getId();
+        } else if (parent.isAgentComment()
+                && java.util.Objects.equals(parent.getAuthorId(), agent.getId())) {
+            reason = "target comment is the agent's own";
+        } else if (replyDepthOf(parent) + 1 > PostServiceImpl.MAX_REPLY_DEPTH) {
+            reason = "reply depth " + (replyDepthOf(parent) + 1) + " exceeds the maximum of "
+                    + PostServiceImpl.MAX_REPLY_DEPTH;
+        }
+
+        if (reason != null) {
+            log.warn("Agent {} reply degraded to a top-level comment on post {}: {} (targetCommentId={})",
+                    agent.getId(), targetPost.getId(), reason, targetCommentId);
+            return null;
+        }
+        return parent;
+    }
+
+    private int replyDepthOf(Comment comment) {
+        return comment.getReplyDepth() == null ? 0 : comment.getReplyDepth();
     }
 
     /**

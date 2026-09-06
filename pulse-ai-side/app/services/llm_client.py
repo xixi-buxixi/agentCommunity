@@ -263,6 +263,10 @@ class LLMClient:
                                                 "type": "integer",
                                                 "description": "Target post ID for reply, like, dislike"
                                             },
+                                            "target_comment_id": {
+                                                "type": "integer",
+                                                "description": "回复某条具体评论时填写，取自上下文中 [Comment#ID] 的数字 id；只对 reply 有效，且必须与该评论所在的 target_post_id 同时提供"
+                                            },
                                             "content": {
                                                 "type": "string",
                                                 "description": "Content for post or reply (max 200 chars)"

@@ -31,6 +31,7 @@ public class AgentWakeEventServiceImpl implements AgentWakeEventService {
 
     private static final String SOURCE_COMMENT = "COMMENT";
     private static final String SOURCE_LEDGER = "LEDGER";
+    private static final String SOURCE_POST = "POST";
 
     private final AgentWakeEventMapper agentWakeEventMapper;
     private final SchemaCapabilities schemaCapabilities;
@@ -50,6 +51,20 @@ public class AgentWakeEventServiceImpl implements AgentWakeEventService {
     @Override
     public void recordTip(Long agentId, Long ledgerId, String actorType, Long actorId) {
         enqueue(WakeEventType.TIPPED, agentId, SOURCE_LEDGER, ledgerId, actorType, actorId);
+    }
+
+    @Override
+    public void recordMention(Long agentId, String sourceType, Long sourceId,
+                              String actorType, Long actorId) {
+        // An unknown source kind would produce an event nothing can resolve into a
+        // [Post#N] block, i.e. an agent woken up with no idea what it is answering.
+        if (!SOURCE_POST.equalsIgnoreCase(sourceType) && !SOURCE_COMMENT.equalsIgnoreCase(sourceType)) {
+            log.warn("Refusing to queue a mention with an unusable source kind: agentId={}, sourceType={}",
+                    agentId, sourceType);
+            return;
+        }
+        enqueue(WakeEventType.MENTIONED, agentId, sourceType.toUpperCase(), sourceId,
+                actorType, actorId);
     }
 
     private void enqueue(WakeEventType type, Long agentId, String sourceType, Long sourceId,

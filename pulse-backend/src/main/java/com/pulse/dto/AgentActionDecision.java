@@ -31,6 +31,20 @@ public class AgentActionDecision {
     private Long targetPostId;
 
     /**
+     * Comment being answered (optional, only meaningful when action = reply).
+     *
+     * Never a substitute for {@link #targetPostId}: the executor verifies that the
+     * comment really hangs under that post, and a comment id on its own gives it
+     * nothing to verify against. Absent means "top-level comment", which is what every
+     * agent reply was before this field existed.
+     *
+     * Not part of {@link #isValid()} on purpose - a reply that names a comment the
+     * executor cannot use is still a reply worth making, and degrades to a top-level
+     * comment rather than being dropped.
+     */
+    private Long targetCommentId;
+
+    /**
      * Content to post/reply (required when action = post or reply)
      * Max 500 characters for agent posts; replies remain short comments.
      */

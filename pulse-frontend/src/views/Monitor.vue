@@ -16,6 +16,7 @@ import PixelProgress from '@/components/PixelProgress.vue'
 import AgentMemoryPanel from '@/components/AgentMemoryPanel.vue'
 import { formatWakeWindow } from '@/utils/wake'
 import { formatEvolutionTime } from '@/utils/evolution'
+import { isPlatformAgent, providerModeLabel } from '@/utils/agentTemplate'
 
 const route = useRoute()
 const router = useRouter()
@@ -39,6 +40,11 @@ const totalActions = ref(0)
 // GET/PATCH /api/v1/agents/{id}/memories exist. The context-preview and
 // manual-dispatch panels stay removed: /api/v2/agents/{id}/context-preview and
 // /dispatch were never implemented on the backend.
+
+// Model source. A PLATFORM agent has no base_url of its own and reads back
+// api_key_masked === 'PLATFORM', so those two rows are dropped for it.
+const providerLabel = computed(() => providerModeLabel(agent.value))
+const providerIsPlatform = computed(() => isPlatformAgent(agent.value))
 
 // Wake rhythm (queue mode only; legacy mode leaves these null)
 const wakeWindow = computed(() => formatWakeWindow(agent.value?.wake_hours_start, agent.value?.wake_hours_end, 'N/A'))
@@ -186,6 +192,10 @@ const disconnect = () => {
             <div class="text-pulse-white text-lg sm:text-xl font-bold truncate">{{ agent.name }}</div>
             <div class="flex items-center gap-2 mt-1 flex-wrap">
               <StatusIndicator :status="agent.status" size="lg" />
+              <span
+                class="border text-[10px] px-1 py-0.5"
+                :class="providerIsPlatform ? 'border-pulse-accent text-pulse-accent' : 'border-pulse-border text-pulse-muted'"
+              >{{ providerLabel }}</span>
               <span class="text-pulse-muted text-[10px] sm:text-xs">| OWNER: @{{ agent.owner_name || 'UNKNOWN' }}</span>
             </div>
           </div>
@@ -225,13 +235,21 @@ const disconnect = () => {
               <span class="text-pulse-white truncate">{{ agent.model_name }}</span>
             </div>
             <div class="flex justify-between sm:justify-start sm:gap-2">
-              <span class="text-pulse-muted">BASE_URL:</span>
-              <span class="text-pulse-white truncate max-w-[150px] sm:max-w-none">{{ agent.base_url }}</span>
+              <span class="text-pulse-muted">PROVIDER:</span>
+              <span :class="providerIsPlatform ? 'text-pulse-accent' : 'text-pulse-white'">
+                {{ providerIsPlatform ? 'PLATFORM (积分计费)' : 'BYOK (自带 API Key)' }}
+              </span>
             </div>
-            <div class="flex justify-between sm:justify-start sm:gap-2">
-              <span class="text-pulse-muted">API_KEY:</span>
-              <span class="text-pulse-white">{{ agent.api_key_masked }}</span>
-            </div>
+            <template v-if="!providerIsPlatform">
+              <div class="flex justify-between sm:justify-start sm:gap-2">
+                <span class="text-pulse-muted">BASE_URL:</span>
+                <span class="text-pulse-white truncate max-w-[150px] sm:max-w-none">{{ agent.base_url }}</span>
+              </div>
+              <div class="flex justify-between sm:justify-start sm:gap-2">
+                <span class="text-pulse-muted">API_KEY:</span>
+                <span class="text-pulse-white">{{ agent.api_key_masked }}</span>
+              </div>
+            </template>
             <div class="flex justify-between sm:justify-start sm:gap-2">
               <span class="text-pulse-muted">UNLIMITED:</span>
               <span class="text-pulse-white">{{ agent.is_unlimited ? 'YES' : 'NO' }}</span>

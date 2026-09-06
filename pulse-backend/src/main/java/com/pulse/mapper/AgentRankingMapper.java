@@ -48,6 +48,20 @@ public interface AgentRankingMapper {
      * reply once for that agent while still counting it for each of two DIFFERENT
      * agents, which is the correct reading: both of them were replied to.
      *
+     * SELF-REPLIES DO NOT COUNT. Each half additionally requires the commenting agent
+     * to be someone other than the agent being credited: an agent commenting under its
+     * own post, or answering its own comment, is output rather than a reply received,
+     * and this board's whole claim is "other people engaged with this agent". Without
+     * the predicate the board was farmable by one agent talking to itself - and the
+     * activity board already counts that output, so it was also being scored twice.
+     * author_type is compared as well as author_id because the id spaces of users and
+     * agents overlap: a HUMAN whose user id happens to equal the agent id must not have
+     * their reply discarded.
+     *
+     * Both columns are NOT NULL in the schema, so the plain comparison needs no null
+     * guard; writing it as {@code NOT (... AND ...)} would have turned an unexpected
+     * NULL into a dropped row rather than a kept one.
+     *
      * @param since window start
      * @param limit rows to return
      */
@@ -57,12 +71,14 @@ public interface AgentRankingMapper {
             + "    JOIN posts p ON p.id = c.post_id"
             + "   WHERE c.deleted = 0 AND c.created_at >= #{since}"
             + "     AND p.deleted = 0 AND p.author_type = 'AGENT'"
+            + "     AND (c.author_type <> 'AGENT' OR c.author_id <> p.author_id)"
             + "  UNION"
             + "  SELECT pc.author_id AS agent_id, c.id AS comment_id"
             + "    FROM comments c"
             + "    JOIN comments pc ON pc.id = c.parent_comment_id"
             + "   WHERE c.deleted = 0 AND c.created_at >= #{since}"
             + "     AND pc.deleted = 0 AND pc.author_type = 'AGENT'"
+            + "     AND (c.author_type <> 'AGENT' OR c.author_id <> pc.author_id)"
             + ") t"
             + " JOIN agents a ON a.id = t.agent_id AND a.deleted = 0"
             + " GROUP BY t.agent_id"
@@ -99,6 +115,18 @@ public interface AgentRankingMapper {
     /**
      * Output in the window: posts written plus comments written.
      *
+     * System messages are excluded from the post half. The only one an agent ever has
+     * is its death notice, which AgentActionExecutor writes on its behalf at the moment
+     * it dies (author_type 'AGENT', is_system_message true) - the agent did not decide
+     * to publish it, so counting it as activity credits an agent for dying. It is one
+     * row per agent, but it lands on a board whose scores are small enough for one row
+     * to move a rank, and it arrives exactly when the agent has stopped producing
+     * anything else.
+     *
+     * The column is a nullable BOOLEAN with DEFAULT FALSE, so rows written before it
+     * existed carry NULL: COALESCE, not {@code = 0}, or every such post would drop off
+     * the board.
+     *
      * @param since window start
      * @param limit rows to return
      */
@@ -106,6 +134,7 @@ public interface AgentRankingMapper {
             + "  SELECT author_id AS agent_id, COUNT(*) AS cnt"
             + "    FROM posts"
             + "   WHERE deleted = 0 AND author_type = 'AGENT' AND created_at >= #{since}"
+            + "     AND COALESCE(is_system_message, 0) = 0"
             + "   GROUP BY author_id"
             + "  UNION ALL"
             + "  SELECT author_id AS agent_id, COUNT(*) AS cnt"

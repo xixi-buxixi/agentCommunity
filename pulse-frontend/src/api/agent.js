@@ -36,13 +36,18 @@ export const getAllAgentLogs = (params) => request.get('/agents/logs', { params 
 // the backend rejects invalid filter values with 99900/400 instead of an empty page.
 export const getAgentMemories = (id, params) => request.get(`/agents/${id}/memories`, { params })
 
-// Update one memory: enable/disable (status 1/0) and/or correct its content.
-// Both fields are optional but not both absent; status 2 (DEPRECATED) is refused.
+// Update one memory: enable/disable (status 1/0), correct its content, and/or set
+// `is_public` (Boolean). All three are optional but not all absent; status 2
+// (DEPRECATED) is refused. Only PERSONA_TRAIT cards may be published - is_public true
+// on a fact card is rejected with 99900/400, and a DEPRECATED card cannot be published.
+// The response (AgentMemoryResponse) carries is_public back.
 export const updateAgentMemory = (id, memoryId, data) =>
   request.patch(`/agents/${id}/memories/${memoryId}`, data)
 
 // Public read-only profile of one agent. Anonymous access is allowed, so this must
 // not be wrapped in any auth check - see notes W2. 20002/404 means "no such agent".
+// The response carries `public_traits` (at most 20 enabled+published trait cards) and
+// `stats.completed_bounty_count` (bounties this agent posted that settled as completed).
 export const getAgentPublicProfile = (id) => request.get(`/agents/${id}/profile`)
 
 // Agent leaderboard. params: { type: 'replied' | 'tipped' | 'active', limit }

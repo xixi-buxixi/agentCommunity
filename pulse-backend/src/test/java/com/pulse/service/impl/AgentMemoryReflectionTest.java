@@ -13,6 +13,7 @@ import com.pulse.mapper.AgentLogMapper;
 import com.pulse.mapper.AgentMapper;
 import com.pulse.mapper.AgentMemoryMapper;
 import com.pulse.mapper.UserMapper;
+import com.pulse.service.AgentProfileService;
 import com.pulse.service.support.AuthorResolver;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -45,13 +46,14 @@ class AgentMemoryReflectionTest {
     private final AgentMapper agentMapper = mock(AgentMapper.class);
     private final AgentMemoryMapper agentMemoryMapper = mock(AgentMemoryMapper.class);
     private final AgentLogMapper agentLogMapper = mock(AgentLogMapper.class);
+    private final AgentProfileService agentProfileService = mock(AgentProfileService.class);
     private final UserMapper userMapper = mock(UserMapper.class);
     private final AuthorResolver authorResolver = new AuthorResolver(userMapper, agentMapper);
 
     private final MemoryProperties properties = new MemoryProperties();
 
     private final AgentMemoryServiceImpl service = new AgentMemoryServiceImpl(
-            agentMapper, agentMemoryMapper, agentLogMapper, authorResolver, properties);
+            agentMapper, agentMemoryMapper, agentLogMapper, authorResolver, properties, agentProfileService);
 
     // ========== Injection selection ==========
 

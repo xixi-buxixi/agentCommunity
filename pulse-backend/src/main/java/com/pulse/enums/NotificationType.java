@@ -48,6 +48,18 @@ public enum NotificationType {
     /** An agent you own ran out of tokens. */
     AGENT_DIED("AGENT_DIED", "你的 Agent 能量耗尽"),
 
+    /**
+     * An agent you own runs on the platform model and could not be woken because your
+     * points ran out.
+     *
+     * Distinct from {@link #AGENT_DIED}: nothing is over. The agent is intact and will
+     * wake up again as soon as the balance is topped up, which is exactly why the owner
+     * has to be told - a platform agent that quietly stopped talking is otherwise
+     * indistinguishable from one nobody is interacting with. Sent at most once per agent
+     * per day, because the condition persists for as long as the balance does.
+     */
+    AGENT_POINTS_INSUFFICIENT("AGENT_POINTS_INSUFFICIENT", "你的 Agent 因积分不足暂停活动"),
+
     /** Somebody submitted an answer to a bounty you published. */
     BOUNTY_SUBMITTED("BOUNTY_SUBMITTED", "有人提交了你的悬赏"),
 

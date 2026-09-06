@@ -156,6 +156,82 @@ export const groupTraitsByDate = (memories) => {
 }
 
 /**
+ * 置信度展示。后端为 0-100 的整数，缺失时显示 `--`。
+ * @param {{confidence_score?: number|null}} memory
+ * @returns {string}
+ */
+export const confidenceText = (memory) => {
+  const value = Number(memory?.confidence_score)
+  return Number.isFinite(value) && memory?.confidence_score !== null ? String(value) : '--'
+}
+
+/** 面板顶部的说明，说明公开的影响范围。 */
+export const PUBLIC_TRAIT_HINT = '公开的特质会显示在该 Agent 的公开主页上'
+
+/** 公开主页最多展示的特质条数，与后端 public_traits 的上限一致。 */
+export const PUBLIC_TRAIT_LIMIT = 20
+
+/**
+ * 该记忆是否已公开。
+ *
+ * `is_public` 是后端对 `agent_memories.scope` 的渲染，同一响应里两个字段都在。
+ * 以 `is_public` 为准，缺失时读 `scope`；两者都没有（legacy 部署）时按未公开处理。
+ *
+ * @param {{is_public?: boolean|null, scope?: string|null}} memory
+ * @returns {boolean}
+ */
+export const isPublicTrait = (memory) => {
+  if (typeof memory?.is_public === 'boolean') return memory.is_public
+  return memory?.scope === 'PUBLIC'
+}
+
+/** 只有特质卡可以公开。 */
+export const isTrait = (memory) => memory?.memory_type === 'PERSONA_TRAIT'
+
+/**
+ * 是否提供公开状态的切换。
+ *
+ * 事实卡设 is_public 会被后端拒为 99900；已废弃的卡不可公开。两种情况都不显示按钮，
+ * 不发出注定被拒绝的请求。
+ *
+ * @param {{memory_type?: string, status?: number}} memory
+ * @returns {boolean}
+ */
+export const canTogglePublic = (memory) => isTrait(memory) && !isDeprecated(memory)
+
+/** 公开状态标记文案。 */
+export const publicStateLabel = (memory) => (isPublicTrait(memory) ? '公开' : '私有')
+
+/** 切换按钮文案，动作方向与当前状态相反。 */
+export const publicToggleLabel = (memory) => (isPublicTrait(memory) ? '设为私有' : '设为公开')
+
+/**
+ * 切换公开状态的请求体。
+ * @param {{is_public?: boolean|null}} memory
+ * @returns {{is_public: boolean}}
+ */
+export const buildPublicTogglePayload = (memory) => ({ is_public: !isPublicTrait(memory) })
+
+/**
+ * 公开状态切换失败的提示文案。
+ *
+ * 两个码在这条路径上单独处理，其余沿用 describeMemoryError：
+ * - 99900：更新接口用同一个业务码表示「请求内容无效」，而本次请求只带 is_public
+ *   一个字段，唯一会触发该码的原因是对事实卡设公开。
+ * - 20008：后端对「公开一张已废弃的卡」复用了这个码（X2），共用文案会显示成
+ *   「不可恢复」，与本次操作无关。正常路径下按钮已隐藏，该文案只在读取列表之后、
+ *   写入之前被系统废弃的时间窗内出现。
+ *
+ * @param {Error & {code?: number|null, status?: number}} error
+ * @returns {string}
+ */
+export const describePublicToggleError = (error) => {
+  if (error?.code === 99900) return '只有特质卡可以公开'
+  if (error?.code === 20008) return '已废弃的记忆不可公开'
+  return describeMemoryError(error)
+}
+
+/**
  * 业务错误码到提示文案的映射。
  *
  * 5xx 单独处理：按 D-0008，部署库缺少 agent_memories 表时后端明确返回 500 而不做

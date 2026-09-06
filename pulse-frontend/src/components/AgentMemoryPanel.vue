@@ -19,12 +19,21 @@ import {
   MEMORY_STATUS,
   MEMORY_STATUS_FILTERS,
   MEMORY_TYPE_FILTERS,
+  PUBLIC_TRAIT_HINT,
   buildMemoryQuery,
+  buildPublicTogglePayload,
   canDisable,
   canReactivate,
+  canTogglePublic,
+  confidenceText,
   describeMemoryError,
+  describePublicToggleError,
   groupTraitsByDate,
   isDeprecated,
+  isPublicTrait,
+  isTrait,
+  publicStateLabel,
+  publicToggleLabel,
   statusLabel,
   typeLabel,
   validateMemoryContent
@@ -130,7 +139,13 @@ const applyUpdated = (id, updated) => {
   }
 }
 
-const patchMemory = async (memory, payload) => {
+/**
+ * @param {object} memory
+ * @param {object} payload PATCH body
+ * @param {(err: Error) => string} describe 错误码文案；公开状态切换用自己的映射，
+ *   因为 99900 在该路径下只可能来自「对事实卡设公开」。
+ */
+const patchMemory = async (memory, payload, describe = describeMemoryError) => {
   if (!memory || pendingId.value != null) return false
   pendingId.value = memory.id
   clearError(memory.id)
@@ -139,7 +154,7 @@ const patchMemory = async (memory, payload) => {
     applyUpdated(memory.id, data)
     return true
   } catch (err) {
-    setError(memory.id, describeMemoryError(err))
+    setError(memory.id, describe(err))
     return false
   } finally {
     pendingId.value = null
@@ -154,6 +169,24 @@ const reactivateMemory = (memory) => {
     return
   }
   return patchMemory(memory, { status: MEMORY_STATUS.ACTIVE })
+}
+
+/**
+ * 切换一张特质卡的公开状态。
+ *
+ * 只对可切换的卡发出请求；响应缺少 is_public（legacy 部署尚未返回该字段）时按提交值
+ * 就地补上，否则标记会停留在切换前的取值。
+ */
+const togglePublic = async (memory) => {
+  if (!canTogglePublic(memory)) return
+  const payload = buildPublicTogglePayload(memory)
+  const ok = await patchMemory(memory, payload, describePublicToggleError)
+  if (ok) {
+    const index = memories.value.findIndex((item) => item.id === memory.id)
+    if (index !== -1 && memories.value[index].is_public !== payload.is_public) {
+      memories.value[index] = { ...memories.value[index], is_public: payload.is_public }
+    }
+  }
 }
 
 const startEdit = (memory) => {
@@ -180,9 +213,6 @@ const submitEdit = async (memory) => {
   if (ok) cancelEdit()
 }
 
-const confidenceText = (memory) =>
-  typeof memory?.confidence_score === 'number' ? `${memory.confidence_score}` : '--'
-
 const sourceText = (memory) => {
   const type = memory?.source_type || '--'
   return memory?.source_id != null ? `${type}#${memory.source_id}` : type
@@ -195,6 +225,11 @@ const cardClass = (memory) => {
   if (Number(memory?.status) === MEMORY_STATUS.DISABLED) return 'border-pulse-border opacity-75'
   return 'border-pulse-agent/40'
 }
+
+const publicBadgeClass = (memory) =>
+  isPublicTrait(memory)
+    ? 'border-pulse-accent/50 text-pulse-accent'
+    : 'border-pulse-border text-pulse-muted'
 
 const statusClass = (memory) => {
   if (isDeprecated(memory)) return 'text-pulse-muted'
@@ -234,6 +269,11 @@ defineExpose({ reload: loadMemories })
           TRAIT_TIMELINE
         </button>
       </div>
+    </div>
+
+    <!-- Public-trait hint: says where a published trait shows up -->
+    <div class="border-b border-pulse-border px-3 sm:px-4 py-2">
+      <span class="text-pulse-muted text-[10px] sm:text-xs break-words">{{ PUBLIC_TRAIT_HINT }}</span>
     </div>
 
     <!-- Filters -->
@@ -300,10 +340,28 @@ defineExpose({ reload: loadMemories })
           >
             <div class="flex items-center gap-2 flex-wrap text-[10px] sm:text-xs">
               <span :class="statusClass(memory)">{{ statusLabel(memory) }}</span>
+              <span class="px-1 py-0.5 border" :class="publicBadgeClass(memory)">
+                {{ publicStateLabel(memory) }}
+              </span>
               <span class="text-pulse-muted">| CONF: {{ confidenceText(memory) }}</span>
               <span class="text-pulse-muted">| {{ formatFullDateTime(memory.created_at) }}</span>
             </div>
             <p class="text-pulse-text text-xs sm:text-sm mt-1 break-words">{{ memory.content }}</p>
+            <button
+              v-if="canTogglePublic(memory)"
+              type="button"
+              class="mt-2 border px-2 py-1 text-[10px] sm:text-xs transition disabled:opacity-40 min-h-[32px]"
+              :class="isPublicTrait(memory)
+                ? 'border-pulse-warning text-pulse-warning hover:bg-pulse-warning/10'
+                : 'border-pulse-accent text-pulse-accent hover:bg-pulse-accent/10'"
+              :disabled="pendingId === memory.id"
+              @click="togglePublic(memory)"
+            >
+              {{ pendingId === memory.id ? 'SAVING...' : publicToggleLabel(memory) }}
+            </button>
+            <div v-if="actionErrors[memory.id]" class="mt-2 bg-pulse-dead/10 border border-pulse-dead/30 p-2">
+              <span class="text-pulse-dead text-[10px] sm:text-xs break-words">> {{ actionErrors[memory.id] }}</span>
+            </div>
           </div>
         </div>
       </template>
@@ -319,6 +377,10 @@ defineExpose({ reload: loadMemories })
           <div class="flex items-center gap-2 flex-wrap text-[10px] sm:text-xs mb-1">
             <span class="border border-pulse-agent/50 text-pulse-agent px-1 py-0.5">{{ typeLabel(memory) }}</span>
             <span :class="statusClass(memory)">{{ statusLabel(memory) }}</span>
+            <!-- Only trait cards can be published, so only they carry the marker -->
+            <span v-if="isTrait(memory)" class="px-1 py-0.5 border" :class="publicBadgeClass(memory)">
+              {{ publicStateLabel(memory) }}
+            </span>
             <span class="text-pulse-muted">ID: {{ memory.id }}</span>
             <span class="text-pulse-muted">V{{ memory.version ?? 1 }}</span>
           </div>
@@ -402,6 +464,18 @@ defineExpose({ reload: loadMemories })
               @click="startEdit(memory)"
             >
               EDIT_CONTENT
+            </button>
+            <button
+              v-if="canTogglePublic(memory)"
+              type="button"
+              class="border px-2 py-1 text-[10px] sm:text-xs transition disabled:opacity-40 min-h-[32px]"
+              :class="isPublicTrait(memory)
+                ? 'border-pulse-warning text-pulse-warning hover:bg-pulse-warning/10'
+                : 'border-pulse-accent text-pulse-accent hover:bg-pulse-accent/10'"
+              :disabled="pendingId === memory.id"
+              @click="togglePublic(memory)"
+            >
+              {{ pendingId === memory.id ? 'SAVING...' : publicToggleLabel(memory) }}
             </button>
             <span v-if="isDeprecated(memory)" class="text-pulse-muted text-[10px] sm:text-xs self-center">
               已废弃的记忆不可恢复，仅可修正内容

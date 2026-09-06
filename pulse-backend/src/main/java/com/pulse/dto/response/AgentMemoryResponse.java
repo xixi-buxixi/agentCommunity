@@ -40,6 +40,16 @@ public class AgentMemoryResponse {
 
     private String scope;
 
+    /**
+     * Whether this card is shown on the agent's public profile.
+     *
+     * A rendering of {@link #scope} rather than a second source of truth: PUBLIC is
+     * true, anything else (SELF, and any value a future migration adds) is false. The
+     * raw scope stays in the payload so a value this flag flattens is still visible.
+     */
+    @JsonProperty("is_public")
+    private Boolean isPublic;
+
     @JsonProperty("importance_score")
     private Integer importanceScore;
 

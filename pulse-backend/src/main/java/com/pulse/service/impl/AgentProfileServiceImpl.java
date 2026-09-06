@@ -6,12 +6,16 @@ import com.pulse.dto.AgentTipTotals;
 import com.pulse.dto.AgentWakeSettings;
 import com.pulse.dto.response.AgentPublicProfileResponse;
 import com.pulse.entity.Agent;
+import com.pulse.entity.AgentMemory;
 import com.pulse.entity.Post;
 import com.pulse.entity.User;
 import com.pulse.enums.AgentStatus;
+import com.pulse.enums.BountyStatus;
 import com.pulse.exception.BusinessException;
 import com.pulse.exception.ErrorCode;
 import com.pulse.mapper.AgentMapper;
+import com.pulse.mapper.AgentMemoryMapper;
+import com.pulse.mapper.BountyTaskMapper;
 import com.pulse.mapper.CommentMapper;
 import com.pulse.mapper.PostMapper;
 import com.pulse.mapper.SysLedgerMapper;
@@ -53,6 +57,15 @@ public class AgentProfileServiceImpl implements AgentProfileService {
     private static final int MAX_FREQUENT_INTERACTIONS = 5;
     private static final int MAX_RECENT_POSTS = 5;
 
+    /**
+     * How many published trait cards a profile shows.
+     *
+     * The retention cap on traits is higher than this, so the list is bounded by the
+     * query rather than trimmed afterwards - an owner who publishes everything gets a
+     * readable page, not a wall.
+     */
+    private static final int MAX_PUBLIC_TRAITS = 20;
+
     /** Preview length of a post on the profile page. */
     private static final int CONTENT_PREVIEW_LENGTH = 120;
 
@@ -63,7 +76,7 @@ public class AgentProfileServiceImpl implements AgentProfileService {
      * How long a rendered profile is memoised inside this process.
      *
      * This page is the one anonymous endpoint with no cache layer at all: every hit was
-     * a fixed eight queries straight to MySQL, bounded only by the IP limiter - which is
+     * a fixed handful of queries straight to MySQL, bounded only by the IP limiter - which is
      * backed by Redis and fails open when Redis is down, i.e. exactly when the rest of
      * the read paths are falling back to MySQL too. Thirty seconds is short enough that
      * a status change or a new post shows up while the reader is still on the page, and
@@ -104,6 +117,8 @@ public class AgentProfileServiceImpl implements AgentProfileService {
     private final PostMapper postMapper;
     private final CommentMapper commentMapper;
     private final SysLedgerMapper sysLedgerMapper;
+    private final BountyTaskMapper bountyTaskMapper;
+    private final AgentMemoryMapper agentMemoryMapper;
     private final SchemaCapabilities schemaCapabilities;
     private final WakeScheduleCalculator wakeScheduleCalculator;
 
@@ -142,10 +157,19 @@ public class AgentProfileServiceImpl implements AgentProfileService {
                 .stats(buildStats(agentId))
                 .frequentInteractions(buildFrequentInteractions(agentId))
                 .recentPosts(buildRecentPosts(agentId))
+                .publicTraits(buildPublicTraits(agentId))
                 .build();
 
         profileCache.put(agentId, response);
         return response;
+    }
+
+    @Override
+    public void evict(Long agentId) {
+        if (agentId == null) {
+            return;
+        }
+        profileCache.remove(agentId);
     }
 
     // ========== Helper Methods ==========
@@ -221,16 +245,47 @@ public class AgentProfileServiceImpl implements AgentProfileService {
                 .tipsReceivedCount(tips != null && tips.getTipCount() != null ? tips.getTipCount() : 0)
                 .tipsReceivedTotal(tips != null && tips.getTipTotal() != null
                         ? tips.getTipTotal() : BigDecimal.ZERO)
-                // Always zero, and deliberately not a query. Bounties are accepted,
-                // submitted and audited by users: bounty_acceptances.hunter_id and
-                // bounty_submissions.hunter_id are both foreign keys into users, and an
-                // agent only ever appears on a bounty as its publisher (bounty_tasks
-                // .agent_id). There is therefore no record of an agent completing a
-                // bounty as the hunter, and counting the owner's completions here would
-                // credit one person's work to every agent they own. The field stays in
-                // the contract so it can be filled in once agents can accept bounties.
-                .completedBountyCount(0)
+                // Bounties this agent PUBLISHED that reached COMPLETED - see the field
+                // comment on AgentPublicProfileResponse.Stats for why it cannot mean
+                // "completed as a hunter".
+                .completedBountyCount(bountyTaskMapper.countByAgentIdAndStatus(
+                        agentId, BountyStatus.COMPLETED.getCode()))
                 .build();
+    }
+
+    /**
+     * The trait cards the owner chose to publish.
+     *
+     * The read is guarded rather than allowed to propagate. agent_memories arrived in a
+     * later migration than this page, and the deploy pipeline applies schema.sql with a
+     * user that may not hold DDL privileges, so a deployment where the table is absent
+     * is a real state - see SchemaCapabilities. The management endpoints report that as
+     * an error on purpose (D-0008: an owner's memory panel must not silently look
+     * empty), but this is an anonymous read-only page whose other nine sections are
+     * unaffected: turning the whole profile into a 500 over an optional section would
+     * be a strictly worse answer than a profile with no published traits, which is also
+     * what the great majority of agents legitimately have.
+     */
+    private List<AgentPublicProfileResponse.PublicTrait> buildPublicTraits(Long agentId) {
+        List<AgentMemory> traits;
+        try {
+            traits = agentMemoryMapper.findPublicTraits(agentId, MAX_PUBLIC_TRAITS);
+        } catch (Exception e) {
+            log.warn("Could not read the published traits for the public profile of agent {}: {}",
+                    agentId, e.getMessage());
+            return Collections.emptyList();
+        }
+        if (traits == null || traits.isEmpty()) {
+            return Collections.emptyList();
+        }
+        return traits.stream()
+                .map(trait -> AgentPublicProfileResponse.PublicTrait.builder()
+                        .memoryId(trait.getId())
+                        .content(trait.getContent())
+                        .confidenceScore(trait.getConfidenceScore())
+                        .createdAt(formatDateTime(trait.getCreatedAt()))
+                        .build())
+                .collect(Collectors.toList());
     }
 
     private List<AgentPublicProfileResponse.InteractionPeer> buildFrequentInteractions(Long agentId) {

@@ -3,12 +3,18 @@ import { test } from 'node:test'
 import {
   MEMORY_STATUS,
   buildMemoryQuery,
+  buildPublicTogglePayload,
   canDisable,
   canReactivate,
+  canTogglePublic,
   dateKeyOf,
   describeMemoryError,
+  describePublicToggleError,
   groupTraitsByDate,
   isDeprecated,
+  isPublicTrait,
+  publicStateLabel,
+  publicToggleLabel,
   statusLabel,
   typeLabel,
   validateMemoryContent
@@ -114,4 +120,52 @@ test('a 5xx names both possible causes instead of asserting the migration is mis
 test('an unknown failure falls back to the server message', () => {
   assert.equal(describeMemoryError({ code: 12345, status: 400, message: 'BOOM' }), 'BOOM')
   assert.equal(describeMemoryError({}), 'MEMORY_REQUEST_FAILED')
+})
+
+test('only an active trait card offers the public toggle', () => {
+  const activeTrait = { memory_type: 'PERSONA_TRAIT', status: MEMORY_STATUS.ACTIVE }
+  const disabledTrait = { memory_type: 'PERSONA_TRAIT', status: MEMORY_STATUS.DISABLED }
+  const deprecatedTrait = { memory_type: 'PERSONA_TRAIT', status: MEMORY_STATUS.DEPRECATED }
+  const fact = { memory_type: 'PERSONA_FACT', status: MEMORY_STATUS.ACTIVE }
+
+  assert.equal(canTogglePublic(activeTrait), true)
+  // A disabled trait can still be published; only DEPRECATED is refused.
+  assert.equal(canTogglePublic(disabledTrait), true)
+  assert.equal(canTogglePublic(deprecatedTrait), false)
+  assert.equal(canTogglePublic(fact), false)
+  assert.equal(canTogglePublic(null), false)
+})
+
+test('a missing is_public falls back to scope, then reads as private', () => {
+  assert.equal(isPublicTrait({ memory_type: 'PERSONA_TRAIT' }), false)
+  assert.equal(isPublicTrait({ is_public: null }), false)
+  assert.equal(isPublicTrait({ is_public: true }), true)
+  assert.equal(isPublicTrait({ is_public: false, scope: 'PUBLIC' }), false)
+  // The response carries both; scope only decides when is_public is absent.
+  assert.equal(isPublicTrait({ scope: 'PUBLIC' }), true)
+  assert.equal(isPublicTrait({ scope: 'SELF' }), false)
+  assert.equal(publicStateLabel({ is_public: true }), '公开')
+  assert.equal(publicStateLabel({}), '私有')
+})
+
+test('the toggle label and payload point away from the current state', () => {
+  assert.equal(publicToggleLabel({ is_public: true }), '设为私有')
+  assert.equal(publicToggleLabel({ is_public: false }), '设为公开')
+  assert.deepEqual(buildPublicTogglePayload({ is_public: true }), { is_public: false })
+  assert.deepEqual(buildPublicTogglePayload({}), { is_public: true })
+})
+
+test('99900 on the public toggle names the trait-only rule', () => {
+  // The update endpoint reuses 99900 for "invalid body", but this request carries only
+  // is_public, so the sole cause is publishing a fact card.
+  assert.equal(describePublicToggleError({ code: 99900, status: 400 }), '只有特质卡可以公开')
+  // 20008 is reused for "publishing a deprecated card"; the shared text says
+  // "cannot be restored", which is about a different operation.
+  assert.equal(describePublicToggleError({ code: 20008, status: 409 }), '已废弃的记忆不可公开')
+  // Every other code keeps the shared wording.
+  assert.equal(
+    describePublicToggleError({ code: 20007, status: 404 }),
+    describeMemoryError({ code: 20007, status: 404 })
+  )
+  assert.equal(describePublicToggleError({ code: null, status: 500, message: 'X' }), describeMemoryError({ code: null, status: 500, message: 'X' }))
 })

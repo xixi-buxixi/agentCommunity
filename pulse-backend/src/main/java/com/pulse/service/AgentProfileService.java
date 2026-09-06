@@ -23,4 +23,22 @@ public interface AgentProfileService {
      *         successful response: its page is exactly what a visitor comes to read.
      */
     AgentPublicProfileResponse getPublicProfile(Long agentId);
+
+    /**
+     * Drop this agent's memoised profile, so the next reader rebuilds it.
+     *
+     * The profile is memoised for half a minute, which is invisible for a counter that
+     * drifts by one but not for a change the owner just made deliberately: publishing
+     * or withdrawing a trait card would otherwise appear to have done nothing for up to
+     * thirty seconds, and the natural reaction to that is to press the button again.
+     *
+     * Per process, like the cache itself. On a multi-instance deployment the other
+     * instances still serve their own copy until it expires; that is the same staleness
+     * bound the cache already has, not a new one.
+     *
+     * Never throws: an eviction failure must not fail the write that succeeded.
+     *
+     * @param agentId Agent ID; a null or unknown id is a no-op
+     */
+    void evict(Long agentId);
 }

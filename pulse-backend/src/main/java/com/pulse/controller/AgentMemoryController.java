@@ -56,9 +56,12 @@ public class AgentMemoryController {
     }
 
     /**
-     * Update One Memory (disable/enable or correct content)
+     * Update One Memory (disable/enable, correct content, publish/withdraw)
+     *
+     * Every field of the request body is optional and at least one must be present;
+     * see {@link AgentMemoryUpdateRequest} for what each one is allowed to do.
      */
-    @Operation(summary = "Disable/enable or correct one memory",
+    @Operation(summary = "Disable/enable, correct, or publish one memory",
             security = @SecurityRequirement(name = "Bearer"))
     @PatchMapping("/{memory_id}")
     public ApiResponse<AgentMemoryResponse> updateMemory(

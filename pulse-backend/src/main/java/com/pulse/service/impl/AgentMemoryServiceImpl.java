@@ -20,6 +20,7 @@ import com.pulse.mapper.AgentLogMapper;
 import com.pulse.mapper.AgentMapper;
 import com.pulse.mapper.AgentMemoryMapper;
 import com.pulse.service.AgentMemoryService;
+import com.pulse.service.AgentProfileService;
 import com.pulse.service.support.AuthorResolver;
 import com.pulse.util.MemoryTextSanitizer;
 import lombok.extern.slf4j.Slf4j;
@@ -71,6 +72,16 @@ public class AgentMemoryServiceImpl implements AgentMemoryService {
     private static final String CREATED_BY_USER_EDIT = "USER_EDIT";
     private static final String SCOPE_SELF = "SELF";
 
+    /**
+     * Visibility scope of a card the owner published on the agent's public profile.
+     *
+     * The column has existed since phase 1 and was constant at SELF; PUBLIC is the
+     * second value it takes. Everything that reads a memory for the agent's own use
+     * (injection, reflection) ignores scope entirely - publishing changes who can SEE
+     * a card, never what the agent does with it.
+     */
+    private static final String SCOPE_PUBLIC = "PUBLIC";
+
     private static final DateTimeFormatter DATE_FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss'Z'");
 
@@ -95,16 +106,27 @@ public class AgentMemoryServiceImpl implements AgentMemoryService {
     private final AuthorResolver authorResolver;
     private final MemoryProperties memoryProperties;
 
+    /**
+     * Only ever used to invalidate one cache entry after a successful patch.
+     *
+     * The direction is safe: AgentProfileServiceImpl depends on mappers and on
+     * SchemaCapabilities, never on this service, so there is no cycle to break with an
+     * event or a @Lazy proxy.
+     */
+    private final AgentProfileService agentProfileService;
+
     public AgentMemoryServiceImpl(AgentMapper agentMapper,
                                  AgentMemoryMapper agentMemoryMapper,
                                  AgentLogMapper agentLogMapper,
                                  AuthorResolver authorResolver,
-                                 MemoryProperties memoryProperties) {
+                                 MemoryProperties memoryProperties,
+                                 AgentProfileService agentProfileService) {
         this.agentMapper = agentMapper;
         this.agentMemoryMapper = agentMemoryMapper;
         this.agentLogMapper = agentLogMapper;
         this.authorResolver = authorResolver;
         this.memoryProperties = memoryProperties;
+        this.agentProfileService = agentProfileService;
     }
 
     // ========== Owner-facing read ==========
@@ -159,7 +181,8 @@ public class AgentMemoryServiceImpl implements AgentMemoryService {
         boolean wantsContentChange = request != null
                 && request.getContent() != null
                 && !request.getContent().isBlank();
-        if (!wantsStatusChange && !wantsContentChange) {
+        boolean wantsScopeChange = request != null && request.getIsPublic() != null;
+        if (!wantsStatusChange && !wantsContentChange && !wantsScopeChange) {
             throw new BusinessException(ErrorCode.INVALID_PARAMETER);
         }
 
@@ -184,6 +207,11 @@ public class AgentMemoryServiceImpl implements AgentMemoryService {
             newStatus = request.getStatus();
         }
 
+        String newScope = null;
+        if (wantsScopeChange) {
+            newScope = resolveScope(request.getIsPublic(), memory);
+        }
+
         String newContent = null;
         Integer newVersion = null;
         if (wantsContentChange) {
@@ -201,15 +229,25 @@ public class AgentMemoryServiceImpl implements AgentMemoryService {
         // write additionally requires the status we read (so two opposite toggles cannot
         // both win) and a non-retired row. See applyOwnerEdit.
         int updated = agentMemoryMapper.applyOwnerEdit(memoryId, newStatus, newContent,
-                newVersion, CREATED_BY_USER_EDIT, memory.getVersion(), memory.getStatus());
+                newVersion, CREATED_BY_USER_EDIT, memory.getVersion(), memory.getStatus(),
+                newScope);
         if (updated == 0) {
             log.info("Agent memory patch conflicted: agentId={}, memoryId={}, expectedVersion={}",
                     agentId, memoryId, memory.getVersion());
             throw new BusinessException(ErrorCode.RESOURCE_CONFLICT);
         }
 
-        log.info("Agent memory updated: agentId={}, memoryId={}, ownerId={}, status={}, contentEdited={}",
-                agentId, memoryId, ownerId, newStatus, wantsContentChange);
+        log.info("Agent memory updated: agentId={}, memoryId={}, ownerId={}, status={}, "
+                        + "contentEdited={}, scope={}",
+                agentId, memoryId, ownerId, newStatus, wantsContentChange, newScope);
+
+        // The public profile is memoised for half a minute, and every field of this
+        // patch can change it: scope decides whether the card is listed at all, status
+        // hides and restores a published card, and content is the text on the page.
+        // Evicting on any successful patch rather than only on the two that obviously
+        // matter costs one rebuilt profile and removes a class of "I pressed the button
+        // and nothing happened" from the owner panel.
+        evictPublicProfile(agentId);
 
         // Report the row as it now stands rather than the pre-image plus our edit: a
         // concurrent retirement of a card we only corrected the text of must show up.
@@ -217,12 +255,13 @@ public class AgentMemoryServiceImpl implements AgentMemoryService {
         if (refreshed != null) {
             return buildResponse(refreshed);
         }
-        applyEditToLocalCopy(memory, newStatus, newContent, newVersion);
+        applyEditToLocalCopy(memory, newStatus, newContent, newVersion, newScope);
         return buildResponse(memory);
     }
 
     private void applyEditToLocalCopy(AgentMemory memory, Integer newStatus,
-                                      String newContent, Integer newVersion) {
+                                      String newContent, Integer newVersion,
+                                      String newScope) {
         if (newStatus != null) {
             memory.setStatus(newStatus);
         }
@@ -230,6 +269,51 @@ public class AgentMemoryServiceImpl implements AgentMemoryService {
             memory.setContent(newContent);
             memory.setVersion(newVersion);
             memory.setCreatedBy(CREATED_BY_USER_EDIT);
+        }
+        if (newScope != null) {
+            memory.setScope(newScope);
+        }
+    }
+
+    /**
+     * Translate the request's is_public into a scope, rejecting the cards that must not
+     * be published.
+     *
+     * Publishing is the only direction that is restricted:
+     * - a PERSONA_FACT is written straight from an executed action and quotes text the
+     *   owner never reviewed, so it is refused with INVALID_PARAMETER and a message
+     *   naming the rule, not with a silent no-op;
+     * - a DEPRECATED card is one the platform stopped trusting, and putting it on a
+     *   public page would be exactly the resurrection the terminal state exists to
+     *   prevent. Reported as AGENT_MEMORY_DEPRECATED, the same code a status edit on a
+     *   retired card already returns.
+     *
+     * Withdrawal is accepted on any card: it only ever reduces what is visible, and an
+     * owner must be able to take a card down even after the system retired it.
+     */
+    private String resolveScope(Boolean isPublic, AgentMemory memory) {
+        if (!Boolean.TRUE.equals(isPublic)) {
+            return SCOPE_SELF;
+        }
+        if (!MemoryType.PERSONA_TRAIT.getCode().equals(memory.getMemoryType())) {
+            throw new BusinessException(ErrorCode.INVALID_PARAMETER,
+                    "只有人格特质卡（PERSONA_TRAIT）可以公开");
+        }
+        if (memory.isDeprecated()) {
+            throw new BusinessException(ErrorCode.AGENT_MEMORY_DEPRECATED);
+        }
+        return SCOPE_PUBLIC;
+    }
+
+    /**
+     * Never lets an eviction failure fail the patch that already committed.
+     */
+    private void evictPublicProfile(Long agentId) {
+        try {
+            agentProfileService.evict(agentId);
+        } catch (Exception e) {
+            log.warn("Could not evict the cached public profile of agent {}: {}",
+                    agentId, e.getMessage());
         }
     }
 
@@ -926,6 +1010,7 @@ public class AgentMemoryServiceImpl implements AgentMemoryService {
                 .sourceType(memory.getSourceType())
                 .sourceId(memory.getSourceId())
                 .scope(memory.getScope())
+                .isPublic(SCOPE_PUBLIC.equals(memory.getScope()))
                 .importanceScore(memory.getImportanceScore())
                 .confidenceScore(memory.getConfidenceScore())
                 .status(memory.getStatus())

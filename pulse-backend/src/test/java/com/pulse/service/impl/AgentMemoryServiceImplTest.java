@@ -1,6 +1,7 @@
 package com.pulse.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.Wrapper;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.pulse.config.MemoryProperties;
 import com.pulse.dto.AgentActionOutcome;
@@ -19,6 +20,7 @@ import com.pulse.mapper.AgentLogMapper;
 import com.pulse.mapper.AgentMapper;
 import com.pulse.mapper.AgentMemoryMapper;
 import com.pulse.mapper.UserMapper;
+import com.pulse.service.AgentProfileService;
 import com.pulse.service.support.AuthorResolver;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -52,6 +54,7 @@ class AgentMemoryServiceImplTest {
     private final AuthorResolver authorResolver = new AuthorResolver(userMapper, agentMapper);
 
     private final AgentLogMapper agentLogMapper = mock(AgentLogMapper.class);
+    private final AgentProfileService agentProfileService = mock(AgentProfileService.class);
 
     private final AgentMemoryServiceImpl service = newService(200);
 
@@ -59,7 +62,7 @@ class AgentMemoryServiceImplTest {
         MemoryProperties properties = new MemoryProperties();
         properties.setPersonaFactLimit(personaFactLimit);
         return new AgentMemoryServiceImpl(agentMapper, agentMemoryMapper, agentLogMapper,
-                authorResolver, properties);
+                authorResolver, properties, agentProfileService);
     }
 
     // ========== Hot-path write: templates ==========
@@ -545,7 +548,7 @@ class AgentMemoryServiceImplTest {
         assertThat(response.getContent()).isEqualTo("原始记忆");
         // Status-only edit: no content, no version bump, and the read version is the guard
         verify(agentMemoryMapper).applyOwnerEdit(5L, MemoryStatus.DISABLED.getCode(),
-                null, null, "USER_EDIT", 1, MemoryStatus.ACTIVE.getCode());
+                null, null, "USER_EDIT", 1, MemoryStatus.ACTIVE.getCode(), null);
     }
 
     /**
@@ -565,7 +568,7 @@ class AgentMemoryServiceImplTest {
         service.updateMemory(OWNER_ID, AGENT_ID, 5L, request);
 
         verify(agentMemoryMapper).applyOwnerEdit(5L, MemoryStatus.ACTIVE.getCode(),
-                null, null, "USER_EDIT", 1, MemoryStatus.DISABLED.getCode());
+                null, null, "USER_EDIT", 1, MemoryStatus.DISABLED.getCode(), null);
     }
 
     @Test
@@ -608,7 +611,7 @@ class AgentMemoryServiceImplTest {
         // version+1 is written under the "still version 1" guard, so two concurrent
         // corrections cannot both land on 2
         verify(agentMemoryMapper).applyOwnerEdit(5L, null, "我其实支持小模型路线",
-                2, "USER_EDIT", 1, MemoryStatus.ACTIVE.getCode());
+                2, "USER_EDIT", 1, MemoryStatus.ACTIVE.getCode(), null);
     }
 
     /**
@@ -619,7 +622,7 @@ class AgentMemoryServiceImplTest {
     void aPatchThatLostTheRaceIsReportedAsAConflict() {
         when(agentMapper.selectById(AGENT_ID)).thenReturn(agent());
         when(agentMemoryMapper.selectById(5L)).thenReturn(memory(5L, MemoryStatus.ACTIVE.getCode()));
-        when(agentMemoryMapper.applyOwnerEdit(any(), any(), any(), any(), anyString(), any(), any()))
+        when(agentMemoryMapper.applyOwnerEdit(any(), any(), any(), any(), anyString(), any(), any(), any()))
                 .thenReturn(0);
 
         AgentMemoryUpdateRequest request = new AgentMemoryUpdateRequest();
@@ -645,7 +648,7 @@ class AgentMemoryServiceImplTest {
 
         assertThat(response.getContent()).isEqualTo("联系我 [REDACTED] 第二行");
         verify(agentMemoryMapper).applyOwnerEdit(5L, null, "联系我 [REDACTED] 第二行",
-                2, "USER_EDIT", 1, MemoryStatus.ACTIVE.getCode());
+                2, "USER_EDIT", 1, MemoryStatus.ACTIVE.getCode(), null);
     }
 
     @Test
@@ -687,6 +690,253 @@ class AgentMemoryServiceImplTest {
                 .extracting("code")
                 .isEqualTo(ErrorCode.INVALID_PARAMETER.getCode());
         verifyNoInteractions(agentMemoryMapper);
+    }
+
+    // ========== PATCH is_public ==========
+
+    /**
+     * Publishing a trait writes scope PUBLIC through the same conditional UPDATE as
+     * every other owner edit, and touches nothing else: no status, no content, no
+     * version bump. Publishing a card is a visibility decision, not a revision of it.
+     */
+    @Test
+    void publishingATraitWritesThePublicScopeAndNothingElse() {
+        when(agentMapper.selectById(AGENT_ID)).thenReturn(agent());
+        AgentMemory published = trait(5L, MemoryStatus.ACTIVE.getCode());
+        published.setScope("PUBLIC");
+        when(agentMemoryMapper.selectById(5L))
+                .thenReturn(trait(5L, MemoryStatus.ACTIVE.getCode()), published);
+        whenOwnerEditApplies();
+
+        AgentMemoryUpdateRequest request = new AgentMemoryUpdateRequest();
+        request.setIsPublic(true);
+
+        AgentMemoryResponse response = service.updateMemory(OWNER_ID, AGENT_ID, 5L, request);
+
+        assertThat(response.getIsPublic()).isTrue();
+        assertThat(response.getScope()).isEqualTo("PUBLIC");
+        assertThat(response.getVersion()).isEqualTo(1);
+        verify(agentMemoryMapper).applyOwnerEdit(5L, null, null, null, "USER_EDIT",
+                1, MemoryStatus.ACTIVE.getCode(), "PUBLIC");
+    }
+
+    @Test
+    void withdrawingATraitWritesTheSelfScope() {
+        when(agentMapper.selectById(AGENT_ID)).thenReturn(agent());
+        AgentMemory publishedNow = trait(5L, MemoryStatus.ACTIVE.getCode());
+        publishedNow.setScope("PUBLIC");
+        when(agentMemoryMapper.selectById(5L))
+                .thenReturn(publishedNow, trait(5L, MemoryStatus.ACTIVE.getCode()));
+        whenOwnerEditApplies();
+
+        AgentMemoryUpdateRequest request = new AgentMemoryUpdateRequest();
+        request.setIsPublic(false);
+
+        AgentMemoryResponse response = service.updateMemory(OWNER_ID, AGENT_ID, 5L, request);
+
+        assertThat(response.getIsPublic()).isFalse();
+        verify(agentMemoryMapper).applyOwnerEdit(5L, null, null, null, "USER_EDIT",
+                1, MemoryStatus.ACTIVE.getCode(), "SELF");
+    }
+
+    /**
+     * A PERSONA_FACT is generated from an executed action and quotes text the owner
+     * never reviewed, so publishing one is refused rather than silently ignored - the
+     * message has to say which cards can be published, because the switch appears next
+     * to every card in the panel.
+     */
+    @Test
+    void aFactCardCannotBePublished() {
+        when(agentMapper.selectById(AGENT_ID)).thenReturn(agent());
+        when(agentMemoryMapper.selectById(5L)).thenReturn(memory(5L, MemoryStatus.ACTIVE.getCode()));
+
+        AgentMemoryUpdateRequest request = new AgentMemoryUpdateRequest();
+        request.setIsPublic(true);
+
+        assertThatThrownBy(() -> service.updateMemory(OWNER_ID, AGENT_ID, 5L, request))
+                .isInstanceOf(BusinessException.class)
+                .extracting("code")
+                .isEqualTo(ErrorCode.INVALID_PARAMETER.getCode());
+        verifyNoOwnerEdit();
+    }
+
+    @Test
+    void theFactRejectionSaysOnlyTraitsCanBePublished() {
+        when(agentMapper.selectById(AGENT_ID)).thenReturn(agent());
+        when(agentMemoryMapper.selectById(5L)).thenReturn(memory(5L, MemoryStatus.ACTIVE.getCode()));
+
+        AgentMemoryUpdateRequest request = new AgentMemoryUpdateRequest();
+        request.setIsPublic(true);
+
+        assertThatThrownBy(() -> service.updateMemory(OWNER_ID, AGENT_ID, 5L, request))
+                .hasMessageContaining("PERSONA_TRAIT");
+    }
+
+    /**
+     * DEPRECATED is terminal. Putting a retired card on a public page is the same
+     * resurrection a status edit is already blocked from performing, so it is refused
+     * with the same code.
+     */
+    @Test
+    void aDeprecatedTraitCannotBePublished() {
+        when(agentMapper.selectById(AGENT_ID)).thenReturn(agent());
+        when(agentMemoryMapper.selectById(5L))
+                .thenReturn(trait(5L, MemoryStatus.DEPRECATED.getCode()));
+
+        AgentMemoryUpdateRequest request = new AgentMemoryUpdateRequest();
+        request.setIsPublic(true);
+
+        assertThatThrownBy(() -> service.updateMemory(OWNER_ID, AGENT_ID, 5L, request))
+                .isInstanceOf(BusinessException.class)
+                .extracting("code")
+                .isEqualTo(ErrorCode.AGENT_MEMORY_DEPRECATED.getCode());
+        verifyNoOwnerEdit();
+    }
+
+    /**
+     * Withdrawal is allowed on any card, including a retired one: it only ever reduces
+     * what is visible, and an owner must be able to take a card down after the system
+     * retired it rather than being told the card is untouchable.
+     */
+    @Test
+    void aDeprecatedCardCanStillBeWithdrawn() {
+        when(agentMapper.selectById(AGENT_ID)).thenReturn(agent());
+        AgentMemory retired = trait(5L, MemoryStatus.DEPRECATED.getCode());
+        retired.setScope("PUBLIC");
+        when(agentMemoryMapper.selectById(5L)).thenReturn(retired, trait(5L, MemoryStatus.DEPRECATED.getCode()));
+        whenOwnerEditApplies();
+
+        AgentMemoryUpdateRequest request = new AgentMemoryUpdateRequest();
+        request.setIsPublic(false);
+
+        assertThat(service.updateMemory(OWNER_ID, AGENT_ID, 5L, request).getIsPublic()).isFalse();
+        verify(agentMemoryMapper).applyOwnerEdit(5L, null, null, null, "USER_EDIT",
+                1, MemoryStatus.DEPRECATED.getCode(), "SELF");
+    }
+
+    /**
+     * Disabling a published card leaves its scope alone: the owner brake hides the card
+     * (findPublicTraits requires status = 1) without discarding the decision to publish
+     * it, so re-enabling restores the profile to what it was.
+     */
+    @Test
+    void disablingAPublishedCardDoesNotWithdrawIt() {
+        when(agentMapper.selectById(AGENT_ID)).thenReturn(agent());
+        AgentMemory publishedActive = trait(5L, MemoryStatus.ACTIVE.getCode());
+        publishedActive.setScope("PUBLIC");
+        AgentMemory publishedDisabled = trait(5L, MemoryStatus.DISABLED.getCode());
+        publishedDisabled.setScope("PUBLIC");
+        when(agentMemoryMapper.selectById(5L)).thenReturn(publishedActive, publishedDisabled);
+        whenOwnerEditApplies();
+
+        AgentMemoryUpdateRequest request = new AgentMemoryUpdateRequest();
+        request.setStatus(MemoryStatus.DISABLED.getCode());
+
+        AgentMemoryResponse response = service.updateMemory(OWNER_ID, AGENT_ID, 5L, request);
+
+        assertThat(response.getIsPublic()).isTrue();
+        // scope is not part of the write at all
+        verify(agentMemoryMapper).applyOwnerEdit(5L, MemoryStatus.DISABLED.getCode(),
+                null, null, "USER_EDIT", 1, MemoryStatus.ACTIVE.getCode(), null);
+    }
+
+    /** is_public alone is a complete patch - the "at least one field" rule includes it. */
+    @Test
+    void aPatchCarryingOnlyIsPublicIsAccepted() {
+        when(agentMapper.selectById(AGENT_ID)).thenReturn(agent());
+        when(agentMemoryMapper.selectById(5L)).thenReturn(trait(5L, MemoryStatus.ACTIVE.getCode()), null);
+        whenOwnerEditApplies();
+
+        AgentMemoryUpdateRequest request = new AgentMemoryUpdateRequest();
+        request.setIsPublic(true);
+
+        assertThatCode(() -> service.updateMemory(OWNER_ID, AGENT_ID, 5L, request))
+                .doesNotThrowAnyException();
+    }
+
+    /** A card that was never published reports is_public false, not null. */
+    @Test
+    void aSelfScopedCardReportsIsPublicFalse() {
+        when(agentMapper.selectById(AGENT_ID)).thenReturn(agent());
+        Page<AgentMemory> page = new Page<>(1, 20, 1);
+        page.setRecords(List.of(memory(5L, MemoryStatus.ACTIVE.getCode())));
+        when(agentMemoryMapper.selectPage(any(), any())).thenReturn(page);
+
+        AgentMemoryResponse card =
+                service.getMemories(OWNER_ID, AGENT_ID, null, null, 1, 20).getRecords().get(0);
+
+        assertThat(card.getIsPublic()).isFalse();
+        assertThat(card.getScope()).isEqualTo("SELF");
+    }
+
+    /** The rendered payload carries the flag under its snake_case contract name. */
+    @Test
+    void theSerializedCardCarriesIsPublic() throws Exception {
+        when(agentMapper.selectById(AGENT_ID)).thenReturn(agent());
+        AgentMemory published = trait(5L, MemoryStatus.ACTIVE.getCode());
+        published.setScope("PUBLIC");
+        Page<AgentMemory> page = new Page<>(1, 20, 1);
+        page.setRecords(List.of(published));
+        when(agentMemoryMapper.selectPage(any(), any())).thenReturn(page);
+
+        String json = new ObjectMapper().writeValueAsString(
+                service.getMemories(OWNER_ID, AGENT_ID, null, null, 1, 20).getRecords().get(0));
+
+        assertThat(json).contains("\"is_public\":true");
+    }
+
+    // ========== Public profile cache invalidation ==========
+
+    /**
+     * The public profile is memoised for half a minute. Without this the owner flips the
+     * switch, reloads the page, sees no change, and flips it again.
+     */
+    @Test
+    void aSuccessfulPatchEvictsTheCachedPublicProfile() {
+        when(agentMapper.selectById(AGENT_ID)).thenReturn(agent());
+        when(agentMemoryMapper.selectById(5L)).thenReturn(trait(5L, MemoryStatus.ACTIVE.getCode()), null);
+        whenOwnerEditApplies();
+
+        AgentMemoryUpdateRequest request = new AgentMemoryUpdateRequest();
+        request.setIsPublic(true);
+        service.updateMemory(OWNER_ID, AGENT_ID, 5L, request);
+
+        verify(agentProfileService).evict(AGENT_ID);
+    }
+
+    /** A patch that lost the race changed nothing, so there is nothing to evict. */
+    @Test
+    void aConflictedPatchDoesNotEvict() {
+        when(agentMapper.selectById(AGENT_ID)).thenReturn(agent());
+        when(agentMemoryMapper.selectById(5L)).thenReturn(trait(5L, MemoryStatus.ACTIVE.getCode()));
+        when(agentMemoryMapper.applyOwnerEdit(any(), any(), any(), any(), anyString(), any(), any(), any()))
+                .thenReturn(0);
+
+        AgentMemoryUpdateRequest request = new AgentMemoryUpdateRequest();
+        request.setIsPublic(true);
+
+        assertThatThrownBy(() -> service.updateMemory(OWNER_ID, AGENT_ID, 5L, request))
+                .isInstanceOf(BusinessException.class);
+        verifyNoInteractions(agentProfileService);
+    }
+
+    /**
+     * The write already committed by the time the cache is touched, so a failure there
+     * must not turn a successful patch into an error the owner will retry.
+     */
+    @Test
+    void anEvictionFailureDoesNotFailThePatch() {
+        when(agentMapper.selectById(AGENT_ID)).thenReturn(agent());
+        when(agentMemoryMapper.selectById(5L)).thenReturn(trait(5L, MemoryStatus.ACTIVE.getCode()), null);
+        whenOwnerEditApplies();
+        org.mockito.Mockito.doThrow(new RuntimeException("cache exploded"))
+                .when(agentProfileService).evict(AGENT_ID);
+
+        AgentMemoryUpdateRequest request = new AgentMemoryUpdateRequest();
+        request.setIsPublic(true);
+
+        assertThatCode(() -> service.updateMemory(OWNER_ID, AGENT_ID, 5L, request))
+                .doesNotThrowAnyException();
     }
 
     // ========== Listing ==========
@@ -755,13 +1005,13 @@ class AgentMemoryServiceImplTest {
     // ========== Fixtures ==========
 
     private void whenOwnerEditApplies() {
-        when(agentMemoryMapper.applyOwnerEdit(any(), any(), any(), any(), anyString(), any(), any()))
+        when(agentMemoryMapper.applyOwnerEdit(any(), any(), any(), any(), anyString(), any(), any(), any()))
                 .thenReturn(1);
     }
 
     private void verifyNoOwnerEdit() {
         verify(agentMemoryMapper, never())
-                .applyOwnerEdit(any(), any(), any(), any(), anyString(), any(), any());
+                .applyOwnerEdit(any(), any(), any(), any(), anyString(), any(), any(), any());
     }
 
     @SuppressWarnings("unchecked")
@@ -785,6 +1035,13 @@ class AgentMemoryServiceImplTest {
         agent.setOwnerId(OWNER_ID);
         agent.setName("Pulse");
         return agent;
+    }
+
+    /** The fixture above is a PERSONA_FACT; this is the same card as a trait. */
+    private AgentMemory trait(Long id, Integer status) {
+        AgentMemory memory = memory(id, status);
+        memory.setMemoryType(MemoryType.PERSONA_TRAIT.getCode());
+        return memory;
     }
 
     private AgentMemory memory(Long id, Integer status) {

@@ -249,6 +249,10 @@ public final class MemoryTextSanitizer {
                 // both have to be rewritten here or one of the two kinds of forged
                 // header survives this layer.
                 .replace("[World#", "(World#")
+                // Kept in step with AgentWakeProcessor#flattenForContext: a memory card
+                // that could write a [Comment#N] handle would let stored text point an
+                // agent's reply at a comment nobody wrote.
+                .replace("[Comment#", "(Comment#")
                 .replace("[记忆", "(记忆");
     }
 

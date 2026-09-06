@@ -497,6 +497,9 @@ class JSONParser:
         return ActionDecision(
             action=str(parsed.get("action", "ignore")),
             target_post_id=self._coerce_post_id(parsed.get("target_post_id")),
+            target_comment_id=self._coerce_post_id(
+                parsed.get("target_comment_id"), field="target_comment_id"
+            ),
             content=self._coerce_text(parsed.get("content")),
             title=self._coerce_text(parsed.get("title"), self.MAX_TITLE_LENGTH),
             description=self._coerce_text(parsed.get("description"), self.MAX_DESCRIPTION_LENGTH),
@@ -510,6 +513,11 @@ class JSONParser:
         return AgentAction(
             type=str(action_type),
             target_post_id=self._coerce_post_id(parsed.get("target_post_id")),
+            # Same normalisation as the post id: the response model requires ge=1, and a
+            # hallucinated 0 would fail the whole action rather than the one field.
+            target_comment_id=self._coerce_post_id(
+                parsed.get("target_comment_id"), field="target_comment_id"
+            ),
             content=self._coerce_text(parsed.get("content")),
             title=self._coerce_text(parsed.get("title"), self.MAX_TITLE_LENGTH),
             description=self._coerce_text(parsed.get("description"), self.MAX_DESCRIPTION_LENGTH),
@@ -517,23 +525,27 @@ class JSONParser:
             deadline_hours=self._coerce_int(parsed.get("deadline_hours")),
         )
 
-    def _coerce_post_id(self, target_post_id: object) -> Optional[int]:
+    def _coerce_post_id(
+        self, target_post_id: object, field: str = "target_post_id"
+    ) -> Optional[int]:
         """
-        规范化 target_post_id。
+        规范化行号型 id（target_post_id / target_comment_id）。
 
         响应模型要求 ge=1，所以 0 和负数必须在这里被挡掉：模型幻觉出
         target_post_id=0 时，原实现会原样传下去，导致整批决策校验失败。
+
+        `field` 只用于日志：两个字段的规则完全相同，但日志需要说明是哪一个被丢弃的。
         """
         if target_post_id is not None:
             try:
                 value = int(target_post_id)
             except (TypeError, ValueError):
                 logger.warning(
-                    f"无效的 target_post_id '{target_post_id}'，设置为 None"
+                    f"无效的 {field} '{target_post_id}'，设置为 None"
                 )
                 return None
             if value < 1:
-                logger.warning(f"target_post_id 超出范围 '{value}'，设置为 None")
+                logger.warning(f"{field} 超出范围 '{value}'，设置为 None")
                 return None
             return value
         return None

@@ -6,6 +6,10 @@ import com.pulse.dto.AgentMemoryCard;
 import com.pulse.dto.ReflectionContext;
 import com.pulse.dto.ReflectionResult;
 import com.pulse.entity.Agent;
+import com.pulse.config.PlatformLlmProperties;
+import com.pulse.config.SchemaCapabilities;
+import com.pulse.mapper.AgentMapper;
+import com.pulse.service.support.LlmCredentialResolver;
 import com.pulse.util.AesUtil;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -41,7 +45,15 @@ class LLMClientMemoryContractTest {
 
     private final RestTemplate restTemplate = mock(RestTemplate.class);
     private final AesUtil aesUtil = mock(AesUtil.class);
-    private final LLMClient client = new LLMClient(restTemplate, aesUtil, new ObjectMapper());
+
+    // A real resolver over a mocked AesUtil rather than a mocked resolver: these tests
+    // assert what actually goes on the wire, and the credential fields are part of that.
+    // The agents here have no provider_mode, and the capability probe reports the column
+    // absent, so every one of them resolves as BYOK - exactly the path this file covers.
+    private final LlmCredentialResolver credentialResolver = new LlmCredentialResolver(
+            aesUtil, new PlatformLlmProperties(), mock(SchemaCapabilities.class),
+            mock(AgentMapper.class));
+    private final LLMClient client = new LLMClient(restTemplate, credentialResolver, new ObjectMapper());
 
     LLMClientMemoryContractTest() {
         ReflectionTestUtils.setField(client, "pythonGatewayBaseUrl", "http://ai-side:8000");

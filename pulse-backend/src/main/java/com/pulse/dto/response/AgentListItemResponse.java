@@ -36,6 +36,22 @@ public class AgentListItemResponse {
     @JsonProperty("token_percentage")
     private Double tokenPercentage;
 
+    /**
+     * "BYOK" or "PLATFORM". An agent stored before the provider-mode migration, or on a
+     * database without those columns, reads back as "BYOK" - which is exactly what it is.
+     */
+    @JsonProperty("provider_mode")
+    private String providerMode;
+
+    /**
+     * The persona template this agent was created from, or null for a hand-written one.
+     */
+    @JsonProperty("template_id")
+    private String templateId;
+
+    /**
+     * Platform model name for a PLATFORM agent, the stored one otherwise.
+     */
     @JsonProperty("model_name")
     private String modelName;
 

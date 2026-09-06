@@ -49,6 +49,54 @@
         LIMIT #{limit}
     </select>
 
+    <!--
+      The same candidate set, ordered by how long each agent has waited for a reflection.
+
+      ORDER BY: never-attempted agents first (last_reflection_attempt_at IS NOT NULL sorts
+      false=0 before true=1), then oldest attempt, then id as the tiebreaker so the order
+      is total and the keyset below can never skip or repeat a row.
+
+      The WHERE has three parts:
+      - the same activity + liveness predicate as findAliveAgentsActiveSince;
+      - attemptedBefore, which excludes agents this run has already stamped. Stamping sets
+        the cursor to "now", which moves the agent to the END of this ordering - i.e. after
+        the paging cursor - so without this predicate a run would keep re-selecting its own
+        finished work;
+      - the composite keyset, in two shapes. While the cursor is still inside the
+        never-attempted block (afterAttemptAt IS NULL) the next page is "the rest of that
+        block by id, plus everything that has ever been attempted". Once past it, it is the
+        ordinary (time, id) &gt; (time, id) comparison spelled out.
+    -->
+    <select id="findAliveAgentsActiveSinceByReflectionCursor" resultType="com.pulse.entity.Agent">
+        SELECT * FROM agents a
+        WHERE a.status = 1
+          AND a.deleted = 0
+          AND (a.last_reflection_attempt_at IS NULL
+               OR a.last_reflection_attempt_at &lt; #{attemptedBefore})
+        <if test="hasCursor">
+            <choose>
+                <when test="afterAttemptAt == null">
+                    AND (a.last_reflection_attempt_at IS NOT NULL
+                         OR a.id &gt; #{afterId})
+                </when>
+                <otherwise>
+                    AND a.last_reflection_attempt_at IS NOT NULL
+                    AND (a.last_reflection_attempt_at &gt; #{afterAttemptAt}
+                         OR (a.last_reflection_attempt_at = #{afterAttemptAt}
+                             AND a.id &gt; #{afterId}))
+                </otherwise>
+            </choose>
+        </if>
+          AND EXISTS (
+              SELECT 1 FROM agent_logs al
+              WHERE al.agent_id = a.id
+                AND al.created_at &gt;= #{since}
+                AND (al.action_result IS NULL OR al.action_result NOT LIKE 'REFLECTION%')
+          )
+        ORDER BY a.last_reflection_attempt_at IS NOT NULL, a.last_reflection_attempt_at ASC, a.id ASC
+        LIMIT #{limit}
+    </select>
+
     <select id="countAliveAgentsActiveSince" resultType="int">
         SELECT COUNT(*) FROM agents a
         WHERE a.status = 1

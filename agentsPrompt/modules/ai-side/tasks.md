@@ -1,6 +1,21 @@
 # Task State: ai-side
 
 ## Current
+- Task ID: ai-side-2026-09-06-reply-to-comment
+- Goal: 支持 Agent 回复指定评论：决策响应新增 `target_comment_id` 并按规则降级；`_enhance_system_prompt` 按上下文是否含评论子行动态追加 `target_comment_id` 说明；提供后端渲染 `[Comment#N]` 子行所需的检测与中和配合（`COMMENT_LINE_RE`，`BLOCK_HEADER_RE` 不纳入 `[Comment#`）。
+- Scope: `pulse-ai-side/app/models/response.py`、`pulse-ai-side/app/services/llm_client.py`、`pulse-ai-side/app/services/json_parser.py`、`pulse-ai-side/app/services/prompt_builder.py`、`pulse-ai-side/tests/test_target_comment.py`
+- Status: done
+- Owner: Claude Fable 5.1 协调，Opus 5 执行者（X4）
+- Last Updated: 2026-09-06
+
+## Done Summary
+- `AgentAction`/`ActionDecision`/`LLMResponse` 新增可选 `target_comment_id`；校验规则：非 `reply` 动作丢弃该字段但保留动作本身，`reply` 只有 `target_comment_id` 无 `target_post_id` 或 `content` 为空均降级为 `ignore` 并清空两个 id，非法值归一为 `null` 且不影响 `reply` 本身。
+- `submit_decision` 工具 schema 新增 `target_comment_id` 字段说明；`JSONParser` 透传该字段，`_coerce_post_id` 增加 `field` 参数用于日志区分。
+- 新增 `COMMENT_LINE_RE`（要求两个前导空格与完整的 `[AuthorType Name]:` 形状）与 `_has_comment_lines`；`_enhance_system_prompt` 新增 `with_comments` 参数，仅当净化后上下文含匹配行时追加 `target_comment_id` 的使用说明，无评论行时逐字节等同改动前。
+- `BLOCK_HEADER_RE` 未纳入 `[Comment#`：评论子行属于其所在 `[Post#N]` 区块的一部分，不能被单独判定为块边界，否则恶意评论可能被单独过滤而其攻击的帖子留在上下文中；带前导空格的 `[Comment#` 与行首伪造的 `[Comment#` 均不触发分块，已有 pytest 覆盖两种情形。
+- 新增 `tests/test_target_comment.py`，36 条用例；`ruff check` 通过；`prompt_baseline_pre_phase2.json` 金样本逐字节比对仍通过（无评论行场景不受影响）。
+
+## Previous Current (2026-09-06, world-block)
 - Task ID: ai-side-2026-09-06-world-block
 - Goal: 网关分块器识别 `[World#N]` 区块（系统推送的当日日报摘要），与 `[Post#N]` 同等清洗与中和，不并入相邻帖子；system prompt 仅在上下文含 World 区块时追加一句不可信数据说明。
 - Scope: `pulse-ai-side/app/services/prompt_builder.py`、`pulse-ai-side/tests/test_prompt_injection.py`
@@ -8,7 +23,7 @@
 - Owner: Claude Fable 5.1 协调，Opus 5 执行者（W3）
 - Last Updated: 2026-09-06
 
-## Done Summary
+## Previous Done Summary (2026-09-06, world-block)
 - `POST_HEADER_RE` 与新增 `WORLD_HEADER_RE` 合并为 `BLOCK_HEADER_RE`，`_split_context_blocks` 与 `_neutralize_block` 共用；World 行在 `_calculate_relevance_score` 加分，超 8000 字符语义过滤时保留。
 - 新增 12 条 pytest（World 在帖子前/后/无帖子、行首伪造头独立成块、恶意摘要中和不影响相邻帖子、语义过滤保留）；`prompt_baseline_pre_phase2.json` 金样本逐字节比对仍通过。ruff 通过。
 
@@ -55,6 +70,11 @@
 - 失败或超时默认返回安全的忽略动作，避免 Agent 误行为。
 
 ## Verification
+- Command: `pytest tests -v`（X4，含 `tests/test_target_comment.py`）
+- Result: pass
+- Notes: 260 passed / 0 failed（基线 224，新增 36）。
+- Command: `ruff check app tests`（X4）
+- Result: pass
 - Command: `pytest tests -v`
 - Result: pass
 - Notes: 206 passed / 0 failed。新增 `tests/test_memory_and_reflection.py` 共 91 个用例（记忆区块渲染与声明文案、金样本向后兼容比对与反向哨兵、注入记忆整条丢弃、反思正常路径、坏 JSON / 形状不符 / 类型不符 / 缺字段 / 超限 / 编造 id / 上游异常等失败路径、行为包清洗、鉴权、evidence 语义）；既有 115 个用例全部保持通过。
@@ -70,6 +90,8 @@
 - Notes（环境）: 仓库内无虚拟环境，系统 Python 缺 fastapi 等依赖；本次按 `requirements.txt` 在会话 scratchpad 内建临时 venv（Python 3.11）运行，未在仓库落任何环境文件。
 
 ## Next
+- 语义过滤（`_semantic_filter`，超 `MAX_CONTEXT_LENGTH` 时触发）可能把评论子行或 `[最新互动]` 指针行与其所属 `[Post#N]` 区块拆散，导致指针指向一条未被渲染的 `[Comment#id]`；后端 `resolveReplyTarget` 会把这类悬空 id 降级为顶层评论，因此不会写坏数据，但拆散本身未处理。
+- 评论子行渲染带来的上下文体积增长未量化，`POST_COMMENT_PREVIEW_LIMIT` 目前是后端硬编码常量，未做成配置项。
 - `docs/contracts/overview.md` 的"后端↔AI Side"一节需补 decision 的 `memories` 字段与 `/v1/llm/reflection` 完整契约（docs 收口由协调者负责）。
 - Phase 4 端到端验收时用真实模型验证反思 Prompt 的产出质量（是否稳定给出特质级而非事件级结论），目前只有结构性断言。
 - 反思请求自身校验失败（如 `base_url` 非法）时走全局 `RequestValidationError` handler，响应体是 decision 形状（`action: ignore`，无 `new_traits`）；后端若要统一按 ReflectionResponse 反序列化，需容忍字段缺失或按状态码分支。

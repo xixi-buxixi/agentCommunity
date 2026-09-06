@@ -19,6 +19,7 @@ import com.pulse.mapper.UserMapper;
 import com.pulse.service.AgentMemoryService;
 import com.pulse.service.HotNewsService;
 import com.pulse.service.support.AuthorResolver;
+import com.pulse.service.support.PlatformUsageService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -54,10 +55,15 @@ class AgentWakeProcessorEventContextTest {
     private final HotNewsService hotNewsService = mock(HotNewsService.class);
     private final HotNewsProperties hotNewsProperties = new HotNewsProperties();
 
+    // Mocked, and left answering null from checkReadiness: every agent in this file is
+    // BYOK, so the platform gate is a no-op for all of them - which is exactly the
+    // property worth pinning here.
+    private final PlatformUsageService platformUsageService = mock(PlatformUsageService.class);
+
     private final AgentWakeProcessor processor = new AgentWakeProcessor(
             agentMapper, postMapper, commentMapper, postViewMapper, llmClient,
             agentActionExecutor, agentMemoryService, authorResolver, schemaCapabilities,
-            hotNewsService, hotNewsProperties);
+            hotNewsService, hotNewsProperties, platformUsageService);
 
     @BeforeEach
     void gatewayAnswersNothing() {
@@ -89,7 +95,11 @@ class AgentWakeProcessorEventContextTest {
         // ...it is inside the post block, together with the post it answers - the agent has
         // to see the actual argument, not just a pointer to a thread
         assertThat(context.getPostsContext()).contains("[Post#88]").contains("小模型才是未来");
-        assertThat(context.getPostsContext()).contains("最新互动 alice: 我觉得你上一条说反了");
+        // ...as an addressable child line of that block, so the reply can name it
+        assertThat(context.getPostsContext())
+                .contains("  [Comment#500] [HUMAN Human#7]: 我觉得你上一条说反了");
+        // the interaction line no longer repeats the body, it points at the comment id
+        assertThat(context.getPostsContext()).contains("  [最新互动] alice → [Comment#500]");
     }
 
     /**
@@ -279,6 +289,66 @@ class AgentWakeProcessorEventContextTest {
         org.mockito.Mockito.verify(agentMapper, org.mockito.Mockito.times(1)).markDispatched(42L);
     }
 
+    // ========== MENTIONED ==========
+
+    /**
+     * A mention written straight into a post body has no comment row behind it, so the
+     * source kind is POST. The whole chain still has to land: the post is rendered as an
+     * ordinary [Post#N] block, and the interaction line points at it.
+     *
+     * Without the POST branch in resolveInteractionSources the agent woke up with an
+     * interaction line saying somebody mentioned it and nothing at all to read.
+     */
+    @Test
+    void aMentionInAPostBodyRendersThePostAndPointsAtIt() {
+        when(userMapper.selectById(7L)).thenReturn(user(7L, "alice"));
+        when(postMapper.selectById(88L)).thenReturn(post(88L, "@Pulse 你怎么看这个"));
+
+        processor.wake(agent(), WakeReason.EVENT, List.of(postEvent(1L, "MENTIONED", 88L)));
+
+        AgentContext context = capturedContext();
+        assertThat(context.getEventsContext()).contains("alice").contains("提到了你")
+                .contains("Post#88");
+        assertThat(context.getPostsContext()).contains("[Post#88]").contains("@Pulse 你怎么看这个");
+    }
+
+    /**
+     * The same event with a comment as its source behaves exactly like the other three
+     * kinds: the quote goes inside the post block, never into the interaction line.
+     */
+    @Test
+    void aMentionInACommentRendersLikeEveryOtherInteraction() {
+        when(userMapper.selectById(7L)).thenReturn(user(7L, "alice"));
+        when(commentMapper.selectById(500L)).thenReturn(comment(500L, 88L, "@Pulse 来看看"));
+        when(postMapper.selectById(88L)).thenReturn(post(88L, "原帖"));
+
+        processor.wake(agent(), WakeReason.EVENT, List.of(event(1L, "MENTIONED", 500L)));
+
+        AgentContext context = capturedContext();
+        assertThat(context.getEventsContext()).contains("提到了你").contains("Post#88");
+        assertThat(context.getEventsContext()).doesNotContain("@Pulse 来看看");
+        assertThat(context.getPostsContext())
+                .contains("  [Comment#500] [HUMAN Human#7]: @Pulse 来看看")
+                .contains("  [最新互动] alice → [Comment#500]");
+    }
+
+    /**
+     * A deleted post is not shown and not pointed at - the interaction line degrades to
+     * "who did what" rather than referencing a block that is not there.
+     */
+    @Test
+    void aMentionInAPostThatHasSinceBeenDeletedIsNotRendered() {
+        com.pulse.entity.Post deleted = post(88L, "已删除");
+        deleted.setDeleted(1);
+        when(postMapper.selectById(88L)).thenReturn(deleted);
+
+        processor.wake(agent(), WakeReason.EVENT, List.of(postEvent(1L, "MENTIONED", 88L)));
+
+        AgentContext context = capturedContext();
+        assertThat(context.getEventsContext()).contains("提到了你").doesNotContain("Post#88");
+        assertThat(context.getPostsContext()).doesNotContain("[Post#88]");
+    }
+
     private AgentContext capturedContext() {
         ArgumentCaptor<AgentContext> captor = ArgumentCaptor.forClass(AgentContext.class);
         org.mockito.Mockito.verify(llmClient, org.mockito.Mockito.atLeastOnce())
@@ -309,6 +379,13 @@ class AgentWakeProcessorEventContextTest {
         event.setActorId(7L);
         event.setStatus("PENDING");
         event.setCreatedAt(LocalDateTime.now());
+        return event;
+    }
+
+    /** A wake event whose source is the post itself, as a MENTIONED event can be. */
+    private AgentWakeEvent postEvent(Long id, String type, Long postId) {
+        AgentWakeEvent event = event(id, type, postId);
+        event.setSourceType("POST");
         return event;
     }
 

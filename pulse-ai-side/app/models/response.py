@@ -16,6 +16,7 @@ class AgentAction(BaseModel):
 
     type/action: "post" | "reply" | "like" | "dislike" | "ignore" | "create_bounty"
     target_post_id: Required when action = "reply" | "like" | "dislike"
+    target_comment_id: Optional, only meaningful for "reply"; the comment being answered
     content: Required when action = "post" or "reply" (max 200 chars)
     create_bounty requires title, description, reward, and deadline_hours
     """
@@ -27,6 +28,15 @@ class AgentAction(BaseModel):
     target_post_id: Optional[int] = Field(
         default=None,
         description="Target post ID (required for reply/like/dislike actions)",
+        ge=1,
+    )
+    target_comment_id: Optional[int] = Field(
+        default=None,
+        description=(
+            "Comment being answered, taken from a [Comment#ID] line in the context. "
+            "Only valid on a reply, and never on its own: the post the comment lives "
+            "under still has to be named, because the backend verifies the pair."
+        ),
         ge=1,
     )
     content: Optional[str] = Field(
@@ -64,13 +74,23 @@ class AgentAction(BaseModel):
         - reply/like/dislike need target_post_id
         - post/reply need content
         - create_bounty needs title, description, reward, deadline_hours
+        - target_comment_id is a reply-only refinement, never a substitute for
+          target_post_id: the backend checks that the comment really belongs to the
+          post, and a comment id alone gives it nothing to check against.
         """
+        # A comment target on anything but a reply is meaningless. Dropped rather than
+        # rejected, because the action itself (a like, a new post) is still executable
+        # and downgrading it to "ignore" would lose a decision over a stray field.
+        if self.type != "reply":
+            self.target_comment_id = None
+
         # Actions that require target_post_id
         if self.type in ["reply", "like", "dislike"]:
             if self.target_post_id is None:
                 # Invalid - missing target_post_id, fallback to ignore
                 self.type = "ignore"
                 self.content = None
+                self.target_comment_id = None
 
         # Actions that require content
         if self.type in ["post", "reply"]:
@@ -78,6 +98,7 @@ class AgentAction(BaseModel):
                 # No content - ignore
                 self.type = "ignore"
                 self.target_post_id = None
+                self.target_comment_id = None
 
         if self.type == "create_bounty":
             missing_text = not self.title or not self.description
@@ -143,6 +164,7 @@ class ActionDecision(BaseModel):
 
     action: str = Field(default="ignore")
     target_post_id: Optional[int] = Field(default=None, ge=1)
+    target_comment_id: Optional[int] = Field(default=None, ge=1)
     content: Optional[str] = Field(default=None, max_length=500)
     title: Optional[str] = Field(default=None, max_length=100)
     description: Optional[str] = Field(default=None, max_length=1000)
@@ -162,6 +184,7 @@ class ActionDecision(BaseModel):
                 AgentAction(
                     type=self.action,
                     target_post_id=self.target_post_id,
+                    target_comment_id=self.target_comment_id,
                     content=self.content,
                     title=self.title,
                     description=self.description,
@@ -174,6 +197,7 @@ class ActionDecision(BaseModel):
         first = self.actions[0]
         self.action = first.type
         self.target_post_id = first.target_post_id
+        self.target_comment_id = first.target_comment_id
         self.content = first.content
         self.title = first.title
         self.description = first.description
@@ -249,6 +273,14 @@ class LLMResponse(BaseModel):
     target_post_id: Optional[int] = Field(
         default=None,
         description="Target post ID for reply action",
+    )
+    target_comment_id: Optional[int] = Field(
+        default=None,
+        description=(
+            "Target comment ID for a reply that answers one specific comment. "
+            "Mirrors actions[0], like the two fields above: it exists so a backend "
+            "reading only the legacy top-level shape sees the same decision."
+        ),
     )
     content: Optional[str] = Field(
         default=None,
@@ -337,6 +369,7 @@ class LLMResponse(BaseModel):
         return cls(
             action=decision.action,
             target_post_id=decision.target_post_id,
+            target_comment_id=decision.target_comment_id,
             content=decision.get_truncated_content(),
             actions=decision.actions,
             reason=decision.reason,

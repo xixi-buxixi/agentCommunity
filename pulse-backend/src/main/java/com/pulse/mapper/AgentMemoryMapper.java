@@ -2,6 +2,7 @@ package com.pulse.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.pulse.entity.AgentMemory;
+import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -71,6 +72,32 @@ public interface AgentMemoryMapper extends BaseMapper<AgentMemory> {
                                       @Param("memoryType") String memoryType,
                                       @Param("since") LocalDateTime since,
                                       @Param("limit") int limit);
+
+    /**
+     * The trait cards the owner has published on the agent's public profile.
+     *
+     * Four independent gates, all of which must hold at read time rather than at
+     * publish time: the card is a PERSONA_TRAIT, its scope is PUBLIC, it is ACTIVE,
+     * and it has not expired. status is checked here and not only when the card was
+     * published because disabling a published card deliberately leaves its scope
+     * alone - the owner's brake hides the card without discarding the decision to
+     * publish it, so re-enabling restores the card to the profile as it was.
+     *
+     * Ordered by confidence first: the profile is a summary of who the agent is, and
+     * a trait the reflection job is sure about says more than a recent guess. id
+     * breaks ties so two cards written in the same second cannot swap places between
+     * two reads of the same page.
+     *
+     * @param agentId Agent ID
+     * @param limit   rows to return
+     */
+    @Select("SELECT * FROM agent_memories "
+            + "WHERE agent_id = #{agentId} AND memory_type = 'PERSONA_TRAIT' "
+            + "AND scope = 'PUBLIC' AND status = 1 AND deleted = 0 "
+            + "AND (expires_at IS NULL OR expires_at > NOW()) "
+            + "ORDER BY confidence_score DESC, created_at DESC, id DESC "
+            + "LIMIT #{limit}")
+    List<AgentMemory> findPublicTraits(@Param("agentId") Long agentId, @Param("limit") int limit);
 
     /**
      * Ids of the agent's own non-retired traits. Used to reject reflection output that
@@ -166,8 +193,16 @@ public interface AgentMemoryMapper extends BaseMapper<AgentMemory> {
      * possible on a pre-migration row) never matches and is reported as a conflict,
      * which is the honest answer.
      *
+     * A scope write to PUBLIC carries its own predicate pair - {@code memory_type =
+     * 'PERSONA_TRAIT'} and {@code status <> 2} - so "only a live trait can be
+     * published" holds in SQL as well as in Java. The service checks both first, for a
+     * precise error message; this is what covers a retirement that lands between that
+     * read and this write. Withdrawal (scope SELF) is unguarded on purpose: it only
+     * ever removes a card from the public page.
+     *
      * @param status         new status, or null to leave it alone
      * @param content        corrected body, or null to leave it (and the version) alone
+     * @param scope          new visibility scope, or null to leave it alone
      * @param expectedStatus status read before the edit; only used when a status is
      *                       being written
      * @return 1 when applied, 0 when the row changed underneath the caller
@@ -177,8 +212,12 @@ public interface AgentMemoryMapper extends BaseMapper<AgentMemory> {
             "<if test='status != null'>, status = #{status}</if>",
             "<if test='content != null'>, content = #{content}, version = #{newVersion},",
             "created_by = #{createdBy}</if>",
+            "<if test='scope != null'>, scope = #{scope}</if>",
             "WHERE id = #{id} AND deleted = 0 AND version = #{expectedVersion}",
             "<if test='status != null'> AND status &lt;&gt; 2 AND status = #{expectedStatus}</if>",
+            "<if test=\"scope == 'PUBLIC'\">",
+            "  AND memory_type = 'PERSONA_TRAIT' AND status &lt;&gt; 2",
+            "</if>",
             "</script>"})
     int applyOwnerEdit(@Param("id") Long id,
                        @Param("status") Integer status,
@@ -186,7 +225,8 @@ public interface AgentMemoryMapper extends BaseMapper<AgentMemory> {
                        @Param("newVersion") Integer newVersion,
                        @Param("createdBy") String createdBy,
                        @Param("expectedVersion") Integer expectedVersion,
-                       @Param("expectedStatus") Integer expectedStatus);
+                       @Param("expectedStatus") Integer expectedStatus,
+                       @Param("scope") String scope);
 
     /**
      * Retire cards in one statement (status 2 = DEPRECATED).
@@ -198,4 +238,28 @@ public interface AgentMemoryMapper extends BaseMapper<AgentMemory> {
             "<foreach collection='ids' item='id' open='(' separator=',' close=')'>#{id}</foreach>",
             "</script>"})
     int deprecateByIds(@Param("ids") List<Long> ids);
+
+    /**
+     * Physically delete one batch of long-retired cards.
+     *
+     * The retention sweep on the write path only RETIRES cards (status = 2), so the table
+     * keeps every card an agent ever formed. That is right for a card retired an hour ago
+     * - an owner may want to see what their agent stopped believing - and pointless for
+     * one retired a month ago.
+     *
+     * status = 2 is the entire selection, and it is the whole safety argument: ACTIVE (1)
+     * cards are what the agent thinks, and DISABLED (0) cards are what its OWNER decided
+     * it may not think. Deleting a disabled card would silently lift the owner's brake,
+     * because nothing would stop the same fact being learned again as a fresh ACTIVE card.
+     *
+     * updated_at is the age that matters, not created_at: it is when the card was retired,
+     * which is when the clock on keeping it should start.
+     *
+     * LIMIT keeps each statement short; the caller repeats until it returns 0.
+     *
+     * @return number of rows deleted by this batch
+     */
+    @Delete("DELETE FROM agent_memories "
+            + "WHERE status = 2 AND updated_at < #{cutoff} LIMIT #{limit}")
+    int deleteDeprecatedOlderThan(@Param("cutoff") LocalDateTime cutoff, @Param("limit") int limit);
 }

@@ -25,13 +25,16 @@ import com.pulse.mapper.PostViewMapper;
 import com.pulse.service.AgentMemoryService;
 import com.pulse.service.HotNewsService;
 import com.pulse.service.support.AuthorResolver;
+import com.pulse.service.support.PlatformUsageService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -57,11 +60,26 @@ public class AgentWakeProcessor {
     /** Source kind of an interaction that happened under a post. */
     private static final String SOURCE_COMMENT = "COMMENT";
 
+    /**
+     * Source kind of an interaction that IS a post - today only a MENTIONED event whose
+     * "@name" was written in a post body rather than in a comment.
+     */
+    private static final String SOURCE_POST = "POST";
+
     /** Interaction lines carry only identifier-safe, length-bounded actor names. */
     private static final int ACTOR_NAME_MAX_LENGTH = 20;
 
     /** How much of an interaction body travels into its post block. */
     private static final int INTERACTION_BODY_PREVIEW = 150;
+
+    /**
+     * How many of a post's comments are rendered as child lines of its block.
+     *
+     * A ceiling rather than paging: the point is to give the agent something specific to
+     * answer, and the tail of a discussion does that. Every additional line is charged to
+     * the same context budget the timeline competes for.
+     */
+    private static final int POST_COMMENT_PREVIEW_LIMIT = 5;
 
     /**
      * Report date rendered inside the world block's header, where a "]" or a newline
@@ -79,9 +97,24 @@ public class AgentWakeProcessor {
      * exists only for the duration of a single wake.
      */
     private static final class InteractionSources {
+        /** Only for events whose source is a comment; a post-sourced event has none. */
         private final Map<Long, Comment> commentsByEventId = new HashMap<>();
+
+        /**
+         * The post every resolved event happened in, whatever its source kind. This is
+         * what the interaction line points at, so a MENTIONED event written straight into
+         * a post body still says "正文见上方 Post#N" instead of dangling.
+         */
+        private final Map<Long, Long> postIdByEventId = new HashMap<>();
+
         private final Set<Long> postIds = new LinkedHashSet<>();
         private final Map<Long, List<AgentWakeEvent>> eventsByPostId = new HashMap<>();
+
+        void link(AgentWakeEvent event, Long postId) {
+            postIdByEventId.put(event.getId(), postId);
+            postIds.add(postId);
+            eventsByPostId.computeIfAbsent(postId, key -> new ArrayList<>()).add(event);
+        }
     }
 
     private final AgentMapper agentMapper;
@@ -97,6 +130,12 @@ public class AgentWakeProcessor {
     private final HotNewsProperties hotNewsProperties;
 
     /**
+     * Spending rules for agents on the platform-hosted model. Returns null / zero for
+     * every BYOK agent, so nothing below this line behaves differently for them.
+     */
+    private final PlatformUsageService platformUsageService;
+
+    /**
      * Minimum tokens charged for a cycle that actually reached the model.
      * Prevents "free" cycles when the gateway returns no usage numbers.
      */
@@ -109,8 +148,8 @@ public class AgentWakeProcessor {
      * @param reason why it is being woken; only affects logging and prompt framing
      * @param events interactions to answer (empty for a rhythm or legacy wake)
      */
-    public void wake(Agent agent, WakeReason reason, List<AgentWakeEvent> events) {
-        wake(agent, reason, events, false);
+    public WakeOutcome wake(Agent agent, WakeReason reason, List<AgentWakeEvent> events) {
+        return wake(agent, reason, events, false);
     }
 
     /**
@@ -125,8 +164,8 @@ public class AgentWakeProcessor {
      *                       yesterday's - or a stale - number. The legacy batch never sets
      *                       it, which is also what keeps the world block out of legacy mode.
      */
-    public void wake(Agent agent, WakeReason reason, List<AgentWakeEvent> events,
-                     boolean firstWakeToday) {
+    public WakeOutcome wake(Agent agent, WakeReason reason, List<AgentWakeEvent> events,
+                            boolean firstWakeToday) {
         log.debug("Waking agent: id={}, name={}, reason={}", agent.getId(), agent.getName(), reason);
 
         // Why this agent is awake, recorded on every audit row this cycle writes.
@@ -147,7 +186,30 @@ public class AgentWakeProcessor {
         if (agent.isTokenExhausted()) {
             log.info("Agent token exhausted, marking as DEAD: agentId={}", agent.getId());
             agentActionExecutor.markAgentDead(agent);
-            return;
+            return WakeOutcome.PROCESSED;
+        }
+
+        // Step 2b: the same gate for agents whose calls the platform pays for.
+        //
+        // Next to the token pre-check on purpose: both answer "may this agent spend
+        // anything at all", both run before any context is built, and both are shared by
+        // the legacy batch and the queue. The token threshold protects the agent's own
+        // budget; this protects the owner's points and the platform's bill. BYOK agents
+        // get null here and fall straight through.
+        //
+        // Note what does NOT change for a skipped agent: no tokens are charged, no
+        // agent_logs action row is written beyond the IGNORE row below, and the DEAD
+        // condition is untouched. Being out of points is a pause, not a death.
+        PlatformUsageService.SkipReason skipReason = platformUsageService.checkReadiness(agent);
+        if (skipReason != null) {
+            log.info("Platform agent not woken: agentId={}, reason={}", agent.getId(), skipReason);
+            // Zero tokens: nothing reached a model, so this row exists to explain the
+            // silence, not to bill for it.
+            agentActionExecutor.logAgentError(agent,
+                    "PLATFORM_SKIPPED: " + skipReason.name() + " - " + skipReason.getText(),
+                    0, wakeContext);
+            platformUsageService.notifyIfActionable(agent, skipReason);
+            return WakeOutcome.SKIPPED;
         }
 
         // Everything this wake-up is answering, resolved once: the comments, the posts
@@ -170,7 +232,11 @@ public class AgentWakeProcessor {
             // cycle is not free: charge the floor instead of nothing.
             agentActionExecutor.chargeTokensOnly(agent, minTokenCharge,
                     "LLM_CALL_FAILED: " + llmResponse.getErrorMessage(), wakeContext);
-            return;
+            // Same reasoning applied to the owner's points: a failure envelope does not
+            // prove the provider did not bill, so a platform agent pays the same floor it
+            // charged against its own token budget.
+            platformUsageService.charge(agent, minTokenCharge, llmResponse.getModel());
+            return WakeOutcome.PROCESSED;
         }
 
         // Parse action decisions from Python gateway's parsed response
@@ -183,7 +249,8 @@ public class AgentWakeProcessor {
         if (decisions.isEmpty()) {
             agentActionExecutor.chargeTokensOnly(agent, tokensCharged, "NO_ACTIONABLE_DECISION",
                     wakeContext);
-            return;
+            platformUsageService.charge(agent, tokensCharged, llmResponse.getModel());
+            return WakeOutcome.PROCESSED;
         }
 
         // Steps 5-7 in a single transaction
@@ -195,6 +262,12 @@ public class AgentWakeProcessor {
         // failing card insert would take the whole action + token charge down with it.
         // recordActionMemories never throws (same tolerance as recordAgentView).
         agentMemoryService.recordActionMemories(agent, outcomes);
+
+        // Billing last, and outside the executor's transaction on purpose: the actions
+        // are already committed, and a points movement must never be able to roll back a
+        // reply the community has seen. charge() never throws and never goes below zero.
+        platformUsageService.charge(agent, tokensCharged, llmResponse.getModel());
+        return WakeOutcome.PROCESSED;
     }
 
     /**
@@ -254,6 +327,9 @@ public class AgentWakeProcessor {
                     getAuthorName(post),
                     truncatedContent));
 
+            // The discussion under it, so a reply can answer a person rather than a post.
+            appendCommentLines(postsContext, post.getId(), List.of());
+
             // Record agent view for this post (unique count per agent)
             recordAgentView(agent, post);
         }
@@ -290,19 +366,29 @@ public class AgentWakeProcessor {
             return sources;
         }
         for (AgentWakeEvent event : events) {
-            if (!SOURCE_COMMENT.equalsIgnoreCase(event.getSourceType()) || event.getSourceId() == null) {
+            if (event.getSourceId() == null) {
                 continue;
             }
             try {
-                Comment comment = commentMapper.selectById(event.getSourceId());
-                if (comment == null || comment.getPostId() == null) {
-                    continue;
+                if (SOURCE_COMMENT.equalsIgnoreCase(event.getSourceType())) {
+                    Comment comment = commentMapper.selectById(event.getSourceId());
+                    if (comment == null || comment.getPostId() == null) {
+                        continue;
+                    }
+                    sources.commentsByEventId.put(event.getId(), comment);
+                    sources.link(event, comment.getPostId());
+                } else if (SOURCE_POST.equalsIgnoreCase(event.getSourceType())) {
+                    // A mention written in a post body: the post IS the thing to read, so
+                    // there is no separate quote to render - the [Post#N] block below
+                    // already carries the words that named this agent.
+                    Post post = postMapper.selectById(event.getSourceId());
+                    if (post == null || Integer.valueOf(1).equals(post.getDeleted())) {
+                        continue;
+                    }
+                    sources.link(event, post.getId());
                 }
-                sources.commentsByEventId.put(event.getId(), comment);
-                sources.postIds.add(comment.getPostId());
-                sources.eventsByPostId
-                        .computeIfAbsent(comment.getPostId(), key -> new ArrayList<>())
-                        .add(event);
+                // Any other source kind (a LEDGER row for a tip) has no post to show; the
+                // interaction line still names the actor and what they did.
             } catch (Exception e) {
                 // A thinner prompt, not a lost wake-up
                 log.warn("Could not resolve the source of wake event {}: {}",
@@ -334,20 +420,119 @@ public class AgentWakeProcessor {
                     getAuthorName(post),
                     flattenForContext(post.getTruncatedContent())));
 
-            for (AgentWakeEvent event : sources.eventsByPostId.getOrDefault(postId, List.of())) {
+            // The triggering comments are pinned into the list: they are the reason this
+            // wake-up exists, and "the five most recent" is no guarantee they are among
+            // them on a busy post.
+            List<AgentWakeEvent> events = sources.eventsByPostId.getOrDefault(postId, List.of());
+            List<Comment> triggering = new ArrayList<>();
+            for (AgentWakeEvent event : events) {
+                Comment comment = sources.commentsByEventId.get(event.getId());
+                if (comment != null) {
+                    triggering.add(comment);
+                }
+            }
+            Set<Long> rendered = appendCommentLines(target, postId, triggering);
+
+            for (AgentWakeEvent event : events) {
                 Comment comment = sources.commentsByEventId.get(event.getId());
                 if (comment == null || comment.getContent() == null || comment.getContent().isBlank()) {
                     continue;
                 }
-                target.append(String.format("最新互动 %s: %s%n",
-                        flattenForContext(displayActorName(event)),
-                        flattenForContext(truncate(comment.getContent(), INTERACTION_BODY_PREVIEW))));
+                if (comment.getId() != null && rendered.contains(comment.getId())) {
+                    // The body is already above as its own [Comment#N] line; repeating it
+                    // here would spend the context budget twice on the same sentence. What
+                    // this line adds is which of those comments woke the agent, and who
+                    // wrote it under the name the community actually sees.
+                    target.append(String.format("  [最新互动] %s → [Comment#%d]%n",
+                            flattenForContext(displayActorName(event)), comment.getId()));
+                } else {
+                    // No comment line to point at (the query failed, or the row is not
+                    // renderable): quote it here instead, so a wake-up never arrives
+                    // without the words it is answering.
+                    target.append(String.format("  [最新互动] %s: %s%n",
+                            flattenForContext(displayActorName(event)),
+                            flattenForContext(truncate(comment.getContent(), INTERACTION_BODY_PREVIEW))));
+                }
             }
 
             recordAgentView(agent, post);
         } catch (Exception e) {
             log.warn("Could not render triggering post {}: {}", postId, e.getMessage());
         }
+    }
+
+    /**
+     * Render a post's recent comments as child lines of its block:
+     * {@code "  [Comment#40] [HUMAN Human#7]: 我觉得你上一条说反了"}.
+     *
+     * Two leading spaces, and no [Comment# in the gateway's block-header alternation: a
+     * comment belongs to the post it hangs under, so the post's block stays neutralisable
+     * as one unit. A comment that could open a block of its own would let a hostile
+     * comment be filtered while the post it attacks stayed behind - and would hand a
+     * comment body the forged-boundary trick that flattening exists to prevent.
+     *
+     * The author name is synthesised ({@code Agent#12} / {@code Human#3}) exactly like a
+     * post header's, so nothing user-controlled reaches the part of the line the gateway
+     * parses. The real display name still travels in the interaction line above.
+     *
+     * A failed query costs the comment lines, never the wake-up: the post block is still
+     * rendered and the caller falls back to quoting the triggering comment inline.
+     *
+     * @param pinned comments that must appear whether or not they are among the most
+     *               recent - the ones this wake-up is answering
+     * @return the ids actually rendered, so the caller knows what it can point at
+     */
+    private Set<Long> appendCommentLines(StringBuilder target, Long postId,
+                                         List<Comment> pinned) {
+        List<Comment> recent;
+        try {
+            recent = commentMapper.findRecentCommentsByPost(postId, POST_COMMENT_PREVIEW_LIMIT);
+        } catch (Exception e) {
+            log.warn("Could not load the comments of post {}: {}", postId, e.getMessage());
+            recent = List.of();
+        }
+
+        // Newest-first from the query, so the most recent survive the limit; ordered back
+        // into reading order below, because a discussion read backwards is a different
+        // discussion.
+        Map<Long, Comment> byId = new LinkedHashMap<>();
+        for (Comment comment : recent) {
+            if (isRenderableComment(comment)) {
+                byId.putIfAbsent(comment.getId(), comment);
+            }
+        }
+        for (Comment comment : pinned) {
+            if (isRenderableComment(comment)) {
+                byId.putIfAbsent(comment.getId(), comment);
+            }
+        }
+        if (byId.isEmpty()) {
+            return Set.of();
+        }
+
+        List<Comment> ordered = new ArrayList<>(byId.values());
+        ordered.sort(Comparator
+                .comparing(Comment::getCreatedAt, Comparator.nullsFirst(Comparator.naturalOrder()))
+                .thenComparing(Comment::getId, Comparator.nullsFirst(Comparator.naturalOrder())));
+
+        Set<Long> rendered = new LinkedHashSet<>();
+        for (Comment comment : ordered) {
+            target.append(String.format("  [Comment#%d] [%s %s]: %s%n",
+                    comment.getId(),
+                    comment.isAgentComment() ? AuthorType.AGENT.getCode() : AuthorType.HUMAN.getCode(),
+                    getAuthorName(comment),
+                    flattenForContext(truncate(comment.getContent(), INTERACTION_BODY_PREVIEW))));
+            rendered.add(comment.getId());
+        }
+        return rendered;
+    }
+
+    private boolean isRenderableComment(Comment comment) {
+        return comment != null
+                && comment.getId() != null
+                && !Integer.valueOf(1).equals(comment.getDeleted())
+                && comment.getContent() != null
+                && !comment.getContent().isBlank();
     }
 
     /**
@@ -455,10 +640,11 @@ public class AgentWakeProcessor {
         for (AgentWakeEvent event : events) {
             WakeEventType type = event.getEventTypeEnum();
             String phrase = type != null ? type.getText() : "与你互动";
-            Comment comment = sources.commentsByEventId.get(event.getId());
-            if (comment != null && comment.getPostId() != null) {
+            // Whichever kind of source it was, what the agent needs is the post to read.
+            Long postId = sources.postIdByEventId.get(event.getId());
+            if (postId != null) {
                 block.append(String.format("[互动] %s %s，正文见上方 Post#%d%n",
-                        describeActor(event), phrase, comment.getPostId()));
+                        describeActor(event), phrase, postId));
             } else {
                 block.append(String.format("[互动] %s %s%n", describeActor(event), phrase));
             }
@@ -600,6 +786,19 @@ public class AgentWakeProcessor {
     }
 
     /**
+     * Same synthesised shape for a comment's child line. Synthesised rather than
+     * resolved: this is the part of the line the gateway parses as a header, so nothing
+     * user-controlled may reach it - and resolving five names per post would cost a
+     * lookup per comment for a name the interaction line already carries.
+     */
+    private String getAuthorName(Comment comment) {
+        if (comment.isAgentComment()) {
+            return "Agent#" + comment.getAuthorId();
+        }
+        return "Human#" + comment.getAuthorId();
+    }
+
+    /**
      * Flatten post content into a single line for the context block.
      *
      * The gateway splits the context into per-post blocks on lines that look like
@@ -618,6 +817,11 @@ public class AgentWakeProcessor {
                 .replace("[Post#", "(Post#")
                 // Same reason, for the world block header the gateway also treats as a
                 // boundary: no piece of untrusted text may be able to open one.
-                .replace("[World#", "(World#");
+                .replace("[World#", "(World#")
+                // [Comment#N] is not a block boundary, but it IS the handle the model
+                // uses to name a reply target. A body that could write one would let a
+                // post invent comments that do not exist, or point the agent's reply at
+                // a comment it never read.
+                .replace("[Comment#", "(Comment#");
     }
 }

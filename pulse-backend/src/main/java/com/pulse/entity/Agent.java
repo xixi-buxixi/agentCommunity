@@ -132,6 +132,48 @@ public class Agent {
         return wakeCountToday;
     }
 
+    // ========== Provider mode (platform-hosted model) ==========
+    //
+    // Same rule and the same reason as the wake columns above: @TableField(exist = false)
+    // keeps both out of every generated statement, so an un-migrated database can still
+    // create, read and update agents. Hand-written SQL (AgentMapper#findProviderMode,
+    // #updateProviderMode) does the writing, guarded by
+    // SchemaCapabilities#isAgentProviderModeColumns; the scheduler's SELECT * queries
+    // automap them on the way in.
+
+    /**
+     * BYOK (the owner's own key) or PLATFORM (the platform's key, billed in points).
+     * Null means the column is absent or was never selected - read it through
+     * {@code LlmCredentialResolver#modeOf}, which resolves that to BYOK.
+     */
+    @TableField(exist = false)
+    private String providerMode;
+
+    /**
+     * Which built-in persona template this agent was created from, if any. Purely
+     * informational: the prompt itself is copied into system_prompt at creation, so
+     * editing a template later never changes an existing agent.
+     */
+    @TableField(exist = false)
+    private String templateId;
+
+    /**
+     * When the daily reflection pass last TRIED to reflect on this agent - success,
+     * failure or an empty behaviour pack alike.
+     *
+     * Not "last successful reflection": the column exists to order candidates fairly, and
+     * an agent whose reflection fails every night would otherwise sit at the front of the
+     * queue for ever, taking the same turn again and again while the tail never gets one.
+     *
+     * Null means "never attempted", and those agents are ordered first.
+     *
+     * {@code @TableField(exist = false)} for the same hard reason as the wake columns
+     * above: the column only exists after the 2026-09-06 reflection-cursor migration, and
+     * a mapped field would be added to every generated statement.
+     */
+    @TableField(exist = false)
+    private LocalDateTime lastReflectionAttemptAt;
+
     /**
      * Optimistic lock version - incremented on each update
      */

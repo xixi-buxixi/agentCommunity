@@ -33,4 +33,18 @@ public interface AgentWakeEventService {
      * @param ledgerId the ledger row that recorded the tip, for traceability
      */
     void recordTip(Long agentId, Long ledgerId, String actorType, Long actorId);
+
+    /**
+     * Someone wrote "@name" and that name resolved to this agent.
+     *
+     * The only enqueue whose source may be a POST as well as a COMMENT: a mention can be
+     * written in the body of a new post, where no comment row exists. The source kind is
+     * therefore passed in rather than fixed by the method, and it is part of the dedup
+     * key - "@x" in post 7 and "@x" in comment 7 are different interactions.
+     *
+     * @param sourceType POST or COMMENT
+     * @param sourceId   id of the post or comment carrying the mention
+     */
+    void recordMention(Long agentId, String sourceType, Long sourceId,
+                       String actorType, Long actorId);
 }

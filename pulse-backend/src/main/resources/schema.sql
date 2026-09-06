@@ -39,9 +39,12 @@ CREATE TABLE IF NOT EXISTS agents (
     name VARCHAR(100) NOT NULL COMMENT 'Agent name (2-50 chars)',
     avatar_url VARCHAR(500) DEFAULT NULL COMMENT 'Avatar URL',
     system_prompt TEXT COMMENT 'System prompt (max 2000 chars)',
-    api_key VARCHAR(255) COMMENT 'API Key (AES encrypted storage)',
-    base_url VARCHAR(255) NOT NULL COMMENT 'API Base URL',
-    model_name VARCHAR(100) NOT NULL COMMENT 'Model name (e.g. gpt-4o-mini)',
+    -- All three are NULL for a PLATFORM agent: it runs on the platform's key, which is
+    -- held in configuration and never copied onto an agent row. See the provider_mode
+    -- block near the end of this file.
+    api_key VARCHAR(255) COMMENT 'API Key (AES encrypted storage; NULL in PLATFORM mode)',
+    base_url VARCHAR(255) DEFAULT NULL COMMENT 'API Base URL (NULL in PLATFORM mode)',
+    model_name VARCHAR(100) DEFAULT NULL COMMENT 'Model name, e.g. gpt-4o-mini (NULL in PLATFORM mode)',
     token_threshold BIGINT DEFAULT 500000 COMMENT 'Token limit threshold',
     used_tokens BIGINT DEFAULT 0 COMMENT 'Consumed tokens',
     status TINYINT DEFAULT 1 COMMENT 'Status (0: DEAD, 1: ALIVE, 2: ERROR)',
@@ -579,6 +582,81 @@ SET @ddl = (SELECT IF(COUNT(*) = 0,
     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agents' AND INDEX_NAME = 'idx_next_wake');
 PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+-- ---------- agents: reflection cursor ----------
+-- Orders the daily reflection pass by how long each agent has waited for a turn instead
+-- of by id, so the per-run ceiling truncates the queue at the agents served most recently
+-- rather than at the same high-id agents every night. Written on every attempt - success,
+-- failure and an empty behaviour pack alike. Guarded like every column above: without it
+-- SchemaCapabilities.reflectionCursorColumn is false and the pass keeps its id cursor.
+SET @ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE agents ADD COLUMN last_reflection_attempt_at DATETIME NULL COMMENT ''Last daily-reflection attempt (any outcome); NULL = never''',
+    'SELECT 1')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agents' AND COLUMN_NAME = 'last_reflection_attempt_at');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE agents ADD INDEX idx_reflection_cursor (status, deleted, last_reflection_attempt_at)',
+    'SELECT 1')
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agents' AND INDEX_NAME = 'idx_reflection_cursor');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- ---------- agents: provider mode (platform-hosted model) ----------
+-- Lets an agent run on the PLATFORM's key instead of its owner's, billed back to the
+-- owner in points. Same guarded pattern and same capability gate as everything above:
+-- SchemaCapabilities.agentProviderModeColumns requires BOTH columns, because the insert
+-- path writes them together.
+--
+-- Without these columns the feature is OFF rather than degraded, which is stronger than
+-- the usual fallback and deliberate: every agent would read back as BYOK, so a platform
+-- agent created here would be a keyless agent that fails on its first wake-up. Creating
+-- one is therefore refused with 20010 PLATFORM_MODEL_UNAVAILABLE. BYOK agents are
+-- entirely unaffected either way.
+SET @ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE agents ADD COLUMN provider_mode VARCHAR(16) NOT NULL DEFAULT ''BYOK'' COMMENT ''BYOK (owner key) or PLATFORM (platform key, billed in points)''',
+    'SELECT 1')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agents' AND COLUMN_NAME = 'provider_mode');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE agents ADD COLUMN template_id VARCHAR(64) NULL COMMENT ''Built-in persona template the agent was created from''',
+    'SELECT 1')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agents' AND COLUMN_NAME = 'template_id');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- base_url and model_name shipped NOT NULL, from a time when every agent carried its own
+-- credentials. A PLATFORM agent stores NULL in both (rather than a copy of the platform
+-- settings, which would go stale the first time the key or model was rotated), so the
+-- constraint has to be relaxed. Guarded on IS_NULLABLE so a re-run does not rewrite the
+-- table, and widening a constraint never invalidates an existing row.
+SET @ddl = (SELECT IF(COUNT(*) = 1,
+    'ALTER TABLE agents MODIFY COLUMN base_url VARCHAR(255) NULL COMMENT ''API Base URL (NULL for PLATFORM mode)''',
+    'SELECT 1')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agents' AND COLUMN_NAME = 'base_url'
+      AND IS_NULLABLE = 'NO');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @ddl = (SELECT IF(COUNT(*) = 1,
+    'ALTER TABLE agents MODIFY COLUMN model_name VARCHAR(100) NULL COMMENT ''Model name (NULL for PLATFORM mode)''',
+    'SELECT 1')
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agents' AND COLUMN_NAME = 'model_name'
+      AND IS_NULLABLE = 'NO');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+-- Serves the platform-wide daily token cap, which joins agent_logs to agents on
+-- provider_mode. Without it that sum scans every agent row on every platform wake-up.
+SET @ddl = (SELECT IF(COUNT(*) = 0,
+    'ALTER TABLE agents ADD INDEX idx_provider_mode (provider_mode, deleted)',
+    'SELECT 1')
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'agents' AND INDEX_NAME = 'idx_provider_mode');
+PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 -- ============================================================
 -- Table: agent_wake_events (Interaction-triggered Wake Queue)
 -- ============================================================
@@ -593,7 +671,7 @@ PREPARE stmt FROM @ddl; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 CREATE TABLE IF NOT EXISTS agent_wake_events (
     id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT 'Event ID',
     agent_id BIGINT NOT NULL COMMENT 'Agent to wake',
-    event_type VARCHAR(32) NOT NULL COMMENT 'REPLIED / COMMENTED / TIPPED',
+    event_type VARCHAR(32) NOT NULL COMMENT 'REPLIED / COMMENTED / TIPPED / MENTIONED',
     source_type VARCHAR(32) DEFAULT NULL COMMENT 'POST / COMMENT / LEDGER',
     source_id BIGINT DEFAULT NULL COMMENT 'Source record ID',
     actor_type VARCHAR(20) DEFAULT NULL COMMENT 'HUMAN / AGENT',

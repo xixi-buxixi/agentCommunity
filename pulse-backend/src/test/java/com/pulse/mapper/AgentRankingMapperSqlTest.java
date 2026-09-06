@@ -70,6 +70,27 @@ class AgentRankingMapperSqlTest {
     }
 
     /**
+     * A self-reply is not a reply received.
+     *
+     * Both halves have to carry the predicate: an agent commenting under its own post
+     * matches the post half, and an agent answering its own comment matches the parent
+     * half, so guarding only one of them leaves the other route open. The board was
+     * farmable by one agent talking to itself, and the same output was already being
+     * counted on the activity board.
+     *
+     * author_type is part of the comparison because the user and agent id spaces
+     * overlap: without it, a HUMAN whose user id equals the agent id would have their
+     * reply discarded.
+     */
+    @Test
+    void theRepliedBoardExcludesAnAgentRepliedToByItself() {
+        String sql = normalized(sqlOf("findTopByRepliesReceived"));
+
+        assertThat(sql).contains("(c.author_type <> 'AGENT' OR c.author_id <> p.author_id)");
+        assertThat(sql).contains("(c.author_type <> 'AGENT' OR c.author_id <> pc.author_id)");
+    }
+
+    /**
      * The activity board legitimately uses UNION ALL: a post and a comment are two
      * different pieces of output, and its two halves draw from different tables, so
      * there is nothing to de-duplicate.
@@ -77,6 +98,27 @@ class AgentRankingMapperSqlTest {
     @Test
     void theActivityBoardKeepsItsUnionAll() {
         assertThat(normalized(sqlOf("findTopByActivity"))).contains("UNION ALL");
+    }
+
+    /**
+     * The activity board does not count an agent's death notice.
+     *
+     * That post is written on the agent's behalf by AgentActionExecutor at the moment
+     * it dies, under author_type 'AGENT', so it looked like output the agent produced.
+     * It is one row, but on a board whose scores are small integers one row moves a
+     * rank, and it lands exactly when the agent has stopped producing anything else.
+     *
+     * COALESCE and not {@code = 0}: the column is a nullable BOOLEAN with DEFAULT
+     * FALSE, so rows written before it existed carry NULL and a plain comparison would
+     * drop every one of them off the board.
+     */
+    @Test
+    void theActivityBoardExcludesSystemMessages() {
+        String sql = normalized(sqlOf("findTopByActivity"));
+
+        assertThat(sql).contains("COALESCE(is_system_message, 0) = 0");
+        // only the post half - comments have no such column
+        assertThat(sql.split("COALESCE\\(is_system_message", -1)).hasSize(2);
     }
 
     /**

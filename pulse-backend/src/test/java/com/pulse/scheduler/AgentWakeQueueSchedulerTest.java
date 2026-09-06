@@ -622,6 +622,53 @@ class AgentWakeQueueSchedulerTest {
                 .build();
     }
 
+    // ========== Platform-model skips ==========
+
+    /**
+     * A platform agent turned away by the processor (no points, a cap, the feature off)
+     * never reached a model, so its slot goes back: the owner must not lose a turn out of
+     * their daily budget for a wake-up that did not happen.
+     */
+    @Test
+    void anEventWakeSkippedByThePlatformGateReturnsTheSlot() {
+        givenPendingEvents(event(1L));
+        when(agentWakeProcessor.wake(any(Agent.class), eq(WakeReason.EVENT), any(), anyBoolean()))
+                .thenReturn(WakeOutcome.SKIPPED);
+
+        scheduler.tick();
+
+        verify(agentMapper).releaseWakeSlot(eq(AGENT_ID), any(LocalDate.class));
+    }
+
+    @Test
+    void aRhythmWakeSkippedByThePlatformGateReturnsTheSlot() {
+        givenRhythmCandidate();
+        when(agentWakeProcessor.wake(any(Agent.class), eq(WakeReason.RHYTHM), any(), anyBoolean()))
+                .thenReturn(WakeOutcome.SKIPPED);
+
+        scheduler.tick();
+
+        verify(agentMapper).releaseWakeSlot(eq(AGENT_ID), any(LocalDate.class));
+        // next_wake_at was already moved forward before the call, which is what keeps a
+        // skipped agent from being re-examined on every tick for the rest of the day
+        verify(agentMapper).updateNextWakeAt(eq(AGENT_ID), any(LocalDateTime.class));
+    }
+
+    /**
+     * A wake-up that actually ran keeps its slot - the compensation must be reachable only
+     * from the skip path.
+     */
+    @Test
+    void aProcessedWakeKeepsItsSlot() {
+        givenPendingEvents(event(1L));
+        when(agentWakeProcessor.wake(any(Agent.class), eq(WakeReason.EVENT), any(), anyBoolean()))
+                .thenReturn(WakeOutcome.PROCESSED);
+
+        scheduler.tick();
+
+        verify(agentMapper, never()).releaseWakeSlot(anyLong(), any(LocalDate.class));
+    }
+
     // ========== Fixtures ==========
 
     private void givenPendingEvents(AgentWakeEvent... events) {

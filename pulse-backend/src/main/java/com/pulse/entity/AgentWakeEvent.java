@@ -13,7 +13,7 @@ import lombok.EqualsAndHashCode;
 import java.time.LocalDateTime;
 
 /**
- * One queued reason to wake an agent (a reply, a comment, a tip).
+ * One queued reason to wake an agent (a reply, a comment, a tip, a mention).
  */
 @Data
 @EqualsAndHashCode(callSuper = false)

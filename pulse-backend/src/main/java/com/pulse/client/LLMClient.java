@@ -10,7 +10,7 @@ import com.pulse.dto.ReflectionContext;
 import com.pulse.dto.ReflectionResult;
 import com.pulse.entity.Agent;
 import com.pulse.enums.ActionType;
-import com.pulse.util.AesUtil;
+import com.pulse.service.support.LlmCredentialResolver;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -40,7 +40,16 @@ import java.util.Set;
 public class LLMClient {
 
     private final RestTemplate restTemplate;
-    private final AesUtil aesUtil;
+
+    /**
+     * Where the api_key / base_url / model_name of a call come from.
+     *
+     * Both call sites below used to decrypt agent.getApiKey() and default the base URL
+     * inline. With two provider modes that inline copy would have to know which mode the
+     * agent is in, twice, so the decision moved into one collaborator; nothing else about
+     * either request changed.
+     */
+    private final LlmCredentialResolver credentialResolver;
     private final ObjectMapper objectMapper;
 
     @Value("${pulse-ai-side.base-url:http://localhost:8000}")
@@ -64,15 +73,12 @@ public class LLMClient {
      * @return LLMResponse with parsed action decision
      */
     public LLMResponse callLLM(Agent agent, AgentContext context) {
-        // Decrypt API Key
-        String apiKey;
-        try {
-            apiKey = aesUtil.decrypt(agent.getApiKey());
-        } catch (RuntimeException e) {
-            log.error("Failed to decrypt API Key for agent {}", agent.getId());
-            apiKey = null;
-        }
-        if (apiKey == null) {
+        // Credentials for this agent's provider mode. Null means the call cannot be made
+        // - an undecryptable BYOK key, or a PLATFORM agent on a deployment where the
+        // platform model is unusable. Both degrade the same way they always have: a
+        // failed envelope, so the caller charges the floor and tries again next cycle.
+        LlmCredentialResolver.Credentials credentials = credentialResolver.resolve(agent);
+        if (credentials == null) {
             return LLMResponse.builder()
                     .success(false)
                     .errorCode("API_KEY_DECRYPTION_FAILED")
@@ -82,9 +88,9 @@ public class LLMClient {
 
         // Build request payload matching Python LLMRequest structure
         Map<String, Object> requestBody = new HashMap<>();
-        requestBody.put("api_key", apiKey);
-        requestBody.put("base_url", agent.getBaseUrl() != null ? agent.getBaseUrl().trim() : "https://api.openai.com/v1");
-        requestBody.put("model_name", agent.getModelName());
+        requestBody.put("api_key", credentials.getApiKey());
+        requestBody.put("base_url", credentials.getBaseUrl());
+        requestBody.put("model_name", credentials.getModelName());
         requestBody.put("system_prompt", context.getSystemPrompt());
         // Interactions travel inside the same context string, see getGatewayContext()
         requestBody.put("context", context.getGatewayContext());
@@ -189,23 +195,15 @@ public class LLMClient {
      * nothing to say" - both mean "change nothing today".
      */
     public ReflectionResult callReflection(Agent agent, ReflectionContext context) {
-        String apiKey;
-        try {
-            apiKey = aesUtil.decrypt(agent.getApiKey());
-        } catch (RuntimeException e) {
-            log.error("Failed to decrypt API Key for agent {}", agent.getId());
-            apiKey = null;
-        }
-        if (apiKey == null) {
+        LlmCredentialResolver.Credentials credentials = credentialResolver.resolve(agent);
+        if (credentials == null) {
             return ReflectionResult.failed("API Key decryption failed");
         }
 
         Map<String, Object> requestBody = new HashMap<>();
-        requestBody.put("api_key", apiKey);
-        requestBody.put("base_url", agent.getBaseUrl() != null
-                ? agent.getBaseUrl().trim()
-                : "https://api.openai.com/v1");
-        requestBody.put("model_name", agent.getModelName());
+        requestBody.put("api_key", credentials.getApiKey());
+        requestBody.put("base_url", credentials.getBaseUrl());
+        requestBody.put("model_name", credentials.getModelName());
         requestBody.put("system_prompt", agent.getSystemPrompt());
         requestBody.put("recent_behaviors", context.getRecentBehaviors() != null
                 ? context.getRecentBehaviors()
@@ -445,7 +443,7 @@ public class LLMClient {
      *
      * Python returns either the legacy single-action shape or the evolution
      * multi-action shape:
-     * - actions: [{type, target_post_id, content, ...}]
+     * - actions: [{type, target_post_id, target_comment_id, content, ...}]
      * - usage.total_tokens or total_tokens / totalTokens
      * - model, response_time_ms, success, error_message
      */
@@ -479,6 +477,7 @@ public class LLMClient {
             return LLMResponse.builder()
                     .action(firstAction.getAction())
                     .targetPostId(firstAction.getTargetPostId())
+                    .targetCommentId(firstAction.getTargetCommentId())
                     .parsedContent(firstAction.getContent())
                     .actions(actions)
                     .reason(reason)
@@ -529,6 +528,10 @@ public class LLMClient {
         return AgentActionDecision.builder()
                 .action(ActionType.fromCode(actionStr))
                 .targetPostId(readLong(node, "target_post_id", "targetPostId"))
+                // Optional refinement of a reply. readLong already drops a non-numeric
+                // or non-positive value, so a hallucinated comment id arrives as null
+                // and the reply simply stays top level.
+                .targetCommentId(readLong(node, "target_comment_id", "targetCommentId"))
                 .content(node.path("content").asText(null))
                 .title(node.path("title").asText(null))
                 .description(node.path("description").asText(null))
@@ -622,6 +625,7 @@ public class LLMClient {
             source = List.of(AgentActionDecision.builder()
                     .action(llmResponse.getAction())
                     .targetPostId(llmResponse.getTargetPostId())
+                    .targetCommentId(llmResponse.getTargetCommentId())
                     .content(llmResponse.getParsedContent())
                     .build());
         }

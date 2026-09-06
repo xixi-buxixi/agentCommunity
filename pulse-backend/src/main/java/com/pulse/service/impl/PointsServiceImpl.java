@@ -90,6 +90,68 @@ public class PointsServiceImpl implements PointsService {
 
     @Override
     @Transactional
+    public BigDecimal spendAvailablePoints(Long userId, BigDecimal amount, String type,
+                                           String relatedType, Long relatedId, String description) {
+        requireUser(userId);
+
+        if (amount == null || amount.signum() <= 0) {
+            return BigDecimal.ZERO;
+        }
+
+        BigDecimal available = getAvailablePoints(userId);
+        if (available.signum() <= 0) {
+            // Nothing to take. No ledger row either: a 0-value entry would claim a
+            // movement that did not happen, which is the thing refundPoints was fixed to
+            // stop doing.
+            log.warn("Cannot charge {} to user {}: available balance is {}", amount, userId, available);
+            return BigDecimal.ZERO;
+        }
+
+        BigDecimal wanted = amount.min(available);
+        BigDecimal spent = trySpend(userId, wanted);
+        if (spent.signum() <= 0) {
+            // Lost a race with a concurrent spend between the read and the update. One
+            // retry against the balance as it is now; the atomic predicate is what makes
+            // this safe to attempt at all.
+            BigDecimal remaining = getAvailablePoints(userId);
+            if (remaining.signum() > 0) {
+                spent = trySpend(userId, amount.min(remaining));
+            }
+        }
+        if (spent.signum() <= 0) {
+            log.warn("Could not charge {} to user {}; the balance was consumed concurrently",
+                    amount, userId);
+            return BigDecimal.ZERO;
+        }
+
+        BigDecimal availableAfter = getAvailablePoints(userId);
+        writeLedger(userId, spent.negate(), type, relatedId, relatedType, description,
+                availableAfter.add(spent), availableAfter);
+
+        if (spent.compareTo(amount) < 0) {
+            // The interesting case for an operator: the platform ate the difference.
+            log.warn("Partial charge: user={} owed {} but only {} was available, charged to zero",
+                    userId, amount, spent);
+        } else {
+            log.info("Points spent: userId={}, amount={}, type={}, availableAfter={}",
+                    userId, spent, type, availableAfter);
+        }
+        return spent;
+    }
+
+    /**
+     * One atomic attempt. Returns what was taken, or zero when the conditional UPDATE
+     * matched no row.
+     */
+    private BigDecimal trySpend(Long userId, BigDecimal amount) {
+        if (amount == null || amount.signum() <= 0) {
+            return BigDecimal.ZERO;
+        }
+        return userMapper.deductAvailablePointsAtomic(userId, amount) > 0 ? amount : BigDecimal.ZERO;
+    }
+
+    @Override
+    @Transactional
     public void refundPoints(Long userId, BigDecimal amount, Long relatedId, String description) {
         requireUser(userId);
 
@@ -143,12 +205,25 @@ public class PointsServiceImpl implements PointsService {
 
     private void writeLedger(Long userId, BigDecimal amount, String type, Long relatedId,
                              String description, BigDecimal balanceBefore, BigDecimal balanceAfter) {
+        // Every pre-existing caller of this method is a bounty movement, so the default
+        // stays "BOUNTY" and their rows are written exactly as before.
+        writeLedger(userId, amount, type, relatedId, "BOUNTY", description, balanceBefore, balanceAfter);
+    }
+
+    /**
+     * Same, with an explicit related_type. Platform-model usage relates to an AGENT, and
+     * filing it under "BOUNTY" would make the ledger unreadable the moment anyone tried
+     * to answer "what did this agent cost me".
+     */
+    private void writeLedger(Long userId, BigDecimal amount, String type, Long relatedId,
+                             String relatedType, String description,
+                             BigDecimal balanceBefore, BigDecimal balanceAfter) {
         SysLedger ledger = new SysLedger();
         ledger.setUserId(userId);
         ledger.setAmount(amount);
         ledger.setType(type);
         ledger.setRelatedId(relatedId);
-        ledger.setRelatedType("BOUNTY");
+        ledger.setRelatedType(relatedType);
         ledger.setDescription(description);
         ledger.setBalanceBefore(balanceBefore);
         ledger.setBalanceAfter(balanceAfter);

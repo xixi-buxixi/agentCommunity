@@ -36,6 +36,14 @@ public class LLMResponse {
     private Long targetPostId;
 
     /**
+     * Parsed target comment ID, mirroring actions[0] the way targetPostId does.
+     *
+     * Only ever set for a reply that named one specific comment; null means the reply
+     * is top level, which is what every agent reply was before this field existed.
+     */
+    private Long targetCommentId;
+
+    /**
      * Parsed and truncated content from Python gateway (for post/reply)
      */
     private String parsedContent;

@@ -15,6 +15,7 @@ import com.pulse.mapper.CommentMapper;
 import com.pulse.mapper.DislikeMapper;
 import com.pulse.mapper.LikeMapper;
 import com.pulse.mapper.PostMapper;
+import com.pulse.service.AgentMentionService;
 import com.pulse.service.AgentWakeEventService;
 import com.pulse.entity.Notification;
 import com.pulse.enums.AgentStatus;
@@ -30,6 +31,7 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -51,13 +53,14 @@ class AgentActionExecutorTest {
     private final DislikeMapper dislikeMapper = mock(DislikeMapper.class);
     private final AgentBountyExecutor agentBountyExecutor = mock(AgentBountyExecutor.class);
     private final AgentWakeEventService agentWakeEventService = mock(AgentWakeEventService.class);
+    private final AgentMentionService agentMentionService = mock(AgentMentionService.class);
     private final NotificationService notificationService = mock(NotificationService.class);
     private final SchemaCapabilities schemaCapabilities = mock(SchemaCapabilities.class);
 
     private final AgentActionExecutor executor = new AgentActionExecutor(
             agentMapper, postMapper, commentMapper, agentLogMapper,
             likeMapper, dislikeMapper, agentBountyExecutor, agentWakeEventService,
-            notificationService, schemaCapabilities);
+            agentMentionService, notificationService, schemaCapabilities);
 
     @Test
     void postOutcomeCarriesTheNewPostId() {
@@ -280,6 +283,56 @@ class AgentActionExecutorTest {
      * insert: the comment and the audit row must still stand. The agent's action is
      * worth more than telling somebody about it.
      */
+    /**
+     * An agent replying under another agent's post already queues a COMMENTED event for
+     * that agent, so the mention path is told to skip it. Naming it in the reply that is
+     * already bringing it back must not cost a second wake-up.
+     */
+    @Test
+    void aReplyUnderAnAgentPostTellsTheMentionPathWhoIsAlreadyBeingWoken() {
+        Post target = new Post();
+        target.setId(88L);
+        target.setAuthorId(55L);
+        target.setAuthorType(AuthorType.AGENT.getCode());
+        when(postMapper.selectById(88L)).thenReturn(target);
+
+        executor.applyDecisions(agent(), List.of(decision(ActionType.REPLY, 88L, "@Echo 你怎么看")), 500);
+
+        verify(agentMentionService).recordMentionsInComment(eq(target), any(Comment.class),
+                eq(AuthorType.AGENT.getCode()), eq(1L), eq(55L));
+    }
+
+    /**
+     * Under a human's post nothing is queued, so nothing is excluded and every mentioned
+     * agent in the thread is fair game.
+     */
+    @Test
+    void aReplyUnderAHumanPostExcludesNobodyFromTheMentionPath() {
+        Post target = new Post();
+        target.setId(88L);
+        target.setAuthorId(9L);
+        target.setAuthorType(AuthorType.HUMAN.getCode());
+        when(postMapper.selectById(88L)).thenReturn(target);
+
+        executor.applyDecisions(agent(), List.of(decision(ActionType.REPLY, 88L, "@Echo 看一下")), 500);
+
+        verify(agentMentionService).recordMentionsInComment(eq(target), any(Comment.class),
+                eq(AuthorType.AGENT.getCode()), eq(1L), isNull());
+    }
+
+    @Test
+    void aNewAgentPostAlsoGoesThroughTheMentionPath() {
+        when(postMapper.insert(any(Post.class))).thenAnswer(invocation -> {
+            invocation.getArgument(0, Post.class).setId(1234L);
+            return 1;
+        });
+
+        executor.applyDecisions(agent(), List.of(decision(ActionType.POST, null, "@Echo 新帖")), 500);
+
+        verify(agentMentionService).recordMentionsInPost(any(Post.class),
+                eq(AuthorType.AGENT.getCode()), eq(1L));
+    }
+
     @Test
     void aFailingNotificationWriteDoesNotBreakTheAgentAction() {
         NotificationMapper failingMapper = mock(NotificationMapper.class);
@@ -290,7 +343,7 @@ class AgentActionExecutorTest {
 
         AgentActionExecutor withRealNotifications = new AgentActionExecutor(
                 agentMapper, postMapper, commentMapper, agentLogMapper, likeMapper, dislikeMapper,
-                agentBountyExecutor, agentWakeEventService,
+                agentBountyExecutor, agentWakeEventService, agentMentionService,
                 new NotificationServiceImpl(failingMapper, capabilities,
                         new AuthorResolver(mock(com.pulse.mapper.UserMapper.class), agentMapper)),
                 schemaCapabilities);

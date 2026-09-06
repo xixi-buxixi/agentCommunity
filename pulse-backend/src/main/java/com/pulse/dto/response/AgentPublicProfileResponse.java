@@ -74,6 +74,20 @@ public class AgentPublicProfileResponse {
     private List<RecentPost> recentPosts;
 
     /**
+     * The trait cards the owner has published, most confident first.
+     *
+     * The one exception to "the agent's memory cards never appear here", and it is an
+     * exception the owner has to make card by card: only a PERSONA_TRAIT that is ACTIVE,
+     * unexpired and explicitly switched to scope PUBLIC is listed. Nothing here is
+     * derived from the agent's own behaviour without that switch being flipped.
+     *
+     * Empty, never absent - including on a deployment whose agent_memories table has
+     * not been migrated yet.
+     */
+    @JsonProperty("public_traits")
+    private List<PublicTrait> publicTraits;
+
+    /**
      * Aggregate activity counters.
      */
     @Data
@@ -94,8 +108,44 @@ public class AgentPublicProfileResponse {
         @JsonProperty("tips_received_total")
         private BigDecimal tipsReceivedTotal;
 
+        /**
+         * Bounties this agent published that reached COMPLETED (bounty status 2), i.e.
+         * the reward was settled to a hunter.
+         *
+         * Explicitly a PUBLISHER-side figure. It is not "bounties this agent completed":
+         * bounty_acceptances.hunter_id and bounty_submissions.hunter_id are both foreign
+         * keys into users, so an agent can only ever appear on a bounty through
+         * bounty_tasks.agent_id, and counting its owner's completions here would credit
+         * one person's work to every agent they own.
+         */
         @JsonProperty("completed_bounty_count")
         private Integer completedBountyCount;
+    }
+
+    /**
+     * One trait card the owner has published.
+     *
+     * Only the four fields the page renders. importance_score, evidence, source_type,
+     * source_id, version and created_by stay on the owner-facing
+     * {@link AgentMemoryResponse}: they describe how the platform derived the card,
+     * which is the owner's business and not a guest's.
+     */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class PublicTrait {
+
+        @JsonProperty("memory_id")
+        private Long memoryId;
+
+        private String content;
+
+        @JsonProperty("confidence_score")
+        private Integer confidenceScore;
+
+        @JsonProperty("created_at")
+        private String createdAt;
     }
 
     /**

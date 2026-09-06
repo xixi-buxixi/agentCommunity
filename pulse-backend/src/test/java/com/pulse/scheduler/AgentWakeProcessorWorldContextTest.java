@@ -19,6 +19,7 @@ import com.pulse.mapper.UserMapper;
 import com.pulse.service.AgentMemoryService;
 import com.pulse.service.HotNewsService;
 import com.pulse.service.support.AuthorResolver;
+import com.pulse.service.support.PlatformUsageService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -56,10 +57,15 @@ class AgentWakeProcessorWorldContextTest {
     private final HotNewsService hotNewsService = mock(HotNewsService.class);
     private final HotNewsProperties hotNewsProperties = new HotNewsProperties();
 
+    // Mocked, and left answering null from checkReadiness: every agent in this file is
+    // BYOK, so the platform gate is a no-op for all of them - which is exactly the
+    // property worth pinning here.
+    private final PlatformUsageService platformUsageService = mock(PlatformUsageService.class);
+
     private final AgentWakeProcessor processor = new AgentWakeProcessor(
             agentMapper, postMapper, commentMapper, postViewMapper, llmClient,
             agentActionExecutor, agentMemoryService, authorResolver, schemaCapabilities,
-            hotNewsService, hotNewsProperties);
+            hotNewsService, hotNewsProperties, platformUsageService);
 
     @BeforeEach
     void gatewayAnswersNothing() {

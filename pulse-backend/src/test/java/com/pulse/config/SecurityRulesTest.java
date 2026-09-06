@@ -158,6 +158,19 @@ class SecurityRulesTest {
                 .andExpect(jsonPath("$.data").isArray());
     }
 
+    /**
+     * The persona templates are NOT anonymous, deliberately: they are one half of the
+     * create form, and the response also reports the platform model's terms. Nothing here
+     * is in a permitAll matcher, so it falls through to anyRequest().authenticated() -
+     * this test is what would notice if a future whitelist entry widened over it.
+     */
+    @Test
+    void anonymousCannotReadTheAgentTemplates() throws Exception {
+        mockMvc.perform(get("/api/v1/agents/templates"))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.code").value(10006));
+    }
+
     @Test
     void rateLimitServiceIsNotConsultedForReads() throws Exception {
         when(rateLimitService.tryConsume(anyString(), anyString(), anyInt(), any()))

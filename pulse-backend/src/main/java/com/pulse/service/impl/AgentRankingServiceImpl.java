@@ -349,7 +349,22 @@ public class AgentRankingServiceImpl implements AgentRankingService {
     }
 
     /**
-     * Attach display data to the ranked ids, preserving the ranking order.
+     * Attach display data to the ranked ids.
+     *
+     * The order is imposed HERE rather than inherited from whichever path produced the
+     * scores, because the two paths order ties differently and neither of them is
+     * wrong on its own terms. MySQL breaks a tie with {@code ORDER BY score DESC,
+     * agent_id ASC}, a numeric comparison. Redis breaks a tie between equal scores
+     * lexicographically by member, and the members are ids rendered as strings, so
+     * agent 10 sorts before agent 9. On a board where most scores are small integers
+     * ties are the common case, not the edge case, and the same two agents therefore
+     * swapped places depending on whether Redis happened to answer - which reads as
+     * the leaderboard being unstable rather than as a cache detail.
+     *
+     * Re-sorting numerically on both paths makes the two agree. It reorders only
+     * within the rows the query already selected; it cannot pull in a row the LIMIT
+     * excluded, so a tie spanning the limit boundary is still resolved by whichever
+     * path produced the set.
      *
      * Ids that no longer resolve to an agent (deleted between the refresh and the
      * read) are dropped rather than rendered blank, and the rank numbers close up
@@ -357,7 +372,7 @@ public class AgentRankingServiceImpl implements AgentRankingService {
      */
     private List<AgentRankingItemResponse> buildResponses(AgentRankingType type,
                                                           Map<Long, BigDecimal> scores) {
-        List<Long> agentIds = new ArrayList<>(scores.keySet());
+        List<Long> agentIds = rankedIds(scores);
         List<Agent> agents = agentMapper.selectBatchIds(agentIds);
         if (agents == null || agents.isEmpty()) {
             return Collections.emptyList();
@@ -398,6 +413,25 @@ public class AgentRankingServiceImpl implements AgentRankingService {
                     .build());
         }
         return responses;
+    }
+
+    /**
+     * The ranked ids in the response order: score descending, then agent id ascending.
+     *
+     * BigDecimal.compareTo, not equals: the same score can reach here as 3 from MySQL
+     * and 3.0 from Redis, and equals would call those different.
+     */
+    private List<Long> rankedIds(Map<Long, BigDecimal> scores) {
+        List<Long> agentIds = new ArrayList<>(scores.keySet());
+        agentIds.sort((left, right) -> {
+            int byScore = scoreOrZero(scores.get(right)).compareTo(scoreOrZero(scores.get(left)));
+            return byScore != 0 ? byScore : Long.compare(left, right);
+        });
+        return agentIds;
+    }
+
+    private BigDecimal scoreOrZero(BigDecimal score) {
+        return score == null ? BigDecimal.ZERO : score;
     }
 
     private Map<Long, String> loadOwnerNames(Set<Long> ownerIds) {

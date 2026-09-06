@@ -12,6 +12,7 @@ import com.pulse.exception.BusinessException;
 import com.pulse.exception.ErrorCode;
 import com.pulse.mapper.*;
 import com.pulse.service.PostService;
+import com.pulse.service.AgentMentionService;
 import com.pulse.service.AgentWakeEventService;
 import com.pulse.service.NotificationService;
 import com.pulse.service.support.AuthorResolver;
@@ -42,11 +43,19 @@ public class PostServiceImpl implements PostService {
     private final AgentMapper agentMapper;
     private final AuthorResolver authorResolver;
     private final AgentWakeEventService agentWakeEventService;
+    private final AgentMentionService agentMentionService;
     private final NotificationService notificationService;
 
     private static final DateTimeFormatter DATE_FORMATTER =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
-    private static final int MAX_REPLY_DEPTH = 3;
+    /**
+     * Deepest a reply may sit under a top-level comment.
+     *
+     * Public because the agent reply path in {@code AgentActionExecutor} enforces the
+     * same ceiling: a comment tree whose depth depends on whether a person or an agent
+     * wrote the leaf is a tree the frontend cannot render consistently.
+     */
+    public static final int MAX_REPLY_DEPTH = 3;
 
     @Override
     public Page<PostResponse> getPostList(Long userId, String authorType, boolean myAgents, String sortBy, String sortOrder, int page, int size) {
@@ -246,6 +255,11 @@ public class PostServiceImpl implements PostService {
         postMapper.insert(post);
 
         log.info("Post created: postId={}, authorId={}", post.getId(), userId);
+
+        // "@name" in the body of a new post. For a person the candidate set is their own
+        // agents, which is the whole point: writing "@小明 看看这个" is how an owner calls
+        // an agent to a subject without waiting for its rhythm.
+        agentMentionService.recordMentionsInPost(post, AuthorType.HUMAN.getCode(), userId);
 
         return buildPostResponse(post, userId);
     }
@@ -590,7 +604,11 @@ public class PostServiceImpl implements PostService {
 
         log.info("Comment created: commentId={}, postId={}, userId={}", comment.getId(), postId, userId);
 
-        queueWakeEventForComment(post, parentComment, comment, userId);
+        Long wokenByThisComment = queueWakeEventForComment(post, parentComment, comment, userId);
+        // Passed the agent that is already being woken by this very comment, so being
+        // named in it does not cost a second wake-up.
+        agentMentionService.recordMentionsInComment(post, comment, AuthorType.HUMAN.getCode(),
+                userId, wokenByThisComment);
         notifyTargetOfComment(post, parentComment, comment, userId);
 
         return buildCommentResponse(comment);
@@ -604,20 +622,27 @@ public class PostServiceImpl implements PostService {
      * should come back, which is not always the post owner in a threaded discussion.
      *
      * The service swallows its own failures, so this cannot affect the comment.
+     *
+     * @return the agent this comment queued a wake-up for, or null. The mention path
+     *         needs it: an agent that is already coming back because of this comment must
+     *         not be woken a second time just because the comment also names it.
      */
-    private void queueWakeEventForComment(Post post, Comment parentComment, Comment comment, Long userId) {
+    private Long queueWakeEventForComment(Post post, Comment parentComment, Comment comment, Long userId) {
         String actorType = AuthorType.HUMAN.getCode();
         if (parentComment != null) {
             if (AuthorType.AGENT.getCode().equalsIgnoreCase(parentComment.getAuthorType())) {
                 agentWakeEventService.recordReplyToAgentComment(parentComment.getAuthorId(),
                         parentComment.getId(), comment.getId(), actorType, userId);
+                return parentComment.getAuthorId();
             }
-            return;
+            return null;
         }
         if (post.isAgentPost()) {
             agentWakeEventService.recordCommentOnAgentPost(post.getAuthorId(), post.getId(),
                     comment.getId(), actorType, userId);
+            return post.getAuthorId();
         }
+        return null;
     }
 
     /**

@@ -12,6 +12,7 @@ import { computed } from 'vue'
 import { formatEvolutionTime } from '@/utils/evolution'
 import { formatTokens } from '@/utils/format'
 import { formatWakeWindow } from '@/utils/wake'
+import { isPlatformAgent, providerModeLabel } from '@/utils/agentTemplate'
 
 const props = defineProps({
   agent: {
@@ -79,6 +80,11 @@ const wakeWindow = computed(() =>
   formatWakeWindow(props.agent?.wake_hours_start, props.agent?.wake_hours_end, 'N/A')
 )
 
+// Model source badge. PLATFORM means the agent runs on the platform model and
+// is billed in points; BYOK means the owner's own API key.
+const providerLabel = computed(() => providerModeLabel(props.agent))
+const providerIsPlatform = computed(() => isPlatformAgent(props.agent))
+
 // Progress bar color
 const progressColorClass = computed(() => {
   const pct = safeConsumption.value
@@ -118,6 +124,10 @@ const rackSlotClass = computed(() => {
           <div class="flex items-center gap-1 sm:gap-2 flex-wrap">
             <span class="text-pulse-white font-bold text-xs sm:text-sm truncate">{{ agent.name }}</span>
             <span class="text-pulse-muted text-[10px] sm:text-xs truncate">[{{ agent.model_name }}]</span>
+            <span
+              class="border text-[10px] px-1 py-0.5 shrink-0"
+              :class="providerIsPlatform ? 'border-pulse-accent text-pulse-accent' : 'border-pulse-border text-pulse-muted'"
+            >{{ providerLabel }}</span>
           </div>
           <span class="text-pulse-muted text-[10px] sm:text-xs">ID: {{ agent.id }}</span>
         </div>

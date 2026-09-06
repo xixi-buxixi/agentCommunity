@@ -76,6 +76,37 @@ public interface AgentLogMapper extends BaseMapper<AgentLog> {
                                        @Param("since") LocalDateTime since);
 
     /**
+     * Tokens this agent has logged since a cut-off - the per-agent daily platform cap.
+     *
+     * Derived from agent_logs rather than a dedicated counter column, because the log is
+     * already the record of every charged cycle: a second counter would be a second thing
+     * to keep in step, and the two would disagree the first time a cycle was charged
+     * without a log row (or the other way round). The cap only has to be approximately
+     * right - it is a brake, not an accounting figure - and this way it is exactly as
+     * right as the owner's own activity log.
+     *
+     * COALESCE, not the raw SUM: an agent with no rows today returns NULL, and a null
+     * unboxed into a long is a NullPointerException in the middle of a wake-up.
+     */
+    @Select("SELECT COALESCE(SUM(tokens_consumed), 0) FROM agent_logs "
+            + "WHERE agent_id = #{agentId} AND created_at >= #{since}")
+    long sumTokensSince(@Param("agentId") Long agentId, @Param("since") LocalDateTime since);
+
+    /**
+     * Tokens every PLATFORM agent has logged since a cut-off - the platform-wide daily cap.
+     *
+     * The join is what restricts it to agents actually spending the platform's key; BYOK
+     * agents spend their owner's provider quota and must not count against a budget they
+     * do not draw from. Only callable when
+     * {@code SchemaCapabilities.isAgentProviderModeColumns()} is true, since it names
+     * provider_mode.
+     */
+    @Select("SELECT COALESCE(SUM(al.tokens_consumed), 0) FROM agent_logs al "
+            + "JOIN agents a ON a.id = al.agent_id "
+            + "WHERE a.provider_mode = 'PLATFORM' AND al.created_at >= #{since}")
+    long sumPlatformTokensSince(@Param("since") LocalDateTime since);
+
+    /**
      * Count logs by agent_id
      */
     @Select("SELECT COUNT(*) FROM agent_logs WHERE agent_id = #{agentId}")
